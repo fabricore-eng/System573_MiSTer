@@ -66,7 +66,9 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [ ] Stream music from CD/flash through the descrambler into the decoder
 
 ## Phase 5 — polish
-- [ ] Analog I/O board variant
+- [~] Analog I/O board variant
+      - [x] ADC0838 8-channel serial ADC (`rtl/adc0838.v`, tested)
+      - [ ] Analog I/O board glue / JVS analog path
 - [ ] JVS MCU emulation for later I/O
 - [ ] Save/restore of NVRAM + security state to SD
 - [ ] Per-game timing, video options, MiSTer OSD menu

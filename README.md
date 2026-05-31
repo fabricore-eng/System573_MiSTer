@@ -46,6 +46,7 @@ PS1 itself.
 |--------------------------------|-----------------------|------------------------|
 | DS2401 1-Wire serial number    | `rtl/ds2401.v`        | ✅ implemented + tested |
 | ADC0834 serial ADC             | `rtl/adc0834.v`       | ✅ implemented + tested |
+| ADC0838 8-channel serial ADC   | `rtl/adc0838.v`       | ✅ implemented + tested |
 | M48T58 RTC + NVRAM             | `rtl/m48t58.v`        | ✅ implemented + tested |
 | Watchdog timer                 | `rtl/watchdog.v`      | ✅ implemented + tested |
 | Konami ASIC I/O register block | `rtl/s573_io.v`       | ✅ implemented + tested |
