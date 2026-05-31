@@ -57,6 +57,7 @@ PS1 itself.
 | Digital I/O board registers    | `rtl/k573dio.v`       | ✅ lamps/RAM/keys/DS2401 |
 | MP3 audio descrambler          | `rtl/k573_mp3dec.v`   | ✅ implemented + tested |
 | ATAPI task-file + PACKET       | `rtl/atapi.v`         | ✅ subset impl + tested |
+| Bank-switched flash window     | `rtl/s573_flash.v`    | ✅ banking impl + tested |
 | PS1 CPU/GPU/SPU subsystem      | `rtl/ps1_stub.v`      | 🔌 integration stub     |
 | MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold      |
 | MAS3507D MP3 / Digital I/O     | —                     | 📋 documented, not impl |

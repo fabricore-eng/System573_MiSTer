@@ -26,7 +26,9 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
       - [x] ATA task-file + ATAPI PACKET handshake, non-data + PIO data-in,
             INTRQ (`rtl/atapi.v`, tested; TUR/INQUIRY/READ CAPACITY)
       - [ ] Disc model + READ(10/12) streaming from MiSTer DDR3, DMA ch5
-- [ ] Bank-switched flash / PCMCIA backing store via MiSTer's DDR3
+- [~] Bank-switched flash / PCMCIA backing store via MiSTer's DDR3
+      - [x] Bank-switch control register + windowed banking (`rtl/s573_flash.v`,
+            tested); NOR program/erase command FSM + DDR3 backing still to do
 - [ ] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
 - [ ] Get the Konami BIOS to POST and reach the CD boot
 
