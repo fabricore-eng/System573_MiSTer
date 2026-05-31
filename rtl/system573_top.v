@@ -42,7 +42,9 @@ module system573_top #(
     output wire        audio_amp_en,
     output wire        audio_mute,
     output wire        spu_dac_en,
-    output wire        wdog_reset       // watchdog bite (board reset request)
+    output wire        wdog_reset,      // watchdog bite (board reset request)
+    output wire        cdrom_irq,       // ATAPI INTRQ (IRQ10)
+    output wire [31:0] lamp_out         // BEMANI Digital I/O lamp lines
 );
     wire access = exp1_we | exp1_re;
 
@@ -80,18 +82,49 @@ module system573_top #(
         .ch0(adc_ch0), .ch1(adc_ch1), .ch2(adc_ch2), .ch3(adc_ch3)
     );
 
-    // --- security cartridge DS2401 (bit-banged 1-Wire) ---
-    // The security latch D0 / status IO0 model the open-drain 1-Wire line.
-    reg  sec_latch_d0;       // last value written to 0x1f6a0000 bit0 (master pull-low)
-    wire ds_pd;              // slave pull-down
-    wire onewire_level = ~(sec_latch_d0 | ds_pd); // wired-AND, pulled up
-    ds2401 #(.SERIAL(CART_SERIAL), .CLK_FREQ_HZ(CLK_FREQ_HZ)) u_ds2401 (
-        .clk(clk), .rst(rst), .dq_in(onewire_level), .dq_pd(ds_pd)
+    // --- bank-switched flash / PCMCIA window + control latch ---
+    wire [15:0] flash_dout;
+    wire [5:0]  flash_bank;
+    wire        sec_io0_dir, flash_cpld;
+    s573_flash u_flash (
+        .clk(clk), .rst(rst),
+        .ctl_we(sel_bankctl & exp1_we), .ctl_din(exp1_wdata),
+        .bank(flash_bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(flash_cpld),
+        .win_sel(sel_flash), .win_addr(exp1_addr[16:1]),
+        .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout)
     );
-    always @(posedge clk) begin
-        if (rst)                    sec_latch_d0 <= 1'b0;
-        else if (sel_seclatch & exp1_we) sec_latch_d0 <= exp1_wdata[0];
-    end
+
+    // --- security cartridge (EEPROM + board DS2401) via the D0-D7 latch ---
+    wire        sec_io0, sec_drdy, sec_irdy;
+    wire [7:0]  sec_in;
+    s573_seccart #(.DS_SERIAL(CART_SERIAL), .DS_CLK_HZ(CLK_FREQ_HZ)) u_seccart (
+        .clk(clk), .rst(rst),
+        .latch_we(sel_seclatch & exp1_we), .d_latch(exp1_wdata[7:0]),
+        .io0_dir(sec_io0_dir),
+        .sec_io0(sec_io0), .sec_in(sec_in), .sec_drdy(sec_drdy), .sec_irdy(sec_irdy)
+    );
+
+    // --- ATAPI CD-ROM (IDE bank 0 = command block, bank 1 = control block) ---
+    wire [15:0] atapi_dout;
+    wire        atapi_sel = sel_ide0 | sel_ide1;
+    wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
+    atapi u_atapi (
+        .clk(clk), .rst(rst),
+        .sel(atapi_sel), .addr(atapi_addr),
+        .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
+        .din(exp1_wdata), .dout(atapi_dout), .intrq(cdrom_irq)
+    );
+
+    // --- BEMANI Digital I/O board ---
+    wire [15:0] digio_dout;
+    k573dio #(.DS_SERIAL(CART_SERIAL + 48'd1), .DS_CLK_HZ(CLK_FREQ_HZ)) u_digio (
+        .clk(clk), .rst(rst),
+        .sel(sel_digio), .off(exp1_addr[7:0]),
+        .we(sel_digio & exp1_we), .re(sel_digio & exp1_re),
+        .din(exp1_wdata), .dout(digio_dout), .lamp(lamp_out),
+        .crypto_key1(), .crypto_key2(), .crypto_key3(),
+        .mp3_start(), .mp3_end(), .fpga_ctrl(), .network_id()
+    );
 
     // --- M48T58 RTC + NVRAM ---
     wire [7:0] rtc_dout;
@@ -113,8 +146,8 @@ module system573_top #(
         .dip_sw(dip_sw), .p1_ctrl(p1_ctrl), .p2_ctrl(p2_ctrl),
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
         .pcmcia_present(pcmcia_present),
-        .sec_in(8'h00), .sec_io0(onewire_level),
-        .sec_irdy(1'b1), .sec_drdy(1'b1),
+        .sec_in(sec_in), .sec_io0(sec_io0),
+        .sec_irdy(sec_irdy), .sec_drdy(sec_drdy),
         .adc_do(adc_do), .adc_sars(adc_sars),
         .adc_di(adc_di), .adc_cs_n(adc_cs_n), .adc_clk(adc_clk),
         .coin_counter(coin_counter),
@@ -124,8 +157,11 @@ module system573_top #(
 
     // --- read data mux back to the CPU ---
     always @(*) begin
-        if (sel_asic)     exp1_rdata = asic_dout;
-        else if (sel_rtc) exp1_rdata = {8'h00, rtc_dout};
-        else              exp1_rdata = 16'h0000;
+        if (sel_asic)            exp1_rdata = asic_dout;
+        else if (sel_rtc)        exp1_rdata = {8'h00, rtc_dout};
+        else if (sel_flash)      exp1_rdata = flash_dout;
+        else if (sel_ide0 | sel_ide1) exp1_rdata = atapi_dout;
+        else if (sel_digio)      exp1_rdata = digio_dout;
+        else                     exp1_rdata = 16'h0000;
     end
 endmodule

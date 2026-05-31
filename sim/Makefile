@@ -29,7 +29,9 @@ SRC_s573_seccart  := $(RTL)/s573_seccart.v $(RTL)/x76f100.v $(RTL)/ds2401.v
 SRC_s573_bus      := $(RTL)/s573_bus.v
 SRC_s573_io       := $(RTL)/s573_io.v
 SRC_system573_top := $(RTL)/system573_top.v $(RTL)/s573_bus.v $(RTL)/s573_io.v \
-                     $(RTL)/watchdog.v $(RTL)/adc0834.v $(RTL)/m48t58.v $(RTL)/ds2401.v
+                     $(RTL)/watchdog.v $(RTL)/adc0834.v $(RTL)/m48t58.v $(RTL)/ds2401.v \
+                     $(RTL)/s573_flash.v $(RTL)/s573_seccart.v $(RTL)/x76f100.v \
+                     $(RTL)/atapi.v $(RTL)/k573dio.v
 
 .PHONY: all clean $(TESTS)
 

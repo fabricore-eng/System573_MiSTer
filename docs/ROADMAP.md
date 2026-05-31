@@ -11,6 +11,8 @@ The honest path from this repository to a System 573 core that boots a game.
 - [x] Watchdog
 - [x] Unit testbenches for all of the above (Icarus Verilog)
 - [x] MiSTer top-level scaffold + PS1 integration stub
+- [x] Fabric wires all peripherals through `s573_bus`: ASIC I/O, RTC, watchdog,
+      flash banking, ATAPI, Digital I/O, security cart (`system573_top`, tested)
 
 ## Phase 1 — sit on a real PlayStation core
 The 573 is a PS1. The only sane way forward is to integrate an existing,

@@ -16,7 +16,8 @@ module tb_system573_top;
     reg [7:0]  adc_ch0 = 0, adc_ch1 = 0, adc_ch2 = 0, adc_ch3 = 0;
 
     wire [1:0] coin_counter;
-    wire audio_amp_en, audio_mute, spu_dac_en, wdog_reset;
+    wire audio_amp_en, audio_mute, spu_dac_en, wdog_reset, cdrom_irq;
+    wire [31:0] lamp_out;
     integer errors = 0, bites = 0;
 
     system573_top #(.CLK_FREQ_HZ(1_000_000), .WDOG_TIMEOUT(20)) dut (
@@ -28,7 +29,8 @@ module tb_system573_top;
         .pcmcia_present(pcmcia_present),
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
-        .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset)
+        .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
+        .cdrom_irq(cdrom_irq), .lamp_out(lamp_out)
     );
 
     always #5 clk = ~clk;
@@ -74,6 +76,29 @@ module tb_system573_top;
         if (r !== {p1_ctrl, p2_ctrl}) begin
             $display("FAIL: jamma %04h expected %04h", r, {p1_ctrl, p2_ctrl});
             errors = errors + 1;
+        end
+
+        // 3b) Bank-switched flash: per-bank isolation through the fabric.
+        exp1_write(24'h500000, 16'h0000);   // bank 0
+        exp1_write(24'h000010, 16'h1234);   // flash window word 8
+        exp1_write(24'h500000, 16'h0001);   // bank 1
+        exp1_write(24'h000010, 16'h5678);
+        exp1_write(24'h500000, 16'h0000);   // back to bank 0
+        exp1_read(24'h000010, r);
+        if (r !== 16'h1234) begin
+            $display("FAIL: flash bank0 readback %04h expected 1234", r); errors = errors + 1;
+        end
+
+        // 3c) ATAPI device signature through the IDE window.
+        exp1_read(24'h480004, r);           // interrupt reason / sector count
+        if (r[7:0] !== 8'h01) begin $display("FAIL: atapi sig reg2 %02h", r[7:0]); errors=errors+1; end
+        exp1_read(24'h48000a, r);           // byte count high (signature 0xEB)
+        if (r[7:0] !== 8'hEB) begin $display("FAIL: atapi sig reg5 %02h", r[7:0]); errors=errors+1; end
+
+        // 3d) Digital I/O lamp output through the fabric.
+        exp1_write(24'h6400e2, 16'hA000);   // output register 0
+        if (lamp_out[3:0] !== 4'b1100) begin
+            $display("FAIL: digio lamp %b", lamp_out[3:0]); errors = errors + 1;
         end
 
         // 4) Watchdog: kick, confirm no early bite, then let it bite.
