@@ -17,6 +17,8 @@ The honest path from this repository to a System 573 core that boots a game.
 ## Phase 1 — sit on a real PlayStation core
 The 573 is a PS1. The only sane way forward is to integrate an existing,
 open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
+See [`PHASE1_PSX.md`](PHASE1_PSX.md) for the concrete integration plan (EXP1
+hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [ ] Vendor in / submodule the MiSTer PSX core (`MiSTer-devel/PSX_MiSTer`)
 - [ ] Replace `ps1_stub.v` with the real core's EXP1 master + video/audio
 - [ ] Expose the EXP1 bus and route it through `s573_bus`
