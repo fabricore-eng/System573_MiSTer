@@ -35,7 +35,8 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       - [x] Bank-switch control register + windowed banking (`rtl/s573_flash.v`,
             tested)
       - [x] AMD/Fujitsu NOR program/erase command engine (`rtl/flash_nor.v`,
-            tested); wiring it as the flash backing + DDR3 store still to do
+            tested), wired as s573_flash's per-bank backing (writes go through
+            the unlock/program/erase sequences); DDR3-backed store still to do
 - [ ] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
 - [ ] Get the Konami BIOS to POST and reach the CD boot
 

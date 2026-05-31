@@ -51,6 +51,16 @@ module tb_system573_top;
         end
     endtask
 
+    // NOR flash program through the EXP1 window (unlock 0x555/0x2AA, cmd 0xA0)
+    task flash_prog(input [23:0] waddr, input [15:0] d);
+        begin
+            exp1_write(24'h000AAA, 16'h00AA);   // word 0x555
+            exp1_write(24'h000554, 16'h0055);   // word 0x2AA
+            exp1_write(24'h000AAA, 16'h00A0);
+            exp1_write(waddr, d);
+        end
+    endtask
+
     reg [15:0] r;
     integer i;
     initial begin
@@ -78,11 +88,12 @@ module tb_system573_top;
             errors = errors + 1;
         end
 
-        // 3b) Bank-switched flash: per-bank isolation through the fabric.
+        // 3b) Bank-switched flash: per-bank isolation, programmed through the
+        //     NOR command sequences across the fabric (word 8 = byte 0x10).
         exp1_write(24'h500000, 16'h0000);   // bank 0
-        exp1_write(24'h000010, 16'h1234);   // flash window word 8
+        flash_prog(24'h000010, 16'h1234);
         exp1_write(24'h500000, 16'h0001);   // bank 1
-        exp1_write(24'h000010, 16'h5678);
+        flash_prog(24'h000010, 16'h5678);
         exp1_write(24'h500000, 16'h0000);   // back to bank 0
         exp1_read(24'h000010, r);
         if (r !== 16'h1234) begin

@@ -23,8 +23,10 @@
 // Verilog-2005. Released under the GNU GPL v2.
 // -----------------------------------------------------------------------------
 module s573_flash #(
-    parameter integer WIN_WORDS  = 256,   // 16-bit words per bank window (sim-sized)
-    parameter integer NUM_BANKS  = 4      // internal onboard-flash banks backed by RAM
+    parameter integer WIN_WORDS    = 2048, // 16-bit words per bank (>=2048 so the
+                                           // NOR unlock addresses 0x555/0x2AA fit)
+    parameter integer SECTOR_WORDS = 512,
+    parameter integer NUM_BANKS    = 4     // internal onboard-flash chips
 )(
     input  wire        clk,
     input  wire        rst,
@@ -43,34 +45,38 @@ module s573_flash #(
     input  wire [15:0] win_din,
     output reg  [15:0] win_dout
 );
-    localparam integer AW = $clog2(WIN_WORDS);
-
-    reg [15:0] mem [0:NUM_BANKS*WIN_WORDS-1];
-
     wire internal = (bank < NUM_BANKS);
-    wire [31:0] idx = bank * WIN_WORDS + win_addr[AW-1:0];
-
-    integer i;
-    initial for (i = 0; i < NUM_BANKS*WIN_WORDS; i = i + 1) mem[i] = 16'hFFFF;
 
     always @(posedge clk) begin
         if (rst) begin
             bank <= 6'd0; sec_io0_dir <= 1'b0; cpld_sig <= 1'b0;
-        end else begin
-            if (ctl_we) begin
-                bank        <= ctl_din[5:0];
-                sec_io0_dir <= ctl_din[6];
-                cpld_sig    <= ctl_din[7];
-            end
-            if (win_sel && win_we && internal)
-                mem[idx[$clog2(NUM_BANKS*WIN_WORDS)-1:0]] <= win_din;
+        end else if (ctl_we) begin
+            bank        <= ctl_din[5:0];
+            sec_io0_dir <= ctl_din[6];
+            cpld_sig    <= ctl_din[7];
         end
     end
 
+    // Each internal bank is a real AMD/Fujitsu NOR flash chip (writes go through
+    // the unlock/program/erase command sequences); the selected bank is exposed.
+    wire [15:0] chip_dout [0:NUM_BANKS-1];
+    genvar gi;
+    generate for (gi = 0; gi < NUM_BANKS; gi = gi + 1) begin : chips
+        flash_nor #(.WORDS(WIN_WORDS), .SECTOR_WORDS(SECTOR_WORDS)) chip (
+            .clk(clk), .rst(rst),
+            .ce(win_sel && (bank == gi)),
+            .we(win_we),
+            .addr(win_addr),
+            .din(win_din),
+            .dout(chip_dout[gi])
+        );
+    end endgenerate
+
+    integer m;
     always @(*) begin
+        win_dout = 16'hFFFF;            // absent PCMCIA bank / unselected
         if (win_sel && internal)
-            win_dout = mem[idx[$clog2(NUM_BANKS*WIN_WORDS)-1:0]];
-        else
-            win_dout = 16'hFFFF;       // absent PCMCIA bank / unselected
+            for (m = 0; m < NUM_BANKS; m = m + 1)
+                if (bank == m) win_dout = chip_dout[m];
     end
 endmodule

@@ -14,7 +14,7 @@ module tb_s573_flash;
     wire [15:0] win_dout;
     integer errors = 0;
 
-    s573_flash #(.WIN_WORDS(256), .NUM_BANKS(4)) dut (
+    s573_flash #(.WIN_WORDS(2048), .SECTOR_WORDS(512), .NUM_BANKS(4)) dut (
         .clk(clk), .rst(rst), .ctl_we(ctl_we), .ctl_din(ctl_din),
         .bank(bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(cpld_sig),
         .win_sel(win_sel), .win_addr(win_addr), .win_we(win_we),
@@ -36,6 +36,11 @@ module tb_s573_flash;
     task chk(input [15:0] got, input [15:0] exp, input [127:0] what);
         begin if (got!==exp) begin $display("FAIL: %0s = %04h (expected %04h)",what,got,exp); errors=errors+1; end end
     endtask
+    // NOR program: unlock then 0xA0 then data (the backing is real flash)
+    task flash_prog(input [15:0] a, input [15:0] d);
+        begin win_write(16'h555,16'h00AA); win_write(16'h2AA,16'h0055);
+              win_write(16'h555,16'h00A0); win_write(a,d); end
+    endtask
 
     reg [15:0] v;
     initial begin
@@ -47,14 +52,18 @@ module tb_s573_flash;
         if (sec_io0_dir !== 1'b1) begin $display("FAIL: io0_dir"); errors=errors+1; end
         if (cpld_sig !== 1'b1)    begin $display("FAIL: cpld"); errors=errors+1; end
 
-        // ---- per-bank isolation ----
-        set_ctl(16'h0000); win_write(16'd5, 16'hAAAA);  // bank 0, addr 5
-        set_ctl(16'h0001); win_write(16'd5, 16'h5555);  // bank 1, addr 5
+        // ---- a raw write (no unlock) does nothing: real NOR flash ----
+        set_ctl(16'h0000); win_write(16'd5, 16'h1234);
+        win_read(16'd5, v); chk(v, 16'hFFFF, "raw write ignored");
+
+        // ---- per-bank isolation (each bank is an independent flash chip) ----
+        set_ctl(16'h0000); flash_prog(16'd5, 16'hAAAA);   // bank 0, addr 5
+        set_ctl(16'h0001); flash_prog(16'd5, 16'h5555);   // bank 1, addr 5
         set_ctl(16'h0000); win_read(16'd5, v); chk(v, 16'hAAAA, "bank0[5]");
         set_ctl(16'h0001); win_read(16'd5, v); chk(v, 16'h5555, "bank1[5]");
 
         // ---- different offset within a bank ----
-        set_ctl(16'h0000); win_write(16'd200, 16'h1234);
+        set_ctl(16'h0000); flash_prog(16'd200, 16'h1234);
         win_read(16'd200, v); chk(v, 16'h1234, "bank0[200]");
         win_read(16'd5,   v); chk(v, 16'hAAAA, "bank0[5] intact");
 

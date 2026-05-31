@@ -59,7 +59,7 @@ PS1 itself.
 | MP3 audio descrambler          | `rtl/k573_mp3dec.v`   | ✅ implemented + tested |
 | MP3 streaming controller       | `rtl/k573_mp3stream.v`| ✅ implemented + tested |
 | ATAPI task-file + PACKET + READ | `rtl/atapi.v`        | ✅ subset impl + tested |
-| Bank-switched flash window     | `rtl/s573_flash.v`    | ✅ banking impl + tested |
+| Bank-switched flash (NOR-backed) | `rtl/s573_flash.v`  | ✅ banking impl + tested |
 | NOR flash command engine       | `rtl/flash_nor.v`     | ✅ implemented + tested |
 | Security-cartridge bus glue    | `rtl/s573_seccart.v`  | ✅ implemented + tested |
 | PS1 CPU/GPU/SPU subsystem      | `rtl/ps1_stub.v`      | 🔌 integration stub     |
