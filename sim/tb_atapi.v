@@ -1,0 +1,89 @@
+`timescale 1ns/1ps
+// Testbench for atapi.v - drives the ATAPI device like the 573 IDE host:
+// checks the power-on ATAPI signature, runs a non-data PACKET command
+// (TEST UNIT READY), runs a PIO data-in PACKET command (INQUIRY) and verifies
+// the returned bytes, and checks INTRQ assertion / clear-on-status-read.
+module tb_atapi;
+    reg        clk = 0, rst = 1;
+    reg        sel = 0, we = 0, re = 0;
+    reg [3:0]  addr = 0;
+    reg [15:0] din = 0;
+    wire [15:0] dout;
+    wire        intrq;
+    integer errors = 0;
+
+    atapi dut (.clk(clk), .rst(rst), .sel(sel), .addr(addr), .we(we), .re(re),
+               .din(din), .dout(dout), .intrq(intrq));
+
+    always #5 clk = ~clk;
+
+    task io_write(input [3:0] a, input [15:0] d);
+        begin @(negedge clk); sel=1; we=1; addr=a; din=d; @(negedge clk); sel=0; we=0; end
+    endtask
+    task io_read(input [3:0] a, output [15:0] d);
+        begin @(negedge clk); sel=1; re=1; addr=a; #1 d=dout; @(negedge clk); sel=0; re=0; end
+    endtask
+    task chk(input [15:0] got, input [15:0] exp, input [199:0] what);
+        begin
+            if (got !== exp) begin
+                $display("FAIL: %0s = %04h (expected %04h)", what, got, exp);
+                errors = errors + 1;
+            end
+        end
+    endtask
+    task send_packet(input [7:0] opcode);
+        integer w; begin
+            io_write(4'd0, {8'h00, opcode});       // word 0 (opcode in low byte)
+            for (w = 0; w < 5; w = w + 1) io_write(4'd0, 16'h0000);
+        end
+    endtask
+
+    reg [15:0] v, word [0:17];
+    reg [7:0]  byte_n;
+    integer i;
+
+    initial begin
+        repeat (4) @(posedge clk); @(negedge clk); rst = 0; @(negedge clk);
+
+        // ---- power-on ATAPI signature ----
+        io_read(4'd2, v); chk(v, 16'h0001, "sig ireason");
+        io_read(4'd3, v); chk(v, 16'h0001, "sig lbalo");
+        io_read(4'd4, v); chk(v, 16'h0014, "sig bclo");
+        io_read(4'd5, v); chk(v, 16'h00EB, "sig bchi");
+
+        // ---- TEST UNIT READY (non-data PACKET command) ----
+        io_write(4'd7, 16'h00A0);                 // PACKET
+        io_read(4'd7, v); chk(v, 16'h0008, "TUR drq");      // DRQ set
+        io_read(4'd2, v); chk(v, 16'h0001, "TUR ireason");  // C/D=1,I/O=0
+        send_packet(8'h00);                        // TEST UNIT READY
+        io_read(4'd7, v); chk(v, 16'h0050, "TUR status");   // DRDY|DSC
+        io_read(4'd2, v); chk(v, 16'h0003, "TUR done ireason");
+
+        // ---- INQUIRY (PIO data-in PACKET command) ----
+        io_write(4'd7, 16'h00A0);
+        send_packet(8'h12);                        // INQUIRY
+        io_read(4'd7, v); chk(v, 16'h0048, "INQ status");   // DRDY|DRQ
+        io_read(4'd2, v); chk(v, 16'h0002, "INQ ireason");  // I/O=1
+        io_read(4'd4, v); chk(v, 16'h0024, "INQ byte count"); // 36 bytes
+
+        for (i = 0; i < 18; i = i + 1) io_read(4'd0, word[i]);
+
+        // first word = {resp[1],resp[0]} = {0x80,0x05}
+        chk(word[0], 16'h8005, "INQ word0");
+        // bytes 8..10 = "KON"
+        chk(word[4], 16'h4F4B, "INQ vendor KO");   // {resp[9]=O, resp[8]=K}
+        chk({8'h00, word[5][7:0]}, 16'h004E, "INQ vendor N");
+
+        io_read(4'd7, v); chk(v, 16'h0050, "INQ done status"); // back to DRDY|DSC
+
+        // ---- INTRQ assert + clear-on-status-read ----
+        io_write(4'd7, 16'h00A0); send_packet(8'h00); // TUR -> completion asserts INTRQ
+        if (intrq !== 1'b1) begin $display("FAIL: intrq not asserted"); errors=errors+1; end
+        io_read(4'd7, v);                              // status read clears it
+        if (intrq !== 1'b0) begin $display("FAIL: intrq not cleared"); errors=errors+1; end
+
+        if (errors == 0) $display("RESULT: PASS (atapi)");
+        else             $display("RESULT: FAIL (atapi, %0d errors)", errors);
+        $finish;
+    end
+endmodule

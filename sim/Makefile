@@ -10,7 +10,7 @@ IVFLAGS := -g2005-sv -Wall
 RTL     := ../rtl
 BUILD   := build
 
-TESTS := watchdog adc0834 m48t58 ds2401 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec s573_bus s573_io system573_top
+TESTS := watchdog adc0834 m48t58 ds2401 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec atapi s573_bus s573_io system573_top
 
 # Per-test RTL dependencies
 SRC_watchdog      := $(RTL)/watchdog.v
@@ -23,6 +23,7 @@ SRC_crc16         := $(RTL)/crc16.v
 SRC_zs01          := $(RTL)/zs01.v
 SRC_k573dio       := $(RTL)/k573dio.v $(RTL)/ds2401.v
 SRC_k573_mp3dec   := $(RTL)/k573_mp3dec.v
+SRC_atapi         := $(RTL)/atapi.v
 SRC_s573_bus      := $(RTL)/s573_bus.v
 SRC_s573_io       := $(RTL)/s573_io.v
 SRC_system573_top := $(RTL)/system573_top.v $(RTL)/s573_bus.v $(RTL)/s573_io.v \

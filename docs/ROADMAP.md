@@ -22,7 +22,10 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 - [ ] Map 4 MB main / 2 MB VRAM (the 573's enlarged memories vs. retail PS1)
 
 ## Phase 2 — make it boot
-- [ ] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
+- [~] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
+      - [x] ATA task-file + ATAPI PACKET handshake, non-data + PIO data-in,
+            INTRQ (`rtl/atapi.v`, tested; TUR/INQUIRY/READ CAPACITY)
+      - [ ] Disc model + READ(10/12) streaming from MiSTer DDR3, DMA ch5
 - [ ] Bank-switched flash / PCMCIA backing store via MiSTer's DDR3
 - [ ] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
 - [ ] Get the Konami BIOS to POST and reach the CD boot
