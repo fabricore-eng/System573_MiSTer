@@ -41,9 +41,11 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 - [ ] M48T58 contents / "master calendar" handling
 
 ## Phase 4 — BEMANI Digital I/O board (DDR)
-- [ ] MAS3507D MP3 decoder + DAC path
-- [ ] Encrypted-audio descrambler (key1/key2/key3)
-- [ ] Digital I/O DRAM, light outputs, board DS2401
+- [x] Digital I/O register block (`rtl/k573dio.v`, tested): light outputs,
+      DRAM port (auto-incrementing read/write pointers), MP3 address window,
+      descrambler key1/2/3 latches, board DS2401, ID/status words
+- [ ] MAS3507D MP3 decoder + DAC path (registers stubbed in k573dio)
+- [ ] Encrypted-audio descrambler datapath (key1/key2/key3)
 - [ ] Stream music from CD/flash through the decoder
 
 ## Phase 5 — polish
