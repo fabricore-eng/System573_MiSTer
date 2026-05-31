@@ -76,6 +76,22 @@ module tb_atapi;
 
         io_read(4'd7, v); chk(v, 16'h0050, "INQ done status"); // back to DRDY|DSC
 
+        // ---- READ(10): stream one 2048-byte sector from the disc store ----
+        io_write(4'd7, 16'h00A0);
+        io_write(4'd0, 16'h0028);   // word0: opcode 0x28 (READ(10))
+        io_write(4'd0, 16'h0000);   // LBA[31:16]
+        io_write(4'd0, 16'h0100);   // LBA[15:0] -> pkt[5]=0x01 (sector 1)
+        io_write(4'd0, 16'h0000);
+        io_write(4'd0, 16'h0000);   // transfer length
+        io_write(4'd0, 16'h0000);   // -> dispatch
+        io_read(4'd7, v); chk(v, 16'h0048, "READ status");      // DRDY|DRQ
+        io_read(4'd5, v); chk(v, 16'h0008, "READ byte count hi"); // 0x0800 = 2048
+        // disc[i] = i & 0xff ; sector 1 starts at byte 2048
+        for (i = 0; i < 8; i = i + 1) begin
+            io_read(4'd0, v);
+            chk(v, {((2048+2*i+1) & 8'hff), ((2048+2*i) & 8'hff)}, "READ data");
+        end
+
         // ---- INTRQ assert + clear-on-status-read ----
         io_write(4'd7, 16'h00A0); send_packet(8'h00); // TUR -> completion asserts INTRQ
         if (intrq !== 1'b1) begin $display("FAIL: intrq not asserted"); errors=errors+1; end

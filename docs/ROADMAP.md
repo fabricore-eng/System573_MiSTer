@@ -27,7 +27,8 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 - [~] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
       - [x] ATA task-file + ATAPI PACKET handshake, non-data + PIO data-in,
             INTRQ (`rtl/atapi.v`, tested; TUR/INQUIRY/READ CAPACITY)
-      - [ ] Disc model + READ(10/12) streaming from MiSTer DDR3, DMA ch5
+      - [x] READ(10)/READ(12) sector streaming from a backing disc store (tested)
+      - [ ] Back the disc store with a real CD image in MiSTer DDR3; DMA ch5
 - [~] Bank-switched flash / PCMCIA backing store via MiSTer's DDR3
       - [x] Bank-switch control register + windowed banking (`rtl/s573_flash.v`,
             tested); NOR program/erase command FSM + DDR3 backing still to do

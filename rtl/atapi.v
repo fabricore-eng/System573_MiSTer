@@ -21,7 +21,9 @@
 //
 // Verilog-2005. Released under the GNU GPL v2.
 // -----------------------------------------------------------------------------
-module atapi (
+module atapi #(
+    parameter integer NSECT = 4          // disc sectors backed for simulation
+)(
     input  wire        clk,
     input  wire        rst,
 
@@ -45,18 +47,21 @@ module atapi (
     reg [7:0] r_error, r_feat, r_ireason, r_lbalo, r_bclo, r_bchi, r_device, r_status, r_devctl;
     reg [1:0] state;
 
-    reg [7:0] pkt  [0:11];
-    reg [7:0] resp [0:63];
-    reg [6:0] pkt_idx;       // bytes received (0..12)
-    reg [6:0] ridx;          // data-in byte index
-    reg [6:0] resp_len;
-    reg       irq_pending;
+    reg [7:0]  pkt  [0:11];
+    reg [7:0]  resp [0:63];
+    reg [6:0]  pkt_idx;       // bytes received (0..12)
+    reg [12:0] ridx;          // data-in byte index
+    reg [12:0] resp_len;
+    reg        irq_pending;
+    reg        datain_disc;   // data-in source: 1 = disc store, 0 = resp[]
+    reg [12:0] disc_base;     // byte base into the disc store for READ commands
+
+    // small disc backing store (sim) with a deterministic per-byte pattern
+    reg [7:0]  disc [0:NSECT*2048-1];
+    integer    s;
+    initial for (s = 0; s < NSECT*2048; s = s + 1) disc[s] = s[7:0];
 
     assign intrq = irq_pending & ~r_devctl[1];   // nIEN = device control bit1
-
-    function [15:0] dataword(input [6:0] idx);
-        dataword = {resp[idx+1], resp[idx]};     // little-endian byte order
-    endfunction
 
     // load the ATAPI device signature into the task-file
     task set_signature;
@@ -73,7 +78,7 @@ module atapi (
     always @(posedge clk) begin
         if (rst) begin
             state <= S_IDLE; pkt_idx <= 0; ridx <= 0; resp_len <= 0;
-            irq_pending <= 1'b0; r_feat <= 0; r_devctl <= 0;
+            irq_pending <= 1'b0; r_feat <= 0; r_devctl <= 0; datain_disc <= 1'b0;
             set_signature;
         end else begin
             if (sel && we) begin
@@ -106,7 +111,8 @@ module atapi (
                                           resp[34]<=8'h30; resp[35]<=8'h30;                 // "00"
                                           n = 7'd36;
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; r_status <= ST_DRDY | ST_DRQ;
+                                          ridx <= 0; datain_disc <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ;
                                           r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; state <= S_DATAIN;
                                       end
@@ -115,7 +121,19 @@ module atapi (
                                           resp[4]<=8'h00; resp[5]<=8'h00; resp[6]<=8'h08; resp[7]<=8'h00;
                                           n = 7'd8;
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; r_status <= ST_DRDY | ST_DRQ;
+                                          ridx <= 0; datain_disc <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ;
+                                          r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN;
+                                      end
+                                      8'h28, 8'hA8: begin       // READ(10) / READ(12) (disc data-in)
+                                          // LBA in pkt[2..5] (big-endian); one
+                                          // 2048-byte sector streamed per request.
+                                          disc_base <= {pkt[5][$clog2(NSECT)-1:0], 11'd0};
+                                          resp_len  <= 13'd2048;
+                                          r_bclo <= 8'h00; r_bchi <= 8'h08; // 0x0800
+                                          ridx <= 0; datain_disc <= 1'b1;
+                                          r_status <= ST_DRDY | ST_DRQ;
                                           r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; state <= S_DATAIN;
                                       end
@@ -166,13 +184,13 @@ module atapi (
                 if (addr == 4'd7)                                // status read clears INTRQ
                     irq_pending <= 1'b0;
                 if (addr == 4'd0 && state == S_DATAIN) begin     // data-in transfer
-                    if (ridx + 7'd2 >= resp_len) begin           // last word -> complete
+                    if (ridx + 13'd2 >= resp_len) begin          // last word -> complete
                         r_status  <= ST_DRDY | ST_DSC;
                         r_ireason <= IR_CD | IR_IO;
                         irq_pending <= 1'b1;
                         state <= S_IDLE;
                     end else
-                        ridx <= ridx + 7'd2;
+                        ridx <= ridx + 13'd2;
                 end
             end
         end
@@ -181,7 +199,9 @@ module atapi (
     // read mux
     always @(*) begin
         case (addr)
-            4'd0:    dout = (state == S_DATAIN) ? dataword(ridx) : 16'h0000;
+            4'd0:    dout = (state != S_DATAIN) ? 16'h0000 :
+                            datain_disc ? {disc[disc_base + ridx + 13'd1], disc[disc_base + ridx]}
+                                        : {resp[ridx[5:0] + 6'd1], resp[ridx[5:0]]};
             4'd1:    dout = {8'h00, r_error};
             4'd2:    dout = {8'h00, r_ireason};
             4'd3:    dout = {8'h00, r_lbalo};
