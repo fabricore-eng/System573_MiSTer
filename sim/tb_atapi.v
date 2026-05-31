@@ -12,7 +12,8 @@ module tb_atapi;
     wire        intrq;
     integer errors = 0;
 
-    atapi dut (.clk(clk), .rst(rst), .sel(sel), .addr(addr), .we(we), .re(re),
+    atapi dut (.clk(clk), .rst(rst), .ide_rst(1'b0),
+               .sel(sel), .addr(addr), .we(we), .re(re),
                .din(din), .dout(dout), .intrq(intrq));
 
     always #5 clk = ~clk;

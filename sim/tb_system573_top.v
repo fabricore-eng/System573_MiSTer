@@ -94,6 +94,9 @@ module tb_system573_top;
         if (r[7:0] !== 8'h01) begin $display("FAIL: atapi sig reg2 %02h", r[7:0]); errors=errors+1; end
         exp1_read(24'h48000a, r);           // byte count high (signature 0xEB)
         if (r[7:0] !== 8'hEB) begin $display("FAIL: atapi sig reg5 %02h", r[7:0]); errors=errors+1; end
+        exp1_write(24'h560000, 16'h0000);   // IDE reset -> device signature reloads
+        exp1_read(24'h480004, r);
+        if (r[7:0] !== 8'h01) begin $display("FAIL: atapi after ide-reset %02h", r[7:0]); errors=errors+1; end
 
         // 3d) Digital I/O lamp output through the fabric.
         exp1_write(24'h6400e2, 16'hA000);   // output register 0

@@ -26,6 +26,7 @@ module atapi #(
 )(
     input  wire        clk,
     input  wire        rst,
+    input  wire        ide_rst,     // board IDE reset line (0x1f560000)
 
     input  wire        sel,         // command-block / control select
     input  wire [3:0]  addr,        // 0..7 command block, 8 = control block
@@ -76,7 +77,7 @@ module atapi #(
     reg [6:0] n;
 
     always @(posedge clk) begin
-        if (rst) begin
+        if (rst || ide_rst) begin
             state <= S_IDLE; pkt_idx <= 0; ridx <= 0; resp_len <= 0;
             irq_pending <= 1'b0; r_feat <= 0; r_devctl <= 0; datain_disc <= 1'b0;
             set_signature;

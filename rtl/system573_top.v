@@ -111,7 +111,7 @@ module system573_top #(
     wire        atapi_sel = sel_ide0 | sel_ide1;
     wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
     atapi u_atapi (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
         .din(exp1_wdata), .dout(atapi_dout), .intrq(cdrom_irq)
