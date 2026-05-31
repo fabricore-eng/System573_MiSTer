@@ -29,7 +29,7 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 
 ## Phase 3 — security & per-game
 - [x] Security cart EEPROM: X76F100 bit-banged I2C (`rtl/x76f100.v`, tested)
-- [ ] Security cart EEPROM: X76F041 bit-banged I2C
+- [x] Security cart EEPROM: X76F041 bit-banged I2C (`rtl/x76f041.v`, tested)
 - [ ] ZS01 (NS2K001) obfuscated + CRC16 protocol
 - [ ] Per-game DS2401 serials + installation cart handling
 - [ ] M48T58 contents / "master calendar" handling
