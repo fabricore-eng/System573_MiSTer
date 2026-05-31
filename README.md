@@ -53,6 +53,7 @@ PS1 itself.
 | X76F100 security EEPROM        | `rtl/x76f100.v`       | ✅ implemented + tested |
 | X76F041 security EEPROM        | `rtl/x76f041.v`       | ✅ implemented + tested |
 | CRC-16/CCITT engine (ZS01)     | `rtl/crc16.v`         | ✅ implemented + tested |
+| ZS01 (NS2K001) security PIC    | `rtl/zs01.v`          | ✅ implemented + tested |
 | PS1 CPU/GPU/SPU subsystem      | `rtl/ps1_stub.v`      | 🔌 integration stub     |
 | MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold      |
 | MAS3507D MP3 / Digital I/O     | —                     | 📋 documented, not impl |
