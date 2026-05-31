@@ -60,7 +60,9 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       descrambler key1/2/3 latches, board DS2401, ID/status words
 - [x] Encrypted-audio descrambler datapath (`rtl/k573_mp3dec.v`, tested):
       both schemes (default + DDR SBM) with the running key schedule
-- [ ] MAS3507D MP3 decoder + DAC path (I2C/decoder still stubbed in k573dio)
+- [x] MP3 streaming controller (`rtl/k573_mp3stream.v`, tested): reads board
+      DRAM start..end, descrambles, emits the MP3 byte stream + FPGA status
+- [ ] MAS3507D MP3 decoder + DAC path (the MP3->PCM decode itself; I2C stubbed)
 - [ ] Stream music from CD/flash through the descrambler into the decoder
 
 ## Phase 5 — polish
