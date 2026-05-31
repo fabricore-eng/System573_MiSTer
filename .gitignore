@@ -1,0 +1,21 @@
+# Simulation artifacts
+sim/build/
+*.vvp
+*.vcd
+
+# Quartus build output
+output_files/
+db/
+incremental_db/
+*.qws
+*.rpt
+*.summary
+*.pof
+*.sof
+*.jdi
+*.pin
+*.done
+
+# Editor / OS
+*.swp
+.DS_Store

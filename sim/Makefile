@@ -1,0 +1,55 @@
+# System 573 core - RTL unit test runner (Icarus Verilog)
+#
+#   make            run every testbench
+#   make ds2401     run a single module's testbench
+#   make clean
+
+IV      := iverilog
+VVP     := vvp
+IVFLAGS := -g2005-sv -Wall
+RTL     := ../rtl
+BUILD   := build
+
+TESTS := watchdog adc0834 m48t58 ds2401 s573_bus s573_io system573_top
+
+# Per-test RTL dependencies
+SRC_watchdog      := $(RTL)/watchdog.v
+SRC_adc0834       := $(RTL)/adc0834.v
+SRC_m48t58        := $(RTL)/m48t58.v
+SRC_ds2401        := $(RTL)/ds2401.v
+SRC_s573_bus      := $(RTL)/s573_bus.v
+SRC_s573_io       := $(RTL)/s573_io.v
+SRC_system573_top := $(RTL)/system573_top.v $(RTL)/s573_bus.v $(RTL)/s573_io.v \
+                     $(RTL)/watchdog.v $(RTL)/adc0834.v $(RTL)/m48t58.v $(RTL)/ds2401.v
+
+.PHONY: all clean $(TESTS)
+
+all:
+	@fail=0; \
+	for t in $(TESTS); do \
+	  $(MAKE) -s $$t || fail=1; \
+	done; \
+	echo "-----------------------------------------"; \
+	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; \
+	else echo "SOME TESTS FAILED"; exit 1; fi
+
+# Template: compile tb_<name>.v + SRC_<name>, run, require "RESULT: PASS".
+define RUN_TEST
+$(1): | $(BUILD)
+	@$(IV) $(IVFLAGS) -o $(BUILD)/$(1).vvp $(SRC_$(1)) tb_$(1).v 2> $(BUILD)/$(1).log; \
+	out=$$$$($(VVP) $(BUILD)/$(1).vvp 2>> $(BUILD)/$(1).log); \
+	echo "$$$$out" | grep -q "RESULT: PASS"; \
+	if [ $$$$? -eq 0 ]; then \
+	  echo "  PASS  $(1)"; \
+	else \
+	  echo "  FAIL  $(1)"; echo "$$$$out" | sed 's/^/        /'; \
+	  echo "        (compile log: $(BUILD)/$(1).log)"; exit 1; \
+	fi
+endef
+$(foreach t,$(TESTS),$(eval $(call RUN_TEST,$(t))))
+
+$(BUILD):
+	@mkdir -p $(BUILD)
+
+clean:
+	@rm -rf $(BUILD)

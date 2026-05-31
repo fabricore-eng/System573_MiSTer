@@ -1,0 +1,28 @@
+# =============================================================================
+# Konami System 573 - Quartus project (MiSTer / DE10-Nano, Cyclone V)
+#
+# This is the standard MiSTer core project skeleton. The actual pin assignments,
+# the sys framework sources and the build flow come from sys/sys.qsf, which is
+# part of the MiSTer framework (see sys/README.md). Building requires that the
+# `sys` submodule be present.
+# =============================================================================
+
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY emu
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0.2
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+
+set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 6
+
+# Core RTL
+set_global_assignment -name QIP_FILE files.qip
+
+# MiSTer framework (provided by the sys submodule; see sys/README.md)
+# set_global_assignment -name QIP_FILE sys/sys.qip
+# set_global_assignment -name SDC_FILE sys/sys.sdc
+
+set_global_assignment -name SDC_FILE Konami_System_573.sdc
+
+set_global_assignment -name SEARCH_PATH rtl
