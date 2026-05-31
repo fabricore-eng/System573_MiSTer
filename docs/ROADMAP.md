@@ -42,6 +42,8 @@ open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
             to MAME's zs01.cpp; round-trip verified in sim)
       - [ ] Stretch: exercise the optional data-key (command bit2) descramble
             layer in the testbench (implemented, currently unexercised)
+- [x] Security-cartridge bus glue (`rtl/s573_seccart.v`, tested): D0-D7 latch
+      -> EEPROM SDA/SCL/CS/RST + board DS2401, IO0/I0 read-back
 - [ ] Per-game DS2401 serials + installation cart handling
 - [ ] M48T58 contents / "master calendar" handling
 
