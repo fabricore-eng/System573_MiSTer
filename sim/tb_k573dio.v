@@ -16,15 +16,38 @@ module tb_k573dio;
     wire [15:0] crypto_key1, crypto_key2, crypto_key3;
     wire [31:0] mp3_start, mp3_end;
     wire [15:0] fpga_ctrl, network_id;
+    wire [7:0]  mp3_out_byte;
+    wire        mp3_out_valid;
     integer errors = 0;
 
-    k573dio #(.RAM_WORDS(4096), .DS_SERIAL(DS_SERIAL), .DS_CLK_HZ(1_000_000)) dut (
+    k573dio #(.RAM_WORDS(4096), .DS_SERIAL(DS_SERIAL), .DS_CLK_HZ(1_000_000), .DDRSBM(1'b0)) dut (
         .clk(clk), .rst(rst), .sel(sel), .off(off), .we(we), .re(re),
         .din(din), .dout(dout), .lamp(lamp),
         .crypto_key1(crypto_key1), .crypto_key2(crypto_key2), .crypto_key3(crypto_key3),
         .mp3_start(mp3_start), .mp3_end(mp3_end),
-        .fpga_ctrl(fpga_ctrl), .network_id(network_id)
+        .fpga_ctrl(fpga_ctrl), .network_id(network_id),
+        .mp3_out_byte(mp3_out_byte), .mp3_out_valid(mp3_out_valid)
     );
+
+    // descramble reference (mirrors k573_mp3dec) for the streaming check
+    function [15:0] r_common(input [15:0] data, input [15:0] key);
+        integer i; reg [15:0] d; begin
+            d = 16'd0;
+            for (i=0;i<8;i=i+1)
+                if (key[2*i+1]) begin d[2*i]=data[2*i+1]; d[2*i+1]=data[2*i]; end
+                else            begin d[2*i]=data[2*i];   d[2*i+1]=data[2*i+1]; end
+            r_common = d ^ (key & 16'h5555); end
+    endfunction
+    function [15:0] r_derive(input [15:0] s); reg [15:0] r; begin
+        r=s; r[14]=s[13]; r[13]=s[14]; r[8]=s[7]; r[7]=s[8]; r[2]=s[1]; r[1]=s[2]; r_derive=r; end
+    endfunction
+    function [15:0] r_spread(input [15:0] k); reg [15:0] r; begin
+        r[15]=k[7];r[14]=k[0];r[13]=k[6];r[12]=k[1];r[11]=k[5];r[10]=k[2];r[9]=k[4];r[8]=k[3];
+        r[7]=k[3];r[6]=k[4];r[5]=k[2];r[4]=k[5];r[3]=k[1];r[2]=k[6];r[1]=k[0];r[0]=k[7]; r_spread=r; end
+    endfunction
+    reg [7:0]  sgot [0:7];
+    integer    sgi = 0;
+    always @(posedge clk) if (!rst && mp3_out_valid) begin sgot[sgi]=mp3_out_byte; sgi=sgi+1; end
 
     always #5 clk = ~clk;
     task wait_us(input integer n); begin repeat (n) @(posedge clk); end endtask
@@ -82,6 +105,9 @@ module tb_k573dio;
     reg [15:0] v;
     reg [63:0] rom, exprom;
     reg        bit_v;
+    reg [15:0] sk1, sk2, sk3, dk, dval;
+    reg [15:0] smem [0:3];
+    reg [7:0]  sexp [0:7];
 
     initial begin
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; wait_us(5);
@@ -107,8 +133,6 @@ module tb_k573dio;
         if (crypto_key1 !== 16'hAAAA) begin $display("FAIL: key1"); errors=errors+1; end
         if (crypto_key2 !== 16'hBBBB) begin $display("FAIL: key2"); errors=errors+1; end
         if (crypto_key3 !== 16'hCCCC) begin $display("FAIL: key3"); errors=errors+1; end
-        bus_write(8'hae, 16'h00F0);
-        bus_read(8'hae, v); chk(v, 16'h00F0, "fpga_ctrl");
         bus_write(8'h90, 16'h4321);
         if (network_id !== 16'h4321) begin $display("FAIL: network_id"); errors=errors+1; end
 
@@ -138,6 +162,35 @@ module tb_k573dio;
             $display("FAIL: ds2401 ROM %016h (expected %016h)", rom, exprom);
             errors = errors + 1;
         end
+
+        // ---- MP3 streaming through the board: DRAM -> descramble -> byte stream ----
+        bus_write(8'ha8, 16'h1357); bus_write(8'hea, 16'h2468); bus_write(8'hec, 16'h9BDF); // keys
+        bus_write(8'ha0, 16'h0000); bus_write(8'ha2, 16'h0000);   // mp3_start = 0
+        bus_write(8'ha4, 16'h0000); bus_write(8'ha6, 16'h0008);   // mp3_end   = 8 (4 words)
+        bus_write(8'hb0, 16'h0000); bus_write(8'hb2, 16'h0000);   // DRAM write ptr = 0
+        bus_write(8'hb4, 16'h1234); bus_write(8'hb4, 16'h5678);
+        bus_write(8'hb4, 16'h9ABC); bus_write(8'hb4, 16'hDEF0);   // scrambled words
+        // reference descramble (default scheme, running key schedule)
+        sk1 = 16'h1357; sk2 = 16'h2468; sk3 = 16'h9BDF;
+        smem[0]=16'h1234; smem[1]=16'h5678; smem[2]=16'h9ABC; smem[3]=16'hDEF0;
+        for (i = 0; i < 4; i = i + 1) begin
+            dk   = r_derive(sk1 ^ sk2);
+            dval = r_common(smem[i], dk) ^ r_spread(sk3);
+            sexp[2*i]   = dval[15:8];
+            sexp[2*i+1] = dval[7:0];
+            if (sk1[14]^sk1[15]) sk2 = {sk2[14:0], sk2[15]};
+            sk1 = {sk1[15], sk1[13:0], sk1[14]};
+            sk3 = sk3 + 16'd1;
+        end
+        sgi = 0;
+        bus_write(8'hae, 16'h6000);          // MP3_ENABLE | STREAMING_ENABLE
+        repeat (50) @(posedge clk);
+        if (sgi !== 8) begin $display("FAIL: streamed %0d bytes (expected 8)", sgi); errors=errors+1; end
+        for (i = 0; i < 8 && i < sgi; i = i + 1)
+            if (sgot[i] !== sexp[i]) begin
+                $display("FAIL: mp3 byte[%0d]=%02h expected %02h", i, sgot[i], sexp[i]); errors=errors+1;
+            end
+        bus_read(8'hae, v); chk(v, 16'h0000, "fpga_ctrl after stream"); // not streaming
 
         if (errors == 0) $display("RESULT: PASS (k573dio)  ds2401=%016h", rom);
         else             $display("RESULT: FAIL (k573dio, %0d errors)", errors);

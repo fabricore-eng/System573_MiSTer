@@ -44,7 +44,9 @@ module system573_top #(
     output wire        spu_dac_en,
     output wire        wdog_reset,      // watchdog bite (board reset request)
     output wire        cdrom_irq,       // ATAPI INTRQ (IRQ10)
-    output wire [31:0] lamp_out         // BEMANI Digital I/O lamp lines
+    output wire [31:0] lamp_out,        // BEMANI Digital I/O lamp lines
+    output wire [7:0]  dio_mp3_byte,    // descrambled MP3 byte stream -> MAS3507D
+    output wire        dio_mp3_valid
 );
     wire access = exp1_we | exp1_re;
 
@@ -123,7 +125,8 @@ module system573_top #(
         .we(sel_digio & exp1_we), .re(sel_digio & exp1_re),
         .din(exp1_wdata), .dout(digio_dout), .lamp(lamp_out),
         .crypto_key1(), .crypto_key2(), .crypto_key3(),
-        .mp3_start(), .mp3_end(), .fpga_ctrl(), .network_id()
+        .mp3_start(), .mp3_end(), .fpga_ctrl(), .network_id(),
+        .mp3_out_byte(dio_mp3_byte), .mp3_out_valid(dio_mp3_valid)
     );
 
     // --- M48T58 RTC + NVRAM ---

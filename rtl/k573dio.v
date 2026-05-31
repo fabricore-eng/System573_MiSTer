@@ -34,7 +34,8 @@
 module k573dio #(
     parameter integer RAM_WORDS  = 4096,                 // sim-sized DRAM window
     parameter [47:0]  DS_SERIAL  = 48'h0000_0000_0001,   // board DS2401 serial
-    parameter integer DS_CLK_HZ  = 1_000_000
+    parameter integer DS_CLK_HZ  = 1_000_000,
+    parameter [0:0]   DDRSBM     = 1'b0                   // MP3 descramble scheme
 )(
     input  wire        clk,
     input  wire        rst,
@@ -55,7 +56,11 @@ module k573dio #(
     output reg  [31:0] mp3_start,    // MP3 data window in board DRAM
     output reg  [31:0] mp3_end,
     output reg  [15:0] fpga_ctrl,
-    output reg  [15:0] network_id
+    output reg  [15:0] network_id,
+
+    // descrambled MP3 byte stream out to the MAS3507D decoder
+    output wire [7:0]  mp3_out_byte,
+    output wire        mp3_out_valid
 );
     // ----- board DS2401 (1-wire), driven through register 0xee bit 12 -----
     reg         ow_master_low;
@@ -71,6 +76,20 @@ module k573dio #(
     reg [24:0] ram_read_adr;   // read pointer
     wire [24:0] widx = (ram_adr      >> 1) & (RAM_WORDS-1);
     wire [24:0] ridx = (ram_read_adr >> 1) & (RAM_WORDS-1);
+
+    // ----- MP3 streaming: read DRAM, descramble, emit bytes to the MAS3507D -----
+    wire [24:0] s_rd_addr;
+    wire [15:0] s_rd_data = ram[(s_rd_addr >> 1) & (RAM_WORDS-1)];
+    wire [15:0] fpga_ctrl_rb;
+    k573_mp3stream u_stream (
+        .clk(clk), .rst(rst),
+        .fpga_ctrl(fpga_ctrl), .ddrsbm(DDRSBM),
+        .mp3_start(mp3_start[24:0]), .mp3_end(mp3_end[24:0]),
+        .key1(crypto_key1), .key2(crypto_key2), .key3(crypto_key3),
+        .rd_addr(s_rd_addr), .rd_data(s_rd_data),
+        .out_byte(mp3_out_byte), .out_valid(mp3_out_valid),
+        .byte_counter(), .fpga_ctrl_rb(fpga_ctrl_rb)
+    );
 
     // fan a lamp register's high nibble out to four lamp lines (remap {0,2,3,1})
     task set_lamp(input [2:0] offs, input [15:0] d);
@@ -132,7 +151,7 @@ module k573dio #(
             8'ha2:   dout = mp3_start[15:0];
             8'ha4:   dout = mp3_end[31:16];
             8'ha6:   dout = mp3_end[15:0];
-            8'hae:   dout = fpga_ctrl;
+            8'hae:   dout = fpga_ctrl_rb;    // get_fpga_ctrl: streaming status (bit 12)
             8'hb4:   dout = ram[ridx];
             8'hee:   dout = {3'b000, ow_line, 12'b0};
             8'hf6:   dout = 16'hB000;        // FPGA status (0x8000|0x2000|0x1000)

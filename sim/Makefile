@@ -21,7 +21,7 @@ SRC_x76f100       := $(RTL)/x76f100.v
 SRC_x76f041       := $(RTL)/x76f041.v
 SRC_crc16         := $(RTL)/crc16.v
 SRC_zs01          := $(RTL)/zs01.v
-SRC_k573dio       := $(RTL)/k573dio.v $(RTL)/ds2401.v
+SRC_k573dio       := $(RTL)/k573dio.v $(RTL)/ds2401.v $(RTL)/k573_mp3stream.v $(RTL)/k573_mp3dec.v
 SRC_k573_mp3dec   := $(RTL)/k573_mp3dec.v
 SRC_k573_mp3stream := $(RTL)/k573_mp3stream.v $(RTL)/k573_mp3dec.v
 SRC_atapi         := $(RTL)/atapi.v
@@ -33,7 +33,7 @@ SRC_s573_io       := $(RTL)/s573_io.v
 SRC_system573_top := $(RTL)/system573_top.v $(RTL)/s573_bus.v $(RTL)/s573_io.v \
                      $(RTL)/watchdog.v $(RTL)/adc0834.v $(RTL)/m48t58.v $(RTL)/ds2401.v \
                      $(RTL)/s573_flash.v $(RTL)/s573_seccart.v $(RTL)/x76f100.v \
-                     $(RTL)/atapi.v $(RTL)/k573dio.v
+                     $(RTL)/atapi.v $(RTL)/k573dio.v $(RTL)/k573_mp3stream.v $(RTL)/k573_mp3dec.v
 
 .PHONY: all clean $(TESTS)
 
