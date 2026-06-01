@@ -77,15 +77,27 @@ The framebuffer is still black (no draw yet) — the boot hasn't reached the dra
 > timing/clobbering, not the conclusion. Always run single-writer to `build/`.
 
 **Next (Phase 3 — to the boot screen):**
-1. **Sim speed is the sole gate.** The boot is dominated by *uncached* (KSEG1) memory work —
-   the 4 MB RAM test, the BSS/runtime clears, and the runtime copies — each access paying the
-   SDRAM model's latency (~hundreds of core cycles; TURBO only helps *cached* accesses, so it
-   barely moves the boot). The `~36 KB` copy at `0x4D4` alone is most of a 150 ms run. To get
-   past the copies to the drawing stage in tractable sim: reduce the SDRAM-model latency for
-   bring-up (carefully — the core's cache/DMA timing assumes the model's `done` cadence), or
-   run the boot once long and check-point via the PSX core's savestate for fast iteration.
-   (`ddrram_model` `SLOWTIMING=0` separately speeds the GPU VRAM path, relevant once drawing
-   starts.)
+1. **Sim speed.** The boot is dominated by *uncached* (KSEG1) execution — the 4 MB RAM test,
+   the BSS/runtime clears, and the runtime copies. **Measured finding (2026-06-01): the
+   bottleneck is the PSX core's per-uncached-access pipeline cost (~33 clk1x/access), NOT the
+   SDRAM sim-model latency.** A FASTTIMING spike on `sdram_model3x` (seed the data-ready shift
+   at bit 8 not 10 + a short `STATE_IDLE_3` walk, cutting model occupancy ~12→~6 clk3x) moved
+   boot progress by only **~6%** (FAST `bios_reads`/sim-ms ≈ slow ≈ 1000) — the model's
+   `ram_done` is only ~4 of the ~33 clk1x/access; the rest is CPU/memorymux FSM. TURBO only
+   helps *cached* accesses, and the BIOS read path (`memorymux` `READBIOS`, which waits on
+   `ram_done`) has **no TURBO bypass** — but compressing `ram_done` barely helps because it
+   isn't the dominant term. So **sim-model timing tweaks won't move the boot** (FASTTIMING was
+   tried and abandoned). The real levers, in order of value:
+   - **(a) savestate-checkpoint** the boot once past the copy and iterate from there — the right
+     tool given ~6 s wall-clock per sim-ms (see `local/wf_out/phase3_simspeed_analysis.json`
+     "A4"; medium effort, watch the FASTSIM-skips-RAM trap).
+   - **(b) shortcut more uncached BIOS phases** like `FAST_RAMTEST` already does. The **BSS
+     clear is redundant in sim** (`sdram_model3x.data` is 0-initialised) so it can be safely
+     skipped (~10%); the BIOS→RAM **copy cannot** (it sets up the cached code the BIOS then
+     runs).
+   - **(c) just run long** — past the copy the BIOS runs *cached* (fast in sim), so drawing
+     follows the copy without much extra sim-time. A single long run reaches the framebuffer.
+   (`ddrram_model SLOWTIMING=0` separately speeds the GPU VRAM path once drawing starts.)
 2. Once past the copies, grow the VHDL EXP1 responder's read values as the BIOS reaches any
    security/RTC/ASIC polls (so far only the watchdog is touched; the GPUSTAT poll already
    resolves). For confirming exact polled values, add a read-completion-timed data tap — the
