@@ -360,8 +360,9 @@ begin
       -- is unpinned, but is_simu='0' is NOT a safe sim-speed lever despite looking like
       -- one in static analysis. (Disabling it would only remove R:\debug_*_sim.txt
       -- writers, which are negligible wall-clock anyway: they write per retired
-      -- instruction and the uncached boot retires slowly. The real lever is SDRAM
-      -- timing -- see psx_patches FASTTIMING.)
+      -- instruction and the uncached boot retires slowly. The real sim-speed lever
+      -- is reducing the SDRAM model's per-access latency -- see sim/system573/
+      -- README.md, Phase-3 "Next" item 1.)
       is_simu               => '1'
    )
    port map

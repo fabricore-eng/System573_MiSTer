@@ -39,8 +39,11 @@ TURBO="${TURBO:-1}"
 FAST_RAMTEST="${FAST_RAMTEST:-1}"
 # REUSE=1: skip the (idempotent) patch-apply + analyze + elaborate and just re-run
 # the design already built in build/ with a (possibly different) STOP_TIME -- seconds
-# instead of minutes. Valid ONLY after a cold build (REUSE unset); rebuild (drop
-# REUSE) whenever the BIOS, FAST_RAMTEST, the harness taps, or any RTL changes.
+# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/
+# FAST_RAMTEST and the harness taps/RTL are FIXED at the cached build's values under
+# REUSE (the args/env that select them only affect elaboration); rebuild (drop REUSE)
+# to change any of them. (Without --ignore-time, NVC still warns if a source is newer
+# than the elaborated design -- the safety net for a forgotten rebuild.)
 REUSE="${REUSE:-0}"
 BIOS_SRC="$ROOT/dumps/bios/700a01(gchgchmp).22g"
 
@@ -65,6 +68,7 @@ if [ "$REUSE" = "1" ]; then
     exit 1; }
   cd "$WD"
   echo "== REUSE=1: skipping patch/analyze/elaborate; reusing $WD =="
+  echo "   (RAM8MB/TURBO/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
 else
 
 # Ensure the GPL-isolated psx/ edits (EXP1 widening) are applied.
@@ -126,7 +130,7 @@ $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 --stats -gRAM8MB="'$RA
 fi   # end of build (REUSE=0 path)
 
 echo "== running tb_system573 (stop-time=$STOP_TIME, reuse=$REUSE) =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" --ignore-time -r tb_system573 --stats --stop-time="$STOP_TIME"
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -r tb_system573 --stats --stop-time="$STOP_TIME"
 
 echo
 echo "== outputs in $WD =="
