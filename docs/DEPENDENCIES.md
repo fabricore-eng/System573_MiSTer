@@ -49,9 +49,13 @@ The `.rbf` needs x86-64 Quartus Prime Lite 17.0.x (Cyclone V `5CSEBA6U23I7`); th
 MiSTer's ARM CPU can't build it. The builder is **this Mac**, running an amd64 Quartus
 container under **Colima + Apple-Virtualization + Rosetta**. This is set up and proven:
 `raetro/quartus:17.0` (17.1 GB, bundles **Quartus 17.0.2 Build 602 Lite** + Cyclone V —
-no Intel-login installer needed) is pulled into the VM, and `quartus_sh` was confirmed
-running under Rosetta (~4 s for `--version`) with the repo mounting cleanly via virtiofs.
-The VM is currently **stopped** to free RAM — `colima start` before building.
+no Intel-login installer needed) is pulled into the VM. A **full compile was validated
+end-to-end under Rosetta**: a minimal design targeting the DE10-Nano part
+`5CSEBA6U23I7` ran the complete flow — Analysis & Synthesis → **Fitter** (placement +
+routing, the mmap-heavy stage where Rosetta bugs would surface) → Assembler → and then
+`quartus_cpf` `.sof`→`.rbf` — producing a real `.sof` and loadable `.rbf`, 0 errors, in
+~70 s. The repo mounts cleanly via virtiofs. The VM is normally **stopped** to free RAM
+— `colima start` before building.
 
 > **CRITICAL arch gotcha (already handled, don't undo it):** this Mac's only Homebrew
 > is the **Intel build under Rosetta** (`/usr/local`, no `/opt/homebrew`), so
