@@ -38,3 +38,6 @@ incremental_db/
 # Full-system sim outputs
 sim/system/out/
 *.rbf
+
+# NVC sim build artifacts
+sim/nvc/build/

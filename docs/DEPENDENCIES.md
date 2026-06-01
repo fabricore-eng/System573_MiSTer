@@ -92,6 +92,29 @@ has rare mmap/glibc edge-case crashes — if Quartus dies oddly, qemu (slow) is 
 fallback. The VM disk size is a hard cap set at `colima start`; the pulled image
 persists across `colima stop`/`start` (only `colima delete` removes it).
 
+## Local PSX-core patches (`psx_patches/`)
+
+`psx/` is a submodule pinned to an upstream SHA we cannot push to, but the 573
+integration *must* edit the PlayStation core (EXP1 routing, later 2 MB VRAM, DMA ch5).
+Those GPL-2.0 edits are kept as **isolated, offer-back-able patch files** under
+`psx_patches/` and (re)applied to the submodule working tree by
+**`tools/apply_psx_patches.sh`** — the submodule pointer never moves. Run it after any
+fresh `git submodule update`, and before the flows that read `psx/`: the **NVC** VHDL
+sim (`sim/nvc/elaborate.sh`) and the **Quartus** `.rbf` build. (The Icarus unit suite,
+`make -C sim`, only compiles the Verilog `rtl/` fabric and does not read `psx/`.)
+
+```sh
+git submodule update --init --recursive
+tools/apply_psx_patches.sh            # apply (idempotent); --check / --revert also supported
+sim/nvc/elaborate.sh                  # reproducible gate: patched PSX core elaborates under NVC
+```
+
+Applied so far: `0001-s573-exp1-widening.patch` — widens the EXP1 path in
+`memorymux.vhd`/`psx_top.vhd`/`psx_mister.vhd` from the upstream read-only 8-bit /
+13-bit-address stub to a full 16-bit master (24-bit address, 16-bit read+write) routed
+to `system573_top`, plus the IRQ10 (`irq_LIGHTPEN`) injection for the 573 ATAPI INTRQ.
+Verified: the patched core analyzes + elaborates clean under NVC (`nvc -e psx_mister`).
+
 ## Build-wiring TODO (Phase 1 — NOT yet applied)
 
 Vendoring is done; the Quartus project is **not** yet wired to the vendored code.

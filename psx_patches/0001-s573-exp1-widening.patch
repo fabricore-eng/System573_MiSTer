@@ -1,0 +1,215 @@
+diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
+index 4c995a5..66255d4 100644
+--- a/rtl/memorymux.vhd
++++ b/rtl/memorymux.vhd
+@@ -55,11 +55,11 @@ entity memorymux is
+       bios_memctrl         : in  unsigned(13 downto 0);
+       
+       ex1_memctrl          : in  unsigned(13 downto 0);
+-      --bus_exp1_addr        : out unsigned(22 downto 0); 
+-      --bus_exp1_dataWrite   : out std_logic_vector(7 downto 0);
++      bus_exp1_addr        : out unsigned(23 downto 0);
++      bus_exp1_dataWrite   : out std_logic_vector(15 downto 0);
+       bus_exp1_read        : out std_logic;
+-      --bus_exp1_write       : out std_logic;
+-      bus_exp1_dataRead    : in  std_logic_vector(7 downto 0);
++      bus_exp1_write       : out std_logic;
++      bus_exp1_dataRead    : in  std_logic_vector(15 downto 0);
+       
+       bus_memc_addr        : out unsigned(5 downto 0); 
+       bus_memc_dataWrite   : out std_logic_vector(31 downto 0);
+@@ -269,7 +269,7 @@ architecture arch of memorymux is
+    signal ext_dataWrite_buf      : std_logic_vector(31 downto 0);
+    signal ext_writeMask_buf      : std_logic_vector(3 downto 0);
+    
+-   signal ext_bus_addr           : unsigned(12 downto 0) := (others => '0'); 
++   signal ext_bus_addr           : unsigned(23 downto 0) := (others => '0'); 
+    
+    signal ext_memctrl            : unsigned(13 downto 0);
+    signal ext_memctrl_WDelay     : unsigned(3 downto 0);
+@@ -947,14 +947,23 @@ begin
+    bus_cd_read       <= '1' when (ext_state = EXT_READ_NEXT and ext_select_cd_saved = '1') else '0';
+    bus_cd_dataWrite  <= ext_dataWrite(7 downto 0);
+    
+-   bus_exp2_addr      <= ext_bus_addr;
++   bus_exp2_addr      <= ext_bus_addr(12 downto 0);
+    bus_exp2_write     <= '1' when (ext_write_ena = '1' and ext_select_ex2_saved = '1') else '0';
+    bus_exp2_read      <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex2_saved = '1') else '0';
+    bus_exp2_dataWrite <= ext_dataWrite(7 downto 0);
+    
+-   -- busses EXP1+3 are stubs that are working in general, but there is nothing connected to them, so unused parts are not implemented
+-   bus_exp1_read     <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex1_saved = '1') else '0';
+-   bus_exp3_read     <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex3_saved = '1') else '0';
++   -- EXP1 full master for the System 573 fabric (24-bit byte addr, 16-bit data).
++   -- The fabric is a 16-bit slave; mirrors the working EXP2 master (write strobe
++   -- = ext_write_ena, read strobe = EXT_READ_NEXT) but with full address + 16-bit
++   -- write data. Normal 573 operation runs this bus 16-bit wide (ex1_memctrl bit
++   -- 12 = 1); the read-data assembly below assumes that.
++   bus_exp1_addr      <= ext_bus_addr;
++   bus_exp1_write     <= '1' when (ext_write_ena = '1' and ext_select_ex1_saved = '1') else '0';
++   bus_exp1_read      <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex1_saved = '1') else '0';
++   bus_exp1_dataWrite <= ext_dataWrite;
++
++   -- EXP3 stub unchanged
++   bus_exp3_read      <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex3_saved = '1') else '0';
+    
+    ext_done          <= '1' when (ext_state = EXT_READ and ext_finished = '1') else '0';
+    
+@@ -991,11 +1000,17 @@ begin
+             when others => null;
+          end case;                 
+       elsif (ext_select_ex1_saved = '1') then
++         -- System 573 EXP1 is a 16-bit, halfword-native slave: place each halfword by
++         -- byteStep. 16-bit accesses use step "00"; 32-bit accesses "00" then "10".
++         -- Unlike the SPU template we intentionally ignore addressData_buf(0): the 573
++         -- decodes exp1_addr[N:1] and only ever issues aligned halfword/word accesses.
++         -- 8-bit / width=0 EXP1 accesses are assumed unused (ex1_memctrl(12)=1 in normal
++         -- 573 operation); this is an UNGUARDED assumption here -- the Phase-2 NVC
++         -- harness adds a monitor that fails on any width=0 EXP1 access (see
++         -- docs/PHASE1_PSX.md).
+          case (ext_byteStep) is
+-            when "00" => ext_data_new( 7 downto  0) <= bus_exp1_dataRead;
+-            when "01" => ext_data_new(15 downto  8) <= bus_exp1_dataRead;
+-            when "10" => ext_data_new(23 downto 16) <= bus_exp1_dataRead;
+-            when "11" => ext_data_new(31 downto 24) <= bus_exp1_dataRead;
++            when "00"   => ext_data_new(15 downto  0) <= bus_exp1_dataRead;
++            when "10"   => ext_data_new(31 downto 16) <= bus_exp1_dataRead;
+             when others => null;
+          end case;
+       elsif (ext_select_ex2_saved = '1') then
+@@ -1055,7 +1070,7 @@ begin
+                   ext_writeMask_buf    <= writeMask_buf;
+                   ext_byteStep         <= (others => '0');
+                   ext_data             <= (others => '0');
+-                  ext_bus_addr         <= addressData_buf(12 downto 0);
++                  ext_bus_addr         <= addressData_buf(23 downto 0);
+                   
+                   ext_select_spu_saved <= ext_select_spu;
+                   ext_select_cd_saved  <= ext_select_cd;
+diff --git a/rtl/psx_mister.vhd b/rtl/psx_mister.vhd
+index a7ce2e3..a9eefa1 100644
+--- a/rtl/psx_mister.vhd
++++ b/rtl/psx_mister.vhd
+@@ -68,6 +68,13 @@ entity psx_mister is
+ 	  oldGPU                : in  std_logic;
+       -- RAM/BIOS interface      
+       biosregion            : in  std_logic_vector(1 downto 0);  
++      -- System 573 EXP1 master (passed through to psx_top)
++      exp1_addr             : out std_logic_vector(23 downto 0);
++      exp1_dataWrite        : out std_logic_vector(15 downto 0);
++      exp1_we               : out std_logic;
++      exp1_re               : out std_logic;
++      exp1_dataRead         : in  std_logic_vector(15 downto 0);
++      exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+       ram_dataRead32        : in  std_logic_vector(31 downto 0);
+@@ -288,9 +295,13 @@ end entity;
+ architecture arch of psx_mister is
+ 
+    signal ddr3_ADDR : std_logic_vector(27 downto 0);
++   signal exp1_addr_u : unsigned(23 downto 0);
+    
+ begin 
+ 
++   -- System 573 EXP1 address: psx_top drives it as unsigned; expose as slv here.
++   exp1_addr <= std_logic_vector(exp1_addr_u);
++
+    -- vram is at 0x30000000
+    DDRAM_ADDR(28 downto 25) <= "0011";
+    DDRAM_ADDR(24 downto  0) <= ddr3_ADDR(27 downto 3);
+@@ -361,6 +372,12 @@ begin
+ 	  oldGPU                => oldGPU,
+       -- RAM/BIOS interface        
+       biosregion            => biosregion,
++      exp1_addr             => exp1_addr_u,
++      exp1_dataWrite        => exp1_dataWrite,
++      exp1_we               => exp1_we,
++      exp1_re               => exp1_re,
++      exp1_dataRead         => exp1_dataRead,
++      exp_irq10             => exp_irq10,
+       ram_refresh           => ram_refresh,
+       ram_dataWrite         => ram_dataWrite,
+       ram_dataRead32        => ram_dataRead32, 
+diff --git a/rtl/psx_top.vhd b/rtl/psx_top.vhd
+index 5899a6d..6991417 100644
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -72,6 +72,13 @@ entity psx_top is
+ 	  oldGPU                : in  std_logic;
+       -- RAM/BIOS interface  
+       biosregion            : in  std_logic_vector(1 downto 0);      
++      -- System 573 EXP1 master (0x1F000000 page -> 573 fabric): 16-bit, full addr
++      exp1_addr             : out unsigned(23 downto 0);
++      exp1_dataWrite        : out std_logic_vector(15 downto 0);
++      exp1_we               : out std_logic;
++      exp1_re               : out std_logic;
++      exp1_dataRead         : in  std_logic_vector(15 downto 0);
++      exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+       ram_dataRead32        : in  std_logic_vector(31 downto 0);
+@@ -319,11 +326,11 @@ architecture arch of psx_top is
+    signal bios_memctrl           : unsigned(13 downto 0);
+    
+    signal ex1_memctrl            : unsigned(13 downto 0);
+-   --signal bus_exp1_addr          : unsigned(22 downto 0); 
+-   --signal bus_exp1_dataWrite     : std_logic_vector(31 downto 0);
++   signal bus_exp1_addr          : unsigned(23 downto 0);
++   signal bus_exp1_dataWrite     : std_logic_vector(15 downto 0);
+    signal bus_exp1_read          : std_logic;
+-   --signal bus_exp1_write         : std_logic;
+-   signal bus_exp1_dataRead      : std_logic_vector(7 downto 0);
++   signal bus_exp1_write         : std_logic;
++   signal bus_exp1_dataRead      : std_logic_vector(15 downto 0);
+    
+    signal bus_memc_addr          : unsigned(5 downto 0); 
+    signal bus_memc_dataWrite     : std_logic_vector(31 downto 0);
+@@ -726,10 +733,7 @@ begin
+    begin
+       if rising_edge(clk1x) then
+       
+-         bus_exp1_dataRead <= (others => '0');
+-         if (bus_exp1_read = '1') then
+-            bus_exp1_dataRead <= (others => '1');
+-         end if;
++         -- EXP1 read data is driven from the exp1_dataRead entity port (573 fabric)
+       
+          bus_exp3_dataRead <= (others => '0');
+          if (bus_exp3_read = '1') then
+@@ -1186,6 +1190,7 @@ begin
+    
+    irq_SIO       <= '0'; -- todo
+    irq_LIGHTPEN  <= '1' when
++                    (exp_irq10 = '1') or  -- System 573 ATAPI INTRQ -> PS1 IRQ10
+                     (irq10Snac = '1' and snacport1 = '1') or
+                     (irq10Snac = '1' and snacport2 = '1') or
+                     (Gun1IRQ10 = '1' and joypad1.PadPortJustif = '1' and JustifierIrqEnable(0) = '1') or
+@@ -1712,6 +1717,13 @@ begin
+       bus_dataRead         => bus_exp2_dataRead
+    );
+ 
++   -- System 573 EXP1 master: expose the internal external-bus signals as ports.
++   exp1_addr         <= bus_exp1_addr;
++   exp1_dataWrite    <= bus_exp1_dataWrite;
++   exp1_we           <= bus_exp1_write;
++   exp1_re           <= bus_exp1_read;
++   bus_exp1_dataRead <= exp1_dataRead;
++
+    imemorymux : entity work.memorymux
+    port map
+    (
+@@ -1763,10 +1775,10 @@ begin
+       bios_memctrl         => bios_memctrl,
+ 
+       ex1_memctrl          => ex1_memctrl,
+-      --bus_exp1_addr        => bus_exp1_addr,   
+-      --bus_exp1_dataWrite   => bus_exp1_dataWrite,
++      bus_exp1_addr        => bus_exp1_addr,
++      bus_exp1_dataWrite   => bus_exp1_dataWrite,
+       bus_exp1_read        => bus_exp1_read,   
+-      --bus_exp1_write       => bus_exp1_write,  
++      bus_exp1_write       => bus_exp1_write,
+       bus_exp1_dataRead    => bus_exp1_dataRead,
+       
+       bus_memc_addr        => bus_memc_addr,     
