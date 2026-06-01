@@ -49,3 +49,7 @@ sim/system573/build/
 /bios_fetch.log
 /exp1_trace.log
 /*.ghw
+
+# NVC scratch libs / python cache (created by ad-hoc nvc/python runs)
+work/
+__pycache__/
