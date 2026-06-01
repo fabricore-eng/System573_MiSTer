@@ -73,3 +73,30 @@ CD images + security carts come via the HPS `sd_*`/`img_mounted` path later.
 
 See docs/EXECUTION_PLAN.md (Phase 4), docs/DEPENDENCIES.md (Colima/Quartus recipe),
 docs/PHASE1_PSX.md (EXP1 contract), and the project memory.
+
+## Build status (2026-06-01)
+
+The integration **compiles** — Quartus elaborates the full hierarchy
+(`emu | psx_mister | psx_top | cpu | spu | gpu | memorymux | datacache | …`).
+Three elaboration errors were found and fixed by iterating the Colima/Quartus
+build: (1) `emu.sv` must be `SYSTEMVERILOG_FILE` (it's the PSX.sv clone); (2)
+patch 0003 `maximum()` → portable `clamp0()` (Quartus 17.0 lacks the VHDL-2008
+builtin); (3) build against `psx/sys` not the repo `sys/` (HPS_BUS packing).
+
+**Open: build-host RAM.** `quartus_map` (analysis & synthesis) of the full PSX
+core **OOMs** in the 11 GB Colima VM on this 16 GB Mac (`Error 293007: ended
+unexpectedly … sufficient memory`), even serial (`NUM_PARALLEL_PROCESSORS=1`).
+Synthesizing the PS1 core needs **>11 GB**. Options to actually produce the
+`.rbf`: (a) build on a **≥32 GB** machine (VM ≥ ~16 GB); (b) add **VM swap**
+(`colima ssh -- sudo sh -c 'fallocate -l 8G /swapfile && mkswap /swapfile &&
+swapon /swapfile'`) for a slow paging build (the VM root is small/full though —
+may need a bigger `colima --disk`); (c) a large CI runner (standard GitHub
+Actions ~7 GB is too small). The integration itself is validated, so the build
+is purely an environment-capacity issue.
+
+## Deploy (once a .rbf exists)
+- `tools/mister_load.sh [core.rbf]` — scp the `.rbf` to `/media/fat/_Arcade` and
+  `load_core` it via `/dev/MiSTer_cmd` (verified present on the board).
+- `tools/mister_shot.sh [out.png]` — pull the newest `/media/fat/screenshots` PNG.
+- BIOS delivery: the PSX core wants the BIOS as HPS index-0; for first boot use
+  the OSD file picker or author a `.mra` mapping the Konami BIOS to ROM index 0.
