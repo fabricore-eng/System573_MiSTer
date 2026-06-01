@@ -83,16 +83,25 @@ build: (1) `emu.sv` must be `SYSTEMVERILOG_FILE` (it's the PSX.sv clone); (2)
 patch 0003 `maximum()` → portable `clamp0()` (Quartus 17.0 lacks the VHDL-2008
 builtin); (3) build against `psx/sys` not the repo `sys/` (HPS_BUS packing).
 
-**Open: build-host RAM.** `quartus_map` (analysis & synthesis) of the full PSX
-core **OOMs** in the 11 GB Colima VM on this 16 GB Mac (`Error 293007: ended
-unexpectedly … sufficient memory`), even serial (`NUM_PARALLEL_PROCESSORS=1`).
-Synthesizing the PS1 core needs **>11 GB**. Options to actually produce the
-`.rbf`: (a) build on a **≥32 GB** machine (VM ≥ ~16 GB); (b) add **VM swap**
-(`colima ssh -- sudo sh -c 'fallocate -l 8G /swapfile && mkswap /swapfile &&
-swapon /swapfile'`) for a slow paging build (the VM root is small/full though —
-may need a bigger `colima --disk`); (c) a large CI runner (standard GitHub
-Actions ~7 GB is too small). The integration itself is validated, so the build
-is purely an environment-capacity issue.
+**Open (hard blocker): build-host RAM.** `quartus_map` (analysis & synthesis) of
+the full PSX core **OOMs** in the 11 GB Colima VM on this 16 GB Mac (`Error
+293007: ended unexpectedly … sufficient memory`). **Confirmed across 4 attempts:**
+6-parallel (OOM @1:55), serial `NUM_PARALLEL_PROCESSORS=1` (OOM @1:55), and
+serial + an 8 GB VM swapfile (got further — OOM @8:28 — but the VM root disk is
+19 GB and 100% full, so the swapfile was unreliable). **Verdict: this 16 GB Mac
+cannot build the PS1 core**; synthesis needs well over the ~10 GB usable here.
+
+To produce the `.rbf` (the integration is validated, so it's a pure compile):
+- **(a) RECOMMENDED — a ≥32 GB machine** (VM/native Quartus 17.0.x can use ~16 GB+).
+  Pure compile: `git submodule update --init psx && tools/apply_psx_patches.sh &&
+  quartus_sh --flow compile Konami_System_573` (or the Colima/Docker recipe in
+  docs/DEPENDENCIES.md). Then `tools/mister_load.sh output_files/Konami_System_573.rbf`.
+- **(b) Local slow build** — restart Colima with a **bigger disk** (`colima stop;
+  colima start --disk 120`) so a real ~24 GB swapfile fits, then rebuild serial.
+  Multi-hour paging build; uncertain (may still thrash/OOM). Not recommended.
+- **(c) CI** — a large/self-hosted runner (≥16 GB); standard GitHub Actions
+  (~7 GB) is too small. A `.github/workflows` Quartus build can be authored if
+  a suitable runner is available.
 
 ## Deploy (once a .rbf exists)
 - `tools/mister_load.sh [core.rbf]` — scp the `.rbf` to `/media/fat/_Arcade` and
