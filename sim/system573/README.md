@@ -40,34 +40,40 @@ page 0x5c) — proving the EXP1 routing end-to-end.
   address tap** (`io_trace.log`, into `imemorymux`) give full execution + register-access
   visibility.
 
-**Reproducible furthest point (clean runs).** This is the SDRAM-model-latency wall, and it
-is the honest, reproducible state — see the caution below:
-- `run.sh 5ms 1` → the BIOS is still in the **4 MB RAM test** (PC `~0x1FC0040C–0x434`); the
-  stride-patched test walks the range in 256 steps but each iteration is uncached (KSEG1)
-  *and* kicks the watchdog over EXP1, so the test alone takes ~5 ms of sim.
-- `run.sh ~20ms 1` → past the RAM test, in the **BSS/runtime clear loop** (`~0x1FC0046C`),
-  also uncached.
-- `exp1_trace.log` shows the watchdog kicks (`EXP1 WE addr=0x5C0000`) — EXP1 works.
+**Furthest point (verified, clean single-writer runs).** The boot is *slow but progressing*;
+the position depends purely on how long you run:
+- `run.sh 5ms 1` → still in the **4 MB RAM test** (PC `~0x1FC0040C–0x434`); the stride-patched
+  test walks the range in 256 steps, each iteration uncached (KSEG1) *and* kicking the
+  watchdog over EXP1, so the test alone takes ~5 ms of sim.
+- `~20 ms` → past the RAM test, in the **BSS/runtime clear loop** (`~0x1FC0046C`), also uncached.
+- `run.sh 150ms 1` → **reaches main init at `0x1FC05504`** (and the `0x5130–0x5534` range —
+  confirmed in `pc_trace.log`), performs **GPU init including a GPUSTAT/GPUREAD poll
+  (`0x1F801814`/`0x1F801810`) that RESOLVES** after ~17 iterations (`io_trace.log`; *not* a
+  stuck spin), then grinds a large **uncached BIOS→RAM copy** (`~0x1FC004D4`, ~36 KB) — the
+  current sim-time sink. Watchdog kicks throughout (`exp1_trace.log`); EXP1 works.
 
-**Caution / correction.** An earlier revision of this file claimed the BIOS "reaches main
-init at `0x1FC05504`" and "polls GPUSTAT bit 28, alternating with GPUREAD". That was an
-artifact of trace files clobbered by a detached background run writing `build/` concurrently
-with foreground runs — it is **not** reproducible from a clean isolated run and has been
-retracted. The taps are correct and will show main init once a run gets there; the gate is
-sim speed (below), not the tooling.
+The framebuffer is still black (no draw yet) — the boot hasn't reached the drawing stage.
 
-The framebuffer is black (the GPU is scanning out blank video; nothing drawn yet).
+> **Note on an earlier correction.** A prior revision documented "reaches main init / polls
+> GPUSTAT" *at a much shorter stop-time*, from traces **clobbered** by a detached background
+> run writing `build/` concurrently with foreground runs. The PR-#9 review correctly flagged
+> it as non-reproducible at 5 ms. The clean 150 ms single-writer run above now **verifies the
+> substance** (main init *is* reached, GPUSTAT *is* polled) — the original error was the
+> timing/clobbering, not the conclusion. Always run single-writer to `build/`.
 
 **Next (Phase 3 — to the boot screen):**
-1. **Sim speed is the gate.** The BIOS boot is dominated by *uncached* (KSEG1) memory work
-   — the 4 MB RAM test, the BSS/runtime clears, and runtime copies — each access paying the
-   SDRAM model's latency (TURBO only helps cached accesses, so it barely moves the boot).
-   To reach main init in tractable sim: reduce the SDRAM-model latency for bring-up, and/or
+1. **Sim speed is the sole gate.** The boot is dominated by *uncached* (KSEG1) memory work —
+   the 4 MB RAM test, the BSS/runtime clears, and the runtime copies — each access paying the
+   SDRAM model's latency (~hundreds of core cycles; TURBO only helps *cached* accesses, so it
+   barely moves the boot). The `~36 KB` copy at `0x4D4` alone is most of a 150 ms run. To get
+   past the copies to the drawing stage in tractable sim: reduce the SDRAM-model latency for
+   bring-up (carefully — the core's cache/DMA timing assumes the model's `done` cadence), or
    run the boot once long and check-point via the PSX core's savestate for fast iteration.
    (`ddrram_model` `SLOWTIMING=0` separately speeds the GPU VRAM path, relevant once drawing
    starts.)
-2. With main init reached, identify what the BIOS polls (a read-completion-timed data tap —
-   the current `io_trace` `data` samples `dataFromBusses` early and under-reports) and grow
-   the VHDL EXP1 responder's read values past any watchdog/security/RTC/ASIC polls.
+2. Once past the copies, grow the VHDL EXP1 responder's read values as the BIOS reaches any
+   security/RTC/ASIC polls (so far only the watchdog is touched; the GPUSTAT poll already
+   resolves). For confirming exact polled values, add a read-completion-timed data tap — the
+   current `io_trace` `data` samples `dataFromBusses` early and under-reports.
 3. Drive to a non-black framebuffer (boot screen), compare against MAME `ksys573`, and add
-   `tools/check_boot.py` milestone gating.
+   `tools/check_boot.py` milestone gating. Confirm the integration once under `TURBO=0`.
