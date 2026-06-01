@@ -43,6 +43,51 @@ inherit GPL-2.0 and should be kept as isolated, offer-back-able diffs.
 `CORE_RBF=Konami_System_573.rbf`). `ssh mister` is confirmed working (kernel 5.15.1
 armv7l). `MISTER_SHOT_DIR=/media/fat/screenshots` is auto-created on first capture.
 
+## FPGA bitstream build (Quartus in Docker via Colima) — STAGED & VALIDATED
+
+The `.rbf` needs x86-64 Quartus Prime Lite 17.0.x (Cyclone V `5CSEBA6U23I7`); the
+MiSTer's ARM CPU can't build it. The builder is **this Mac**, running an amd64 Quartus
+container under **Colima + Apple-Virtualization + Rosetta**. This is set up and proven:
+`raetro/quartus:17.0` (17.1 GB, bundles **Quartus 17.0.2 Build 602 Lite** + Cyclone V —
+no Intel-login installer needed) is pulled into the VM, and `quartus_sh` was confirmed
+running under Rosetta (~4 s for `--version`) with the repo mounting cleanly via virtiofs.
+The VM is currently **stopped** to free RAM — `colima start` before building.
+
+> **CRITICAL arch gotcha (already handled, don't undo it):** this Mac's only Homebrew
+> is the **Intel build under Rosetta** (`/usr/local`, no `/opt/homebrew`), so
+> `brew install colima` yields **x86_64** `colima`/`limactl`, which Lima REFUSES for
+> vz+Rosetta (`"limactl is running under rosetta"`). The fix in place: **native arm64**
+> `colima` 0.10.1 + `lima` 2.1.1 binaries placed in `/usr/local/bin` (downloaded from
+> the projects' GitHub releases; no sudo — `/usr/local` is user-owned). If you ever
+> reinstall, keep them native arm64. (A few optional `lima` `libexec/` helpers
+> — krunkit driver, mcp — failed to extract into the Intel-brew `/usr/local/libexec`;
+> they're irrelevant to vz+Rosetta+docker and everything works without them.)
+
+Rosetta is enabled via the **Colima template** (there is no `--vz-rosetta` CLI flag in
+0.10.1): `~/.colima` template has `vmType: vz`, `rosetta: true`, `mountType: virtiofs`,
+`arch: host`. Do NOT set `arch: x86_64` — the guest stays aarch64 and Rosetta translates
+the x86 Quartus *process*; forcing x86_64 silently drops to slow qemu.
+
+```sh
+colima start --cpu 6 --memory 11 --disk 60          # uses the vz+rosetta template
+# Build (after the wiring TODO below). The repo has NO .qpf, so compile by revision name:
+docker run --rm --platform=linux/amd64 -v "$PWD":/work -w /work \
+  --entrypoint quartus_sh raetro/quartus:17.0 --flow compile Konami_System_573
+# -> output_files/Konami_System_573.rbf
+colima stop                                          # reclaim the 11 GB when idle
+```
+
+Notes: the `.sof`→`.rbf` conversion is done by MiSTer's `POST_FLOW` hook
+`sys/build_id.tcl` — ensure it's wired (`Template.qsf` / the psx subproject do this) or
+you get a `.sof` but no `.rbf`. Fallback image: `theypsilon/quartus-lite-c5:17.0`
+(`-slim`). To build your own image, the Lite 17.0 installer + Cyclone V pack are
+fetchable headlessly (no login) from
+`downloads.intel.com/akdlm/software/acdsinst/17.0std/595/ib_installers/`
+(`QuartusLiteSetup-17.0.0.595-linux.run` + `cyclonev-17.0.0.595.qdz`). Rosetta-on-Linux
+has rare mmap/glibc edge-case crashes — if Quartus dies oddly, qemu (slow) is the
+fallback. The VM disk size is a hard cap set at `colima start`; the pulled image
+persists across `colima stop`/`start` (only `colima delete` removes it).
+
 ## Build-wiring TODO (Phase 1 — NOT yet applied)
 
 Vendoring is done; the Quartus project is **not** yet wired to the vendored code.
