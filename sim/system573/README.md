@@ -27,7 +27,7 @@ in the git-ignored `build/`:
 - `gra_fb_out_vga.gra` (composited video-out, 640×480) and `gra_fb_out.gra` (raw VRAM, 1024×512) — convert with `tools/gra2png.py <in.gra> <out.png>`.
 
 `run.sh` flags: `REUSE=1` skips the patch/analyze/elaborate and re-runs the already-built
-design at a new `STOP_TIME` (RAM8MB/TURBO/FAST_RAMTEST are then fixed at the cached build's
+design at a new `STOP_TIME` (RAM8MB/TURBO/SLOWVRAM/FAST_RAMTEST are then fixed at the cached build's
 values). `TURBO=0` / `FAST_RAMTEST=0` disable the bring-up accelerators for a realistic run.
 NVC prints `--stats` (build vs run wall-clock) and suppresses the benign NUMERIC_STD
 metavalue warnings (`--ieee-warnings=off`). It needs a large heap for the upstream memory
@@ -57,8 +57,9 @@ screen-clear, so the framebuffer is still black; game content draws later in the
 - `SLOWVRAM=0` (default, bring-up): near-instant VRAM (DDR) model latency. The boot spins on
   **GPUSTAT bit 28** (`a2=0x1F801814`; GPU "ready to receive DMA" = command-FIFO empty),
   which drains only as fast as the GPU executes commands against VRAM — so fast VRAM
-  shortens those waits and reaches drawing ~2× sooner in sim-time. Set `SLOWVRAM=15` for
-  realistic-timing confirmation.
+  shortens those waits and reaches drawing markedly sooner (measured: the `draw` milestone
+  by ~80 ms sim with `SLOWVRAM=0` vs not-yet-drawn by 155 ms with `SLOWVRAM=15`). Set
+  `SLOWVRAM=15` for realistic-timing confirmation.
 - A **CPU PC tap** (`pc_trace.log`, NVC external name into `icpu.pc`) and an **internal-I/O
   address tap** (`io_trace.log`, into `imemorymux`) give full execution + register-access
   visibility. `tools/check_boot.py` gates the milestones (incl. `draw`/`framebuffer`).
@@ -69,13 +70,17 @@ the position depends purely on how long you run:
   test walks the range in 256 steps, each iteration uncached (KSEG1) *and* kicking the
   watchdog over EXP1, so the test alone takes ~5 ms of sim.
 - `~20 ms` → past the RAM test, in the **BSS/runtime clear loop** (`~0x1FC0046C`), also uncached.
-- `run.sh 150ms 1` → **reaches main init at `0x1FC05504`** (and the `0x5130–0x5534` range —
-  confirmed in `pc_trace.log`), performs **GPU init including a GPUSTAT/GPUREAD poll
-  (`0x1F801814`/`0x1F801810`) that RESOLVES** after ~17 iterations (`io_trace.log`; *not* a
-  stuck spin), then grinds a large **uncached BIOS→RAM copy** (`~0x1FC004D4`, ~36 KB) — the
-  current sim-time sink. Watchdog kicks throughout (`exp1_trace.log`); EXP1 works.
+- `run.sh 150ms 1` (SLOWVRAM=15, the old default) → **reaches main init at `0x1FC05504`**
+  (and the `0x5130–0x5534` range — confirmed in `pc_trace.log`), then spends most of the run
+  in a **GPUSTAT bit-28 wait** (`a2=0x1F801814`; "ready to receive DMA" = GPU FIFO empty) —
+  what earlier notes mis-described as a "~36 KB BIOS→RAM copy at `0x4D4`". With slow VRAM that
+  wait dominates. Watchdog kicks throughout (`exp1_trace.log`); EXP1 works.
+- **`run.sh 80ms 1` with `SLOWVRAM=0`** → past the GPUSTAT wait and into **GPU drawing**: the
+  `draw` milestone fires (real GP0 commands `E1/E3/E4/E5` + a `28` quad). Reaching drawing
+  this early needs fast VRAM (`SLOWVRAM=15` had not drawn by 155 ms — see PR #13).
 
-The framebuffer is still black (no draw yet) — the boot hasn't reached the drawing stage.
+The framebuffer is still black: the first draw is a black **screen-clear**; the game's own
+graphics draw later in the boot (a longer `SLOWVRAM=0` run is the path to the boot screen).
 
 > **Note on an earlier correction.** A prior revision documented "reaches main init / polls
 > GPUSTAT" *at a much shorter stop-time*, from traces **clobbered** by a detached background

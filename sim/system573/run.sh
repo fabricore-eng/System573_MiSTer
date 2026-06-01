@@ -45,7 +45,7 @@ SLOWVRAM="${SLOWVRAM:-0}"
 FAST_RAMTEST="${FAST_RAMTEST:-1}"
 # REUSE=1: skip the (idempotent) patch-apply + analyze + elaborate and just re-run
 # the design already built in build/ with a (possibly different) STOP_TIME -- seconds
-# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/
+# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/SLOWVRAM/
 # FAST_RAMTEST and the harness taps/RTL are FIXED at the cached build's values under
 # REUSE (the args/env that select them only affect elaboration); rebuild (drop REUSE)
 # to change any of them. (Without --ignore-time, NVC still warns if a source is newer
@@ -74,7 +74,7 @@ if [ "$REUSE" = "1" ]; then
     exit 1; }
   cd "$WD"
   echo "== REUSE=1: skipping patch/analyze/elaborate; reusing $WD =="
-  echo "   (RAM8MB/TURBO/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
+  echo "   (RAM8MB/TURBO/SLOWVRAM/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
 else
 
 # Ensure the GPL-isolated psx/ edits (EXP1 widening) are applied.
