@@ -33,7 +33,10 @@ entity tb_system573 is
       BIOS_FILE   : string  := "s573_bios.bin";
       BIOS_TARGET : integer := 16#800000#;   -- region-0 SDRAM byte base (= 0x1FC00000)
       -- 573 has 4 MB RAM; core supports 2 MB ('0') or 8 MB ('1'). Overridable from run.sh.
-      RAM8MB      : std_logic := '1'
+      RAM8MB      : std_logic := '1';
+      -- Sim accelerator (TURBO_MEM/COMP/CACHE). '1' speeds bring-up; set '0' (TURBO=0 in
+      -- run.sh) to confirm the integration under realistic memory/cache/DMA timing.
+      TURBO       : std_logic := '1'
    );
 end entity;
 
@@ -370,10 +373,10 @@ begin
       exe_stackpointer      => exe_stackpointer,
       fastboot              => '0',     -- SCPH-specific patch; OFF for Konami BIOS
       ram8mb                => RAM8MB,
-      TURBO_MEM             => '1',   -- sim accelerator: ~1-cycle RAM, to blow past the
-      TURBO_COMP            => '1',   -- uncached 4 MB RAM-test bottleneck so POST is
-      TURBO_CACHE           => '1',   -- reachable in tractable sim time (bring-up only)
-      TURBO_CACHE50         => '0',
+      TURBO_MEM             => TURBO, -- sim accelerators (bring-up); TURBO generic, the
+      TURBO_COMP            => TURBO, -- .rbf never uses these. Note: these mainly help
+      TURBO_CACHE           => TURBO, -- CACHED accesses; the BIOS boot is largely uncached
+      TURBO_CACHE50         => '0',   -- (KSEG1), so the SDRAM-model latency still dominates.
       REPRODUCIBLEGPUTIMING => '0',
       INSTANTSEEK           => '0',
       FORCECDSPEED          => "000",
@@ -833,7 +836,8 @@ begin
             file_open(status, f, "io_trace.log", write_mode); file_close(f);
             file_open(status, f, "io_trace.log", append_mode); opened := true;
          end if;
-         if (to_integer(io_addr(28 downto 12)) = 16#1F801#) and (io_addr(28 downto 0) /= last) and (logged < 20000) then
+         if (not is_x(std_logic_vector(io_addr))) and (to_integer(io_addr(28 downto 12)) = 16#1F801#)
+            and (io_addr(28 downto 0) /= last) and (logged < 20000) then
             last := io_addr(28 downto 0);
             write(l, string'("IO addr=0x")); hex(l, std_logic_vector(io_addr));
             write(l, string'(" data=0x"));   hex(l, io_data);

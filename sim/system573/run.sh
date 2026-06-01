@@ -24,6 +24,10 @@ WD="$HERE/build"
 
 STOP_TIME="${1:-2ms}"
 RAM8MB="${2:-1}"
+# TURBO=1 (default): sim accelerators (TURBO_MEM/COMP/CACHE). TURBO=0 runs the core
+# under realistic memory/cache/DMA timing (slower; use to confirm no accelerator masks
+# an integration bug, esp. on the GPU-DMA path).
+TURBO="${TURBO:-1}"
 # FAST_RAMTEST=1 (default): sim-only BIOS patch that enlarges the 4 MB RAM-test
 # stride 4->0x4000 so it walks the full 0xA0000000..0xA0400000 range in 256 steps
 # instead of 1,048,576. The test is uncached (KSEG1), so each access costs ~hundreds
@@ -100,8 +104,8 @@ analyze tb "$HERE/tb_system573.vhd"
 # ddrram_model t_data = 2**28 ints ~1 GB). Default limits OOM at init.
 NVC_MEM="-M 3g -H 6g"
 
-echo "== elaborating tb_system573 (RAM8MB=$RAM8MB) =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 -gRAM8MB="'$RAM8MB'"
+echo "== elaborating tb_system573 (RAM8MB=$RAM8MB TURBO=$TURBO) =="
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'"
 
 echo "== running tb_system573 (stop-time=$STOP_TIME) =="
 $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -r tb_system573 --stop-time="$STOP_TIME"
