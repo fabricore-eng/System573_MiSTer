@@ -112,7 +112,11 @@ def main(argv):
             write_ppm(out, w, h, pixels)
             print(f"Pillow not available; wrote {out} (PPM) instead")
 
-    return 0 if n > 0 else 2
+    # Always succeed: an all-black (header-only) frame is a valid, expected output
+    # during early POST (the GPU isn't drawing yet). The "did it draw anything?"
+    # judgement belongs to check_boot.py, not the converter. The WARNING above and
+    # the printed "N non-black" count convey emptiness without failing a CI step.
+    return 0
 
 
 if __name__ == "__main__":

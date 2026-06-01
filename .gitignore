@@ -42,3 +42,10 @@ sim/system/out/
 # NVC sim build artifacts
 sim/nvc/build/
 sim/system573/build/
+
+# Stray sim outputs if NVC is ever run outside build/ (run.sh cds to build/ itself)
+/R:*
+/gra_fb_out*.gra
+/bios_fetch.log
+/exp1_trace.log
+/*.ghw
