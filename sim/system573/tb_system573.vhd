@@ -36,7 +36,14 @@ entity tb_system573 is
       RAM8MB      : std_logic := '1';
       -- Sim accelerator (TURBO_MEM/COMP/CACHE). '1' speeds bring-up; set '0' (TURBO=0 in
       -- run.sh) to confirm the integration under realistic memory/cache/DMA timing.
-      TURBO       : std_logic := '1'
+      TURBO       : std_logic := '1';
+      -- VRAM (DDR) model read latency, in cycles, for the GPU's VRAM path. The boot
+      -- spins on GPUSTAT bit 28 (GPU "ready to receive DMA" = command-FIFO empty), which
+      -- drains only as fast as the GPU executes commands against VRAM -- so a slow VRAM
+      -- model lengthens those waits and the whole drawing path. run.sh defaults this to 0
+      -- (near-instant VRAM) for bring-up speed; set SLOWVRAM=15 for the realistic-timing
+      -- confirmation. Sim-model only (ddrram_model is a tb model, never in the .rbf).
+      SLOWVRAM    : integer := 15
    );
 end entity;
 
@@ -731,7 +738,7 @@ begin
    iddrram_model : entity tb.ddrram_model
    generic map
    (
-      SLOWTIMING   => 15,
+      SLOWTIMING   => SLOWVRAM,   -- run.sh-controlled; 0 (bring-up) speeds the GPU VRAM path
       RANDOMTIMING => '0'
    )
    port map

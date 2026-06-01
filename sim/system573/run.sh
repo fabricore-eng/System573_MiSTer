@@ -28,6 +28,12 @@ RAM8MB="${2:-1}"
 # under realistic memory/cache/DMA timing (slower; use to confirm no accelerator masks
 # an integration bug, esp. on the GPU-DMA path).
 TURBO="${TURBO:-1}"
+# SLOWVRAM: VRAM (DDR) model read latency in cycles for the GPU path. Default 0
+# (near-instant) for bring-up: the boot spins on GPUSTAT bit 28 (GPU ready-for-DMA =
+# command-FIFO empty), which drains only as fast as the GPU executes VRAM commands, so
+# slow VRAM lengthens those waits and the drawing path. Set SLOWVRAM=15 for realistic
+# VRAM timing. Sim-model only (ddrram_model), never in the .rbf.
+SLOWVRAM="${SLOWVRAM:-0}"
 # FAST_RAMTEST=1 (default): sim-only BIOS patch that enlarges the 4 MB RAM-test
 # stride 4->0x4000 so it walks the full 0xA0000000..0xA0400000 range in 256 steps
 # instead of 1,048,576. The test is uncached (KSEG1), so each access costs ~hundreds
@@ -39,7 +45,7 @@ TURBO="${TURBO:-1}"
 FAST_RAMTEST="${FAST_RAMTEST:-1}"
 # REUSE=1: skip the (idempotent) patch-apply + analyze + elaborate and just re-run
 # the design already built in build/ with a (possibly different) STOP_TIME -- seconds
-# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/
+# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/SLOWVRAM/
 # FAST_RAMTEST and the harness taps/RTL are FIXED at the cached build's values under
 # REUSE (the args/env that select them only affect elaboration); rebuild (drop REUSE)
 # to change any of them. (Without --ignore-time, NVC still warns if a source is newer
@@ -68,7 +74,7 @@ if [ "$REUSE" = "1" ]; then
     exit 1; }
   cd "$WD"
   echo "== REUSE=1: skipping patch/analyze/elaborate; reusing $WD =="
-  echo "   (RAM8MB/TURBO/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
+  echo "   (RAM8MB/TURBO/SLOWVRAM/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
 else
 
 # Ensure the GPL-isolated psx/ edits (EXP1 widening) are applied.
@@ -124,8 +130,9 @@ analyze tb "$TBSRC/globals.vhd" "$TBSRC/sdram_model3x.vhd" \
 echo "== analyzing tb_system573 =="
 analyze tb "$HERE/tb_system573.vhd"
 
-echo "== elaborating tb_system573 (RAM8MB=$RAM8MB TURBO=$TURBO) =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 --stats -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'"
+echo "== elaborating tb_system573 (RAM8MB=$RAM8MB TURBO=$TURBO SLOWVRAM=$SLOWVRAM) =="
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 --stats \
+     -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'" -gSLOWVRAM=$SLOWVRAM
 
 fi   # end of build (REUSE=0 path)
 
