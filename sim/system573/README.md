@@ -27,11 +27,18 @@ passes `-M 3g -H 6g`).
 
 ## Status (Phase 2 gate: MET)
 
-The Konami BIOS executes on the integrated core: the CPU fetches the reset vector at
-`0x800000` (= phys `0x1FC00000`) and runs; it reaches its 4 MB main-RAM test loop and
-writes the 573 watchdog (`EXP1 WE addr=0x5C0000`, page 0x5c — the first 573 peripheral
-POST touches, exactly as predicted). The framebuffer is black (the GPU does not draw
-during early POST — the boot screen is the Phase-3 milestone).
+The Konami BIOS executes on the integrated core. At a ~3 ms run the traces show:
+- **`bios_fetch.log`** — the CPU fetches the reset vector at `0x800000` (= phys
+  `0x1FC00000`) and runs early POST with real branches (e.g. `0x800074`→`0x800188`); the
+  periodic snapshot reaches `[snap] bios_reads=1962 ram_reads=38 last_ram_Adr=0x00800438`
+  — `0x800438` is inside the BIOS main-RAM test loop (~`0x1FC00418`–`0x458`), with
+  main-RAM read-backs (`ram_reads`) occurring, i.e. the 4 MB RAM test is running.
+- **`exp1_trace.log`** — `EXP1 WE addr=0x5C0000 wdata=0x0001` (×2): stores landing on the
+  573 watchdog (page 0x5c) — the first 573 peripheral POST touches, exactly as predicted.
+  No EXP1 reads yet (the BIOS hasn't reached the security/RTC/ASIC polls).
+
+The framebuffer is black (the GPU does not draw during early POST — the boot screen is the
+Phase-3 milestone).
 
 **Next (Phase 3 — BIOS POST):** the uncached 4 MB RAM test is the sim bottleneck (millions
 of cycles); enable `TURBO_MEM` to accelerate it, then iterate the EXP1 responder's read

@@ -1,32 +1,54 @@
 From: System 573 MiSTer integration
-Subject: [PATCH] gpu_videoout_async: clamp negative to_unsigned args for NVC
+Subject: [PATCH] gpu_videoout_async: clamp negative line-index args for NVC
 
-The video-out FSM computes display line indices as
-    to_unsigned(vdispNew - vDisplayStart, 9)
-    to_unsigned((lineMax - 1), 9)   (and lineMax-2)
-While the GPU display range is still being programmed (and during normal
-vsync edges) these differences can be momentarily negative, e.g. lineMax=0 ->
--1 or vdispNew<vDisplayStart -> -15. NVC's strict numeric_std rejects a
-negative argument to to_unsigned (NATURAL parameter) as a FATAL error, halting
-the whole simulation; ModelSim silently wraps it and the upstream sim (fastboot
-SCPH boot) never exercised the unprogrammed-display window the same way.
+The video-out FSM computes display line indices from differences such as
+(vdispNew - vDisplayStart), (vDisplayEnd - vDisplayStart) and (lineMax - 1/2).
+While the GPU display range is still being programmed (and at time 0) these can
+be momentarily negative. NVC's strict numeric_std rejects a negative argument to
+to_unsigned (NATURAL parameter) -- and a negative assignment into the
+`integer range 0 to 512` lineMax signal -- as a FATAL, halting the simulation;
+ModelSim silently wraps (two's complement) and the upstream SCPH fastboot sim
+never exercised the unprogrammed-display window the same way.
 
-This wraps each negative-capable argument with maximum(<expr>, 0) (VHDL-2008
-builtin). For all programmed/normal operation the clamp is a no-op (the
-differences are already >= 0); it only neutralises the transient negative
-during the GPU's unprogrammed window, so it is behaviour-neutral. Offer-back-
-able upstream as an NVC/GHDL portability robustness fix.
+This wraps every negative-capable argument with maximum(<expr>, 0) (VHDL-2008
+builtin, defined in STD.STANDARD; synthesizable on Cyclone V), covering all
+sites consistently: the lineMax assignments (both VerRes branches), all
+(vdispNew - vDisplayStart) line-index sites including the interlaced *2+1
+branches, and the (lineMax - 1/-2) sites.
+
+Behaviour for VALID/programmed display ranges is unchanged: every clamped
+difference is already >= 0 there, so maximum() is the identity. It differs from
+pristine upstream ONLY in the invalid/unprogrammed negative window, where it
+substitutes 0 for the value ModelSim/Quartus would have wrapped -- this only
+selects a different (still off-screen) VRAM fetch line before software programs
+GP1, so it is functionally neutral. Offer-back-able upstream as an NVC/GHDL
+portability + robustness fix.
 
 Kept isolated under psx_patches/ and (re)applied by tools/apply_psx_patches.sh;
 the submodule pointer never moves.
 ---
 diff --git a/rtl/gpu_videoout_async.vhd b/rtl/gpu_videoout_async.vhd
-index 12a9dbb..dd6c01c 100644
+index 12a9dbb..b952ef0 100644
 --- a/rtl/gpu_videoout_async.vhd
 +++ b/rtl/gpu_videoout_async.vhd
-@@ -422,10 +422,10 @@ begin
+@@ -274,9 +274,9 @@ begin
+          end if;
+           
+          if (videoout_settings.GPUSTAT_VerRes = '1') then
+-            lineMax <= (vDisplayEnd - vDisplayStart) * 2;
++            lineMax <= maximum(vDisplayEnd - vDisplayStart, 0) * 2;
+          else
+-            lineMax <= vDisplayEnd - vDisplayStart;
++            lineMax <= maximum(vDisplayEnd - vDisplayStart, 0);
+          end if;
+          
+          vDisplayStart <= to_integer(videoout_settings.vDisplayRange( 9 downto  0));
+@@ -420,12 +420,12 @@ begin
+                if (isVsync = '0') then
+                   if (videoout_settings.GPUSTAT_VerRes = '1') then
                       if (videoout_reports.interlacedDisplayField = '1') then
-                         lineIn <= to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+-                        lineIn <= to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
++                        lineIn <= to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2 + 1, 9);
                       else
 -                        lineIn <= to_unsigned((vdispNew - vDisplayStart) * 2, 9);
 +                        lineIn <= to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
@@ -37,9 +59,12 @@ index 12a9dbb..dd6c01c 100644
                    end if;
                 end if;
  
-@@ -511,10 +511,10 @@ begin
+@@ -509,12 +509,12 @@ begin
+                   if (vdispNew >= vDisplayStart and vdispNew < vDisplayEnd) then
+                      if (videoout_settings.GPUSTAT_VerRes = '1') then
                          if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
-                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+-                           nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
++                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2 + 1, 9);
                          else
 -                           nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
 +                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
@@ -62,9 +87,12 @@ index 12a9dbb..dd6c01c 100644
                          end if;
                       else
                          if (videoout_settings.GPUSTAT_VerRes = '1' and interlacedDisplayFieldMuxed = '1') then
-@@ -539,10 +539,10 @@ begin
+@@ -537,12 +537,12 @@ begin
+                   elsif (vdispNew >= vDisplayStart and vdispNew < vDisplayEnd) then
+                      if (videoout_settings.GPUSTAT_VerRes = '1') then
                          if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
-                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+-                           nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
++                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2 + 1, 9);
                          else
 -                           nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
 +                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
