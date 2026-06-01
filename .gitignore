@@ -19,3 +19,15 @@ incremental_db/
 # Editor / OS
 *.swp
 .DS_Store
+
+# Local-only config (MiSTer connection, credentials)
+/local/*
+!/local/*.example
+
+# Copyrighted dumps — never commit. Only dumps/README.md is tracked.
+/dumps/**
+!/dumps/README.md
+
+# Full-system sim outputs
+sim/system/out/
+*.rbf
