@@ -25,8 +25,15 @@ incremental_db/
 !/local/*.example
 
 # Copyrighted dumps — never commit. Only dumps/README.md is tracked.
+# /dumps/** already excludes everything below; the explicit extension lines are
+# belt-and-suspenders so no dump binary can ever be force-added by accident.
 /dumps/**
 !/dumps/README.md
+/dumps/**/*.bin
+/dumps/**/*.cue
+/dumps/**/*.chd
+/dumps/**/*.22g
+/dumps/**/*.zip
 
 # Full-system sim outputs
 sim/system/out/
