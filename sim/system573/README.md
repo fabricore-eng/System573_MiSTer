@@ -47,13 +47,21 @@ shows the CPU fetching the reset vector at `0x800000` (= phys `0x1FC00000`) and 
 and `exp1_trace.log` shows stores landing on the 573 watchdog (`EXP1 WE addr=0x5C0000`,
 page 0x5c) — proving the EXP1 routing end-to-end.
 
-**Phase-3 progress (in flight):** sim accelerators + observability taps are in place.
+**Phase-3 progress (in flight):** sim accelerators + observability taps are in place, and
+**the GPU draws** — the BIOS issues real GP0 commands (draw-mode/area/offset + a quad) and
+the `draw` milestone fires (verified with `SLOWVRAM=0`). The first draw is a black
+screen-clear, so the framebuffer is still black; game content draws later in the boot.
 
 - `FAST_RAMTEST=1` (sim-only RAM-test stride patch, build/ copy only) + `TURBO=1`
   (`TURBO_MEM/COMP/CACHE`; set `TURBO=0` for realistic timing).
+- `SLOWVRAM=0` (default, bring-up): near-instant VRAM (DDR) model latency. The boot spins on
+  **GPUSTAT bit 28** (`a2=0x1F801814`; GPU "ready to receive DMA" = command-FIFO empty),
+  which drains only as fast as the GPU executes commands against VRAM — so fast VRAM
+  shortens those waits and reaches drawing ~2× sooner in sim-time. Set `SLOWVRAM=15` for
+  realistic-timing confirmation.
 - A **CPU PC tap** (`pc_trace.log`, NVC external name into `icpu.pc`) and an **internal-I/O
   address tap** (`io_trace.log`, into `imemorymux`) give full execution + register-access
-  visibility.
+  visibility. `tools/check_boot.py` gates the milestones (incl. `draw`/`framebuffer`).
 
 **Furthest point (verified, clean single-writer runs).** The boot is *slow but progressing*;
 the position depends purely on how long you run:
