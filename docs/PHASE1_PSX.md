@@ -102,3 +102,40 @@ peripheral tests.
 - The 4 MB/2 MB widenings interacting with PSX_MiSTer's mirroring assumptions.
 - Whether DMA ch5 needs cycle-accurate behavior for the BIOS CD reader or whether
   PIO suffices for initial boot.
+
+## Implementation status
+
+The simulation strategy is settled empirically: the PSX core is VHDL-2008 and is
+simulated under **NVC** (Verilator cannot consume it; mixed VHDL+Verilog co-sim of the
+real fabric needs an NVC↔Verilator FFI bridge or hardware). See the `sim-toolchain`
+notes in `docs/DEPENDENCIES.md` / project memory.
+
+**Done (EXP1 contract + widening):**
+- `system573_top.exp1_rdata` is now a **registered** read (latched on `exp1_re`, held
+  otherwise) so it satisfies the PSX external-bus FSM, which samples read data one
+  cycle after the strobe in `EXT_READ`. A combinational read would return 0 → POST
+  hang. HOLD (not exp2-style clear-to-0) survives the PSX core's `ce` gaps since this
+  fabric runs free on `clk1x`. (rtl/, merged.)
+- EXP1 path widened in `psx/` (via `psx_patches/0001-s573-exp1-widening.patch`,
+  `tools/apply_psx_patches.sh`): from the upstream read-only **8-bit / 13-bit-address
+  stub** to a full **16-bit master** (24-bit byte address, 16-bit read+write) routed to
+  `system573_top`; 16-bit halfword read assembly; `irq_LIGHTPEN`←573 ATAPI INTRQ
+  (IRQ10). The patched core elaborates clean under NVC; the fabric's stepped-address
+  decode is covered by a multi-beat 32-bit read test in `tb_system573_top`.
+
+**Deferred (off the BIOS-POST / gchgchmp critical path — tracked, to address at the CD/ATAPI phase):**
+- **EXP1 8-bit (width=0) accesses:** the read assembly assumes the 573's normal 16-bit
+  bus (`ex1_memctrl(12)=1`). The full-system sim must monitor for any EXP1 access while
+  width=0 (the unverified assumption that the BIOS programs width=16 *before* the first
+  peripheral access — MF-5). Add this assertion to the Phase-2 harness.
+- **IRQ10 edge vs level:** `irq.vhd` rising-edge-latches; the 573 `cdrom_irq` is a level
+  held until the ATA status read. Verify `atapi.v` de-asserts INTRQ on status read so
+  each event makes a clean edge (else lost interrupts).
+- **ATAPI 32-bit data-port reads + autoinc:** confirm the IDE data FIFO is read
+  correctly when `exp1_addr[1]` steps (data port must not alias to a different taskfile
+  register on the 2nd halfword).
+- **DMA channel 5:** dead upstream (`dma.vhd`); PIO fallback assumed for boot — verify
+  the 573 BIOS CD path polls DRQ rather than waiting on a DMA5 completion IRQ.
+- **`ce` gating of the fabric for side-effecting reads** (ATAPI FIFO pops), **2 MB VRAM**
+  (`gpu.vhd`), and the Konami **512 KB BIOS load** + **4 MB RAM (`ram8mb=1`)** wiring —
+  the last two land with the `emu.sv` integration + build-wiring PR.

@@ -66,6 +66,20 @@ module tb_system573_top;
         end
     endtask
 
+    // 32-bit EXP1 read, modelling how the widened memorymux external-bus FSM
+    // handles a word access on the 16-bit 573 bus: two halfword beats, the second
+    // at byte address +2 (ext_byteStep "00" then "10", addr[1] stepped). Assembles
+    // low halfword from beat 0 and high halfword from beat 1. This exercises the
+    // fabric's stepped-address decode (peripherals decode exp1_addr[N:1]).
+    task exp1_read32(input [23:0] a, output [31:0] d);
+        reg [15:0] lo, hi;
+        begin
+            exp1_read(a,            lo);    // beat 0: halfword at a
+            exp1_read(a | 24'h000002, hi);  // beat 1: halfword at a+2 (addr[1] stepped)
+            d = {hi, lo};
+        end
+    endtask
+
     // NOR flash program through the EXP1 window (unlock 0x555/0x2AA, cmd 0xA0)
     task flash_prog(input [23:0] waddr, input [15:0] d);
         begin
@@ -113,6 +127,21 @@ module tb_system573_top;
         exp1_read(24'h000010, r);
         if (r !== 16'h1234) begin
             $display("FAIL: flash bank0 readback %04h expected 1234", r); errors = errors + 1;
+        end
+
+        // 3b-2) Multi-beat 32-bit stepped read: program two adjacent flash words
+        //       (byte 0x10 and 0x12), then read them as one 32-bit word the way the
+        //       widened memorymux does -- two halfword beats with addr[1] stepped.
+        //       Confirms the fabric returns the correct halfword per stepped address
+        //       and that a non-zero UPPER halfword is assembled correctly.
+        begin : multibeat
+            reg [31:0] r32;
+            flash_prog(24'h000012, 16'hABCD);   // word 9 (byte 0x12), bank 0
+            exp1_read32(24'h000010, r32);        // -> {word9, word8} = {ABCD, 1234}
+            if (r32 !== 32'hABCD1234) begin
+                $display("FAIL: 32-bit stepped read %08h expected ABCD1234", r32);
+                errors = errors + 1;
+            end
         end
 
         // 3c) ATAPI device signature through the IDE window.
