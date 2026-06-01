@@ -1,0 +1,34 @@
+From: System 573 MiSTer integration
+Subject: [PATCH] cd_top: initialise positionInIndex to 0 for NVC time-0 safety
+
+NVC defaults an uninitialised `integer range -524288 to 524287` to its left
+bound (-524288). The concurrent savestate-export assignment
+
+    ss_out(11)(19 downto 0) <= std_logic_vector(to_unsigned(positionInIndex, 20));
+
+(cd_top.vhd ~2381) is evaluated at time 0 during initialisation, before any
+clock edge or reset, so to_unsigned() sees -524288 and raises a FATAL
+NATURAL-range error under NVC's strict numeric_std checks (ModelSim tolerates
+the negative-to-unsigned conversion and the upstream sim never hit it).
+
+This is a pure NVC-portability fix with no behavioural effect: positionInIndex
+is driven synchronously thereafter, and ss_out(11) feeds only the savestate
+machinery, which is disabled in the Phase-2 boot harness (save_state='0'). The
+fix is offer-back-able upstream as a harmless robustness improvement.
+
+Kept isolated under psx_patches/ and (re)applied by tools/apply_psx_patches.sh
+exactly like the EXP1 widening; the submodule pointer never moves.
+---
+diff --git a/rtl/cd_top.vhd b/rtl/cd_top.vhd
+index c1c2522..c51d936 100644
+--- a/rtl/cd_top.vhd
++++ b/rtl/cd_top.vhd
+@@ -299,7 +299,7 @@ architecture arch of cd_top is
+    signal sectorBuffer_addrB        : std_logic_vector(9 downto 0);
+    signal sectorBuffer_DataB        : std_logic_vector(31 downto 0);
+       
+-   signal positionInIndex           : integer range -524288 to 524287; 
++   signal positionInIndex           : integer range -524288 to 524287 := 0; 
+    signal lastReadSector            : integer range 0 to 524287; 
+    signal subchannelSector          : integer range 0 to 524287; 
+    signal fetchCount                : integer range 0 to 588;

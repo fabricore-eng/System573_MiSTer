@@ -1,0 +1,95 @@
+From: System 573 MiSTer integration
+Subject: [PATCH] gpu_videoout_async: clamp negative to_unsigned args for NVC
+
+The video-out FSM computes display line indices as
+    to_unsigned(vdispNew - vDisplayStart, 9)
+    to_unsigned((lineMax - 1), 9)   (and lineMax-2)
+While the GPU display range is still being programmed (and during normal
+vsync edges) these differences can be momentarily negative, e.g. lineMax=0 ->
+-1 or vdispNew<vDisplayStart -> -15. NVC's strict numeric_std rejects a
+negative argument to to_unsigned (NATURAL parameter) as a FATAL error, halting
+the whole simulation; ModelSim silently wraps it and the upstream sim (fastboot
+SCPH boot) never exercised the unprogrammed-display window the same way.
+
+This wraps each negative-capable argument with maximum(<expr>, 0) (VHDL-2008
+builtin). For all programmed/normal operation the clamp is a no-op (the
+differences are already >= 0); it only neutralises the transient negative
+during the GPU's unprogrammed window, so it is behaviour-neutral. Offer-back-
+able upstream as an NVC/GHDL portability robustness fix.
+
+Kept isolated under psx_patches/ and (re)applied by tools/apply_psx_patches.sh;
+the submodule pointer never moves.
+---
+diff --git a/rtl/gpu_videoout_async.vhd b/rtl/gpu_videoout_async.vhd
+index 12a9dbb..dd6c01c 100644
+--- a/rtl/gpu_videoout_async.vhd
++++ b/rtl/gpu_videoout_async.vhd
+@@ -422,10 +422,10 @@ begin
+                      if (videoout_reports.interlacedDisplayField = '1') then
+                         lineIn <= to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+                      else
+-                        lineIn <= to_unsigned((vdispNew - vDisplayStart) * 2, 9);
++                        lineIn <= to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
+                      end if;
+                   else
+-                     lineIn <= to_unsigned(vdispNew - vDisplayStart, 9);
++                     lineIn <= to_unsigned(maximum(vdispNew - vDisplayStart, 0), 9);
+                   end if;
+                end if;
+ 
+@@ -511,10 +511,10 @@ begin
+                         if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
+                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+                         else
+-                           nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
++                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
+                         end if;
+                      else
+-                        nextLineCalc := to_unsigned(vdispNew - vDisplayStart, 9);
++                        nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0), 9);
+                      end if;
+                      videoout_request.fetch      <= not savestate_pause;
+                   end if;
+@@ -522,9 +522,9 @@ begin
+                   if (vdispNew = vtotal) then
+                      if (rotate180 = '1') then
+                         if (videoout_settings.GPUSTAT_VerRes = '1' and interlacedDisplayFieldMuxed = '1') then
+-                           nextLineCalc := to_unsigned((lineMax - 2), 9);
++                           nextLineCalc := to_unsigned(maximum(lineMax - 2, 0), 9);
+                         else
+-                           nextLineCalc := to_unsigned((lineMax - 1), 9);
++                           nextLineCalc := to_unsigned(maximum(lineMax - 1, 0), 9);
+                         end if;
+                      else
+                         if (videoout_settings.GPUSTAT_VerRes = '1' and interlacedDisplayFieldMuxed = '1') then
+@@ -539,10 +539,10 @@ begin
+                         if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
+                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
+                         else
+-                           nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
++                           nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0) * 2, 9);
+                         end if;
+                      else
+-                        nextLineCalc := to_unsigned(vdispNew - vDisplayStart, 9);
++                        nextLineCalc := to_unsigned(maximum(vdispNew - vDisplayStart, 0), 9);
+                      end if;
+                      videoout_request.fetch      <= not savestate_pause;
+                   end if;
+@@ -550,7 +550,7 @@ begin
+                nextLineCalcSaved <= nextLineCalc;
+                
+                if (rotate180 = '1') then
+-                  videoout_request.lineInNext <= to_unsigned((lineMax - 1), 9) - nextLineCalc;
++                  videoout_request.lineInNext <= to_unsigned(maximum(lineMax - 1, 0), 9) - nextLineCalc;
+                else
+                   videoout_request.lineInNext <= nextLineCalc;
+                end if;
+@@ -681,7 +681,7 @@ begin
+                   videoout_out.hblank         <= '1';
+                   videoout_reports.hblank_tmr <= '1';
+                   
+-                  nextLineCalc := to_unsigned((lineMax - 1), 9) - lineIn;
++                  nextLineCalc := to_unsigned(maximum(lineMax - 1, 0), 9) - lineIn;
+                   
+                   if ((rotate180 = '1' and nextLineCalc /= videoout_request.lineDisp) or (rotate180 = '0' and lineIn /= videoout_request.lineDisp)) then
+                      state <= WAITHBLANKEND;

@@ -19,7 +19,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PSX="$ROOT/psx"
 PIN=67153439fbb8e85e4108b9f0ff474d37aa6f7f5b
-PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" )
+PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
+          "$ROOT/psx_patches/0002-s573-nvc-cd-positionInIndex-init.patch" \
+          "$ROOT/psx_patches/0003-s573-nvc-gpu-videoout-linemax-clamp.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
