@@ -44,10 +44,19 @@ module tb_system573_top;
         end
     endtask
 
+    // EXP1 read modelled cycle-accurately after the PSX external-bus FSM
+    // (PSX_MiSTer memorymux.vhd): the strobe is asserted during EXT_READ_NEXT, a
+    // registered slave latches its data on that edge, and the FSM samples the data
+    // one cycle later in EXT_READ -- *after* the strobe has already deasserted.
+    // We reproduce that exactly (assert re, one posedge to latch, deassert re,
+    // then sample) so the test fails if the fabric ever regresses to a
+    // combinational read (which would collapse to 0 once exp1_re drops).
     task exp1_read(input [23:0] a, output [15:0] d);
         begin
-            @(negedge clk); exp1_addr = a; exp1_re = 1; exp1_we = 0; #1; d = exp1_rdata;
-            @(negedge clk); exp1_re = 0;
+            @(negedge clk); exp1_addr = a; exp1_re = 1; exp1_we = 0; // EXT_READ_NEXT
+            @(posedge clk);                 // slave latches rdata_mux on this edge
+            @(negedge clk); exp1_re = 0;     // strobe deasserts (entering EXT_READ)
+            @(posedge clk); #1; d = exp1_rdata; // FSM's EXT_READ sample: must still hold
         end
     endtask
 
