@@ -30,7 +30,6 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/fla
 # ---------------------------------------------------------------------------
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/psx.qip]
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/mem.qip]
-set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/pll.qip]
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/pll2.qip]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) psx/rtl/sdram.sv]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) psx/rtl/ddram.sv]

@@ -27,7 +27,18 @@ set_global_assignment -name NUM_PARALLEL_PROCESSORS 6
 set_global_assignment -name QIP_FILE files.qip
 set_global_assignment -name SEARCH_PATH rtl
 
-# MiSTer framework: sets device, sys.qip (sys_top + sys_top.sdc), build_id PRE_FLOW.
-source sys/sys.tcl
+# MiSTer framework: use the PSX core's OWN sys (psx/sys), NOT the repo's sys/.
+# emu.sv is a clone of psx/PSX.sv, which targets the (older) Template version in
+# psx/sys -- the repo's newer sys/ packs HPS_BUS differently (no fb_en/sl), which
+# fails to elaborate against emu.sv. psx/sys/sys.qip is qip-path-relative so it
+# resolves its own files correctly, and it provides pll_q17 (= the `pll` PSX.sv
+# instantiates). Device assignments are identical between the two sys.tcl files.
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name DEVICE_FILTER_PACKAGE UFBGA
+set_global_assignment -name DEVICE_FILTER_PIN_COUNT 672
+set_global_assignment -name DEVICE_FILTER_SPEED_GRADE 7
+set_global_assignment -name PRE_FLOW_SCRIPT_FILE "quartus_sh:psx/sys/build_id.tcl"
+set_global_assignment -name QIP_FILE psx/sys/sys.qip
 
 set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
