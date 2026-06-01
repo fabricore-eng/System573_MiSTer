@@ -159,12 +159,29 @@ module system573_top #(
     );
 
     // --- read data mux back to the CPU ---
+    // Combinational select of the addressed peripheral's read word.
+    reg [15:0] rdata_mux;
     always @(*) begin
-        if (sel_asic)            exp1_rdata = asic_dout;
-        else if (sel_rtc)        exp1_rdata = {8'h00, rtc_dout};
-        else if (sel_flash)      exp1_rdata = flash_dout;
-        else if (sel_ide0 | sel_ide1) exp1_rdata = atapi_dout;
-        else if (sel_digio)      exp1_rdata = digio_dout;
-        else                     exp1_rdata = 16'h0000;
+        if (sel_asic)            rdata_mux = asic_dout;
+        else if (sel_rtc)        rdata_mux = {8'h00, rtc_dout};
+        else if (sel_flash)      rdata_mux = flash_dout;
+        else if (sel_ide0 | sel_ide1) rdata_mux = atapi_dout;
+        else if (sel_digio)      rdata_mux = digio_dout;
+        else                     rdata_mux = 16'h0000;
+    end
+
+    // Registered EXP1 read data. The PlayStation memory controller's external-bus
+    // FSM (PSX_MiSTer memorymux.vhd) asserts the read strobe during EXT_READ_NEXT
+    // and samples the returned data one cycle later, in EXT_READ, *after* the
+    // strobe has deasserted. It therefore expects a REGISTERED slave, exactly like
+    // the PSX core's own EXP2/SPU/CD slaves -- a combinational read would collapse
+    // to 0 the moment exp1_re drops and the FSM would capture garbage (POST hang).
+    // We latch the mux while exp1_re is asserted and HOLD it afterwards, rather
+    // than clearing to 0 like exp2.vhd: this fabric is driven free-running on the
+    // PSX clk1x with no clock-enable, so a clear-default would lose the value
+    // during the PSX core's ce gaps before the FSM's EXT_READ capture edge.
+    always @(posedge clk) begin
+        if (rst)          exp1_rdata <= 16'h0000;
+        else if (exp1_re) exp1_rdata <= rdata_mux;
     end
 endmodule
