@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Apply the System 573's local modifications to the vendored PSX_MiSTer submodule.
 #
-# psx/ is a git submodule pinned to an upstream SHA we cannot push to. Our edits to
-# the PlayStation core (GPL-2.0, kept as isolated, offer-back-able diffs) therefore
-# live as patch files under psx_patches/ and are (re)applied to the submodule working
-# tree before any sim or Quartus build. The submodule pointer itself never moves.
+# psx/ is a git submodule pinned to an upstream SHA we cannot push to, but the 573
+# integration must edit the PlayStation core (EXP1 routing, later 2 MB VRAM, DMA ch5).
+# Those GPL-2.0 edits are kept as isolated, offer-back-able patch files under
+# psx_patches/ and (re)applied to the submodule working tree before any sim or Quartus
+# build. The submodule pointer itself never moves.
 #
-# Idempotent: resets the patched files to the pinned revision, then re-applies, so it
-# is safe to run repeatedly and after a fresh `git submodule update`.
+# Safe + idempotent: uses reverse-apply checks so it never re-applies an applied patch,
+# and only ever resets the FILES A PATCH TOUCHES (never your unrelated psx/ edits), and
+# only when a hunk is in a conflicted/partial state. --check never writes.
 #
-# Usage:  tools/apply_psx_patches.sh           # apply
-#         tools/apply_psx_patches.sh --check    # verify they apply cleanly, don't write
-#         tools/apply_psx_patches.sh --revert    # restore the pristine pinned core
+# Usage:  tools/apply_psx_patches.sh            # apply (idempotent)
+#         tools/apply_psx_patches.sh --check     # report apply-ability, write nothing
+#         tools/apply_psx_patches.sh --revert    # remove our patches (reverse-apply)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,35 +26,51 @@ if [ ! -e "$PSX/.git" ]; then
   exit 1
 fi
 cd "$PSX"
-
 mode="${1:-apply}"
 
-# Restore tracked files to the pinned revision so patches always apply against a known base.
-git checkout -q -- . 2>/dev/null || true
+# files a patch touches (relative to psx/), for scoped resets only
+touched_files() { for p in "${PATCHES[@]}"; do sed -n 's#^+++ b/##p' "$p"; done | sort -u; }
 
-if [ "$mode" = "--revert" ]; then
-  echo "psx: reverted to pristine pinned core ($PIN)."
-  exit 0
-fi
-
-head="$(git rev-parse HEAD)"
-if [ "$head" != "$PIN" ]; then
-  echo "warning: psx submodule at $head, expected pinned $PIN; patches may not apply cleanly." >&2
-fi
-
-for p in "${PATCHES[@]}"; do
-  if [ ! -f "$p" ]; then echo "error: missing patch $p" >&2; exit 1; fi
-  if ! git apply --check "$p" 2>/dev/null; then
-    echo "error: patch does not apply cleanly: $p" >&2
-    git apply --check "$p"   # re-run to surface the reason
-    exit 1
-  fi
-done
-
-if [ "$mode" = "--check" ]; then
-  echo "psx patches apply cleanly (not written)."
-  exit 0
-fi
-
-for p in "${PATCHES[@]}"; do git apply "$p"; done
-echo "psx patches applied (${#PATCHES[@]}): EXP1 widening for the System 573 fabric."
+case "$mode" in
+  --check)
+    rc=0
+    for p in "${PATCHES[@]}"; do
+      [ -f "$p" ] || { echo "error: missing patch $p" >&2; exit 1; }
+      if   git apply --reverse --check "$p" 2>/dev/null; then echo "already applied:  $(basename "$p")"
+      elif git apply           --check "$p" 2>/dev/null; then echo "applies cleanly:  $(basename "$p")"
+      else echo "WILL NOT APPLY:   $(basename "$p")"; git apply --check "$p" || true; rc=1
+      fi
+    done
+    exit $rc
+    ;;
+  --revert)
+    for ((i=${#PATCHES[@]}-1; i>=0; i--)); do
+      p="${PATCHES[$i]}"
+      if git apply --reverse --check "$p" 2>/dev/null; then git apply --reverse "$p"; fi
+    done
+    echo "psx: reverted local patches (pristine pinned core)."
+    exit 0
+    ;;
+  apply|"")
+    head="$(git rev-parse HEAD)"
+    [ "$head" = "$PIN" ] || echo "warning: psx at $head, expected pinned $PIN; patches may not apply cleanly." >&2
+    for p in "${PATCHES[@]}"; do
+      [ -f "$p" ] || { echo "error: missing patch $p" >&2; exit 1; }
+      if git apply --reverse --check "$p" 2>/dev/null; then
+        echo "already applied: $(basename "$p")"
+      elif git apply --check "$p" 2>/dev/null; then
+        git apply "$p"; echo "applied: $(basename "$p")"
+      else
+        # partial/conflicted: reset ONLY this patch's files to the pinned state, then apply
+        echo "note: resetting patch-touched files to pinned state, then applying $(basename "$p")" >&2
+        # shellcheck disable=SC2046
+        git checkout -- $(touched_files)
+        git apply "$p"; echo "applied (after reset): $(basename "$p")"
+      fi
+    done
+    exit 0
+    ;;
+  *)
+    echo "usage: $0 [apply|--check|--revert]" >&2; exit 2
+    ;;
+esac

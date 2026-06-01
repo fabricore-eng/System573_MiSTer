@@ -1,5 +1,5 @@
 diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
-index 4c995a5..1129a61 100644
+index 4c995a5..66255d4 100644
 --- a/rtl/memorymux.vhd
 +++ b/rtl/memorymux.vhd
 @@ -55,11 +55,11 @@ entity memorymux is
@@ -55,14 +55,18 @@ index 4c995a5..1129a61 100644
     
     ext_done          <= '1' when (ext_state = EXT_READ and ext_finished = '1') else '0';
     
-@@ -991,11 +1000,13 @@ begin
+@@ -991,11 +1000,17 @@ begin
              when others => null;
           end case;                 
        elsif (ext_select_ex1_saved = '1') then
-+         -- System 573 EXP1 is a 16-bit slave: place each halfword by byteStep.
-+         -- 16-bit accesses use step "00"; 32-bit accesses use "00" then "10".
-+         -- (8-bit/width=0 accesses are not used by the 573 and are flagged by a
-+         -- sim monitor; see docs/PHASE1_PSX.md.)
++         -- System 573 EXP1 is a 16-bit, halfword-native slave: place each halfword by
++         -- byteStep. 16-bit accesses use step "00"; 32-bit accesses "00" then "10".
++         -- Unlike the SPU template we intentionally ignore addressData_buf(0): the 573
++         -- decodes exp1_addr[N:1] and only ever issues aligned halfword/word accesses.
++         -- 8-bit / width=0 EXP1 accesses are assumed unused (ex1_memctrl(12)=1 in normal
++         -- 573 operation); this is an UNGUARDED assumption here -- the Phase-2 NVC
++         -- harness adds a monitor that fails on any width=0 EXP1 access (see
++         -- docs/PHASE1_PSX.md).
           case (ext_byteStep) is
 -            when "00" => ext_data_new( 7 downto  0) <= bus_exp1_dataRead;
 -            when "01" => ext_data_new(15 downto  8) <= bus_exp1_dataRead;
@@ -73,7 +77,7 @@ index 4c995a5..1129a61 100644
              when others => null;
           end case;
        elsif (ext_select_ex2_saved = '1') then
-@@ -1055,7 +1066,7 @@ begin
+@@ -1055,7 +1070,7 @@ begin
                    ext_writeMask_buf    <= writeMask_buf;
                    ext_byteStep         <= (others => '0');
                    ext_data             <= (others => '0');

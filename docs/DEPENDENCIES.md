@@ -99,11 +99,14 @@ integration *must* edit the PlayStation core (EXP1 routing, later 2 MB VRAM, DMA
 Those GPL-2.0 edits are kept as **isolated, offer-back-able patch files** under
 `psx_patches/` and (re)applied to the submodule working tree by
 **`tools/apply_psx_patches.sh`** — the submodule pointer never moves. Run it after any
-fresh `git submodule update`, and before any sim or Quartus build:
+fresh `git submodule update`, and before the flows that read `psx/`: the **NVC** VHDL
+sim (`sim/nvc/elaborate.sh`) and the **Quartus** `.rbf` build. (The Icarus unit suite,
+`make -C sim`, only compiles the Verilog `rtl/` fabric and does not read `psx/`.)
 
 ```sh
 git submodule update --init --recursive
 tools/apply_psx_patches.sh            # apply (idempotent); --check / --revert also supported
+sim/nvc/elaborate.sh                  # reproducible gate: patched PSX core elaborates under NVC
 ```
 
 Applied so far: `0001-s573-exp1-widening.patch` — widens the EXP1 path in
