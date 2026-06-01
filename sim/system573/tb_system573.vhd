@@ -370,9 +370,9 @@ begin
       exe_stackpointer      => exe_stackpointer,
       fastboot              => '0',     -- SCPH-specific patch; OFF for Konami BIOS
       ram8mb                => RAM8MB,
-      TURBO_MEM             => '0',
-      TURBO_COMP            => '0',
-      TURBO_CACHE           => '0',
+      TURBO_MEM             => '1',   -- sim accelerator: ~1-cycle RAM, to blow past the
+      TURBO_COMP            => '1',   -- uncached 4 MB RAM-test bottleneck so POST is
+      TURBO_CACHE           => '1',   -- reachable in tractable sim time (bring-up only)
       TURBO_CACHE50         => '0',
       REPRODUCIBLEGPUTIMING => '0',
       INSTANTSEEK           => '0',
@@ -749,5 +749,98 @@ begin
       video_g         => video_g,
       video_b         => video_b
    );
+
+   -- -----------------------------------------------------------------------
+   -- CPU program-counter tap (NVC external name into the core; observability
+   -- only, no DUT change). Logs each PC change to pc_trace.log (capped) plus a
+   -- periodic [pcsnap] with the live PC, so the execution position survives a
+   -- forced --stop-time stop. Turns "these look like instruction fetches" into
+   -- "the PC is here" -- the primary bring-up scope for Phase 3.
+   -- -----------------------------------------------------------------------
+   pc_tap : process(clk1x)
+      alias cpu_pc is << signal .tb_system573.ipsx_mister.ipsx_top.icpu.pc : unsigned(31 downto 0) >>;
+      file     pf     : text;
+      variable opened : boolean := false;
+      variable l      : line;
+      variable status : FILE_OPEN_STATUS;
+      variable prev   : unsigned(31 downto 0) := (others => '1');
+      variable logged : integer := 0;
+      variable cnt    : integer := 0;
+      procedure put_hex8(variable ln : inout line; v : unsigned(31 downto 0)) is
+         constant hx : string(1 to 16) := "0123456789ABCDEF";
+         variable s  : string(1 to 8);
+      begin
+         for i in 0 to 7 loop
+            s(8-i) := hx(to_integer(v(i*4+3 downto i*4)) + 1);
+         end loop;
+         write(ln, s);
+      end procedure;
+   begin
+      if rising_edge(clk1x) then
+         if not opened then
+            file_open(status, pf, "pc_trace.log", write_mode); file_close(pf);
+            file_open(status, pf, "pc_trace.log", append_mode); opened := true;
+         end if;
+         cnt := cnt + 1;
+         -- Log only NON-sequential PC changes (branches/jumps/calls/returns), not
+         -- every +4 fetch -- this captures control-flow structure (incl. main init
+         -- past 0x5504) without the early RAM-test loop saturating the cap.
+         if cpu_pc /= prev then
+            if (cpu_pc /= prev + 4) and (logged < 60000) then
+               write(l, string'("PC=0x")); put_hex8(l, cpu_pc); writeline(pf, l);
+               logged := logged + 1;
+               file_close(pf); file_open(status, pf, "pc_trace.log", append_mode);
+            end if;
+            prev := cpu_pc;
+         end if;
+         if (cnt mod 100000) = 0 then
+            write(l, string'("[pcsnap] cnt=")); write(l, cnt);
+            write(l, string'(" pc=0x")); put_hex8(l, cpu_pc); writeline(pf, l);
+            file_close(pf); file_open(status, pf, "pc_trace.log", append_mode);
+         end if;
+      end if;
+   end process;
+
+   -- -----------------------------------------------------------------------
+   -- Internal-I/O address tap (NVC external name into memorymux; observability).
+   -- Logs each distinct CPU access address that falls in the PSX internal I/O
+   -- window 0x1F801000..0x1F801FFF (GPU/SPU/timer/DMA/IRQ), with the data the
+   -- internal busses return. This identifies exactly which register the BIOS
+   -- polls in its wait-with-timeout loops (e.g. the 0x44F0 poll) -- the EXP1
+   -- responder only covers the 573 page, so internal-register waits show here.
+   -- -----------------------------------------------------------------------
+   io_tap : process(clk1x)
+      alias io_addr is << signal .tb_system573.ipsx_mister.ipsx_top.imemorymux.addressData_buf : unsigned(31 downto 0) >>;
+      alias io_data is << signal .tb_system573.ipsx_mister.ipsx_top.imemorymux.dataFromBusses : std_logic_vector(31 downto 0) >>;
+      file     f      : text;
+      variable opened : boolean := false;
+      variable l      : line;
+      variable status : FILE_OPEN_STATUS;
+      variable last   : unsigned(28 downto 0) := (others => '1');
+      variable logged : integer := 0;
+      procedure hex(variable ln : inout line; v : std_logic_vector) is
+         constant hx : string(1 to 16) := "0123456789ABCDEF";
+         variable vv : std_logic_vector(v'length-1 downto 0) := v;
+         variable n  : integer := v'length/4;
+      begin
+         for i in n-1 downto 0 loop
+            write(ln, hx(to_integer(unsigned(vv(i*4+3 downto i*4))) + 1));
+         end loop;
+      end procedure;
+   begin
+      if rising_edge(clk1x) then
+         if not opened then
+            file_open(status, f, "io_trace.log", write_mode); file_close(f);
+            file_open(status, f, "io_trace.log", append_mode); opened := true;
+         end if;
+         if (to_integer(io_addr(28 downto 12)) = 16#1F801#) and (io_addr(28 downto 0) /= last) and (logged < 20000) then
+            last := io_addr(28 downto 0);
+            write(l, string'("IO addr=0x")); hex(l, std_logic_vector(io_addr));
+            write(l, string'(" data=0x"));   hex(l, io_data);
+            writeline(f, l); logged := logged + 1;
+            file_close(f); file_open(status, f, "io_trace.log", append_mode);
+         end if;
+      end if;
+   end process;
 
 end architecture;
