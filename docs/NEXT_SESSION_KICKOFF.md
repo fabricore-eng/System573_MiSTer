@@ -52,26 +52,48 @@ saves, verified in full-system simulation AND on real hardware.
   `MEMORY_MAP.md`, `dumps/README.md`. Read your memory files. Keep `ROADMAP.md`
   checkboxes current; maintain `docs/COMPAT.md` as you bring titles up.
 
-### Current state (don't re-derive)
+### Current state (don't re-derive — updated 2026-06-01)
+**Phases 1 & 2 are DONE and merged to `main` (7 reviewed PRs, #5–#10); the Konami BIOS
+executes on the integrated PSX+573 core in simulation and reaches main init.** Read
+`sim/system573/README.md`, `docs/PHASE1_PSX.md`, and project memory (`MEMORY.md` →
+`phase1-2-integration-done`, `sim-toolchain-verdict`) for the precise verified state.
 - 20+ peripheral modules done; unit sim 19/19 green (`make -C sim`).
 - Vendored: `psx/` (PSX_MiSTer submodule, pinned) + `sys/` (MiSTer framework snapshot).
-  Toolchain: iverilog 13, verilator 5.048, chdman (rom-tools). bsdtar reads `.7z`.
-- Dumps in `dumps/` (git-ignored): BIOS in `dumps/bios/` (incl.
-  `700a01(gchgchmp).22g` — a game-in-BIOS that boots with NO CD/security; use it to
-  bring up CPU+video first), 44 Redump discs, and `dumps/mame573/` = 43 game carts +
-  33 disc CHDs + `k573dio`/`k573msu` device ROMs. Split carts into per-game device
-  `.bin` at bring-up (`dumps/README.md`); pair each Redump disc with its matching
-  `mame573` cart by game/region.
-- `rtl/ps1_stub.v` is still the placeholder — replacing it via an EXP1 adapter is Phase 1.
+- **Sim toolchain reality:** the PSX core is **VHDL-2008 → Verilator CANNOT sim it**;
+  **NVC** (`brew install nvc`) is the sim. No open-source tool co-sims VHDL+Verilog, so the
+  573 fabric is verified in iverilog and the full system via the NVC harness + a VHDL EXP1
+  responder (later: NVC↔Verilator FFI, or hardware). chdman (rom-tools); bsdtar reads `.7z`.
+- **Phase 1 (PSX integration) — done:** EXP1 widened to a full 16-bit master + IRQ10 inside
+  `psx/` as **`psx_patches/`** (the submodule pin never moves; `tools/apply_psx_patches.sh`
+  re-applies). 573 fabric `exp1_rdata` is registered to match the PSX bus contract.
+  `sim/nvc/elaborate.sh` is the reproducible "patched core elaborates" gate. NOTE: `rtl/
+  emu.sv` still instantiates `ps1_stub` — wiring the real `psx_mister` into `emu.sv` for the
+  `.rbf` is **Phase 4**, not done yet.
+- **Phase 2 (sim harness) — done:** `sim/system573/run.sh` runs the BIOS under NVC.
+  `FAST_RAMTEST`/`TURBO` accelerators + CPU PC tap + I/O tap. **Verified (clean 150 ms run):
+  BIOS → main init `0x1FC05504` → GPU init (GPUSTAT poll resolves) → grinding a large
+  uncached BIOS→RAM copy.** Framebuffer still black (no draw yet).
+- **Phase 3 frontier = SIM SPEED (the only gate to a boot screen):** the boot is dominated by
+  uncached (KSEG1) memory work paying the SDRAM-model latency; TURBO only helps cached. Next
+  levers: reduce the SDRAM-model latency for bring-up (carefully — core cache/DMA timing
+  depends on the model's `done` cadence) OR savestate-checkpoint the boot; then drive to a
+  non-black framebuffer, compare vs MAME `ksys573`, add `tools/check_boot.py`.
+  **PROCESS LESSON:** run the NVC harness SINGLE-WRITER to `build/` — a concurrent run
+  clobbering `build/` once produced corrupted traces and an overclaim (caught in review).
+- Dumps in `dumps/` (git-ignored): BIOS in `dumps/bios/` (incl. `700a01(gchgchmp).22g` — the
+  game-in-BIOS that boots with NO CD/security; the current harness target), Redump discs, and
+  `dumps/mame573/` carts + disc CHDs + `k573dio`/`k573msu` ROMs. Salaryman Champ (`salarymc`)
+  = a clean plain CD + X76F100 first-game target. See `dumps/README.md`.
 - Board reachable: `ssh mister` works (`local/mister.env`). Builder = this Mac (below).
 
 ### Verification ladder (self-verify every step — you have eyes, use PNGs)
 1. **Unit sim** (iverilog): keep 19/19 green; add tests for new RTL.
-2. **Full-system Verilator sim** — the workhorse and primary iteration loop. Build the
-   `sim/system/` harness EARLY (EXECUTION_PLAN §3): PSX core + `system573_top` + real
-   BIOS/CD/cart dumps, dumping the GPU framebuffer to PNG + a CPU/IRQ/peripheral trace,
-   with `tools/check_boot.py` gating on milestones (BIOS POST, CD boot sector, attract).
-   Compare your PNGs against MAME `ksys573` output for the same title. Use `chdman` to
+2. **Full-system NVC sim** — the workhorse (CORRECTION: the PSX core is VHDL so this is
+   **NVC, not Verilator**; that plan assumption was wrong). The harness EXISTS:
+   `sim/system573/` (run via `sim/system573/run.sh [stop-time] [ram8mb]`) — PSX core +
+   BIOS + a VHDL EXP1 responder, dumping the GPU framebuffer to `.gra` (→ PNG via
+   `tools/gra2png.py`) + CPU PC / EXP1 / I/O traces. `tools/check_boot.py` (milestone gating)
+   is still TODO. Compare PNGs against MAME `ksys573`. Use `chdman` to
    turn `dumps/mame573/*/<disc>.chd` into sectors for the ATAPI model.
 3. **Hardware**: build the `.rbf` (below), scp to the MiSTer, load, screenshot back,
    LOOK; poll a debug status block. Build `tools/mister_{load,shot,dbg}.sh`.
