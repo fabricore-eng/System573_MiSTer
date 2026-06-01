@@ -47,10 +47,17 @@ shows the CPU fetching the reset vector at `0x800000` (= phys `0x1FC00000`) and 
 and `exp1_trace.log` shows stores landing on the 573 watchdog (`EXP1 WE addr=0x5C0000`,
 page 0x5c) — proving the EXP1 routing end-to-end.
 
-**Phase-3 progress (in flight):** sim accelerators + observability taps are in place, and
-**the GPU draws** — the BIOS issues real GP0 commands (draw-mode/area/offset + a quad) and
-the `draw` milestone fires (verified with `SLOWVRAM=0`). The first draw is a black
-screen-clear, so the framebuffer is still black; game content draws later in the boot.
+**Phase-3 progress (in flight).** With `SLOWVRAM=0`, a 300 ms run boots the BIOS all the way
+through the uncached prologue into **cached game code running in RAM** (PC `0x00001C54` + an
+active frame loop) that drives **timers, the interrupt controller, SPU, and the GPU**. The
+**GPU command path works end-to-end**: the game issues a real **color-bar test pattern** — GP0
+`E1/E3/E4/E5` setup + 8 colored monochrome quads (`28FFFFFF/2800FFFF/…`) + `02` fills.
+**OPEN (the Phase-3 gate): the composited video-out is still BLACK** — those colored draws do
+not appear in VRAM/display (`gra_fb_out_vga.gra` = 0 non-black; raw-VRAM `gra_fb_out.gra` =
+header only). So the remaining gap is the **GPU render→VRAM→display path**, not the command
+path — candidates: GPU pixel pipeline not writing VRAM (DDR) in this harness, display-area vs
+draw-area / double-buffer swap, or display-disable (GPUSTAT bit 23) never cleared. `check_boot.py`
+`draw` fires but `framebuffer` does not — exactly this gap.
 
 - `FAST_RAMTEST=1` (sim-only RAM-test stride patch, build/ copy only) + `TURBO=1`
   (`TURBO_MEM/COMP/CACHE`; set `TURBO=0` for realistic timing).
