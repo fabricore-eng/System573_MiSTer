@@ -70,7 +70,10 @@ PS1 itself.
 ✅ = real RTL with a passing testbench. 🔌 = compiles/wires but is a placeholder.
 📋 = specified in docs only.
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path from here to a booting core.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the phases and
+[`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) for the detailed plan from here
+to full game compatibility (PSX integration, hardware bring-up on MiSTer, and the
+ordered file/dump manifest in [`dumps/README.md`](dumps/README.md)).
 
 ## Building / testing
 
