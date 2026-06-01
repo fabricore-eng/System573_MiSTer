@@ -352,6 +352,17 @@ begin
    ipsx_mister : entity psx.psx_mister
    generic map
    (
+      -- KEEP is_simu='1'. It gates BOTH the per-instruction `export` debug writer and
+      -- FASTSIM on the savestates block. Setting it '0' STALLS the boot at the reset
+      -- vector -- the CPU issues a single BIOS fetch and never advances (verified
+      -- 2026-06-01, bisected from a Phase-3 sim-speed attempt). The exact mechanism
+      -- (export-removal dead-code elimination vs a savestates FASTSIM/pause interaction)
+      -- is unpinned, but is_simu='0' is NOT a safe sim-speed lever despite looking like
+      -- one in static analysis. (Disabling it would only remove R:\debug_*_sim.txt
+      -- writers, which are negligible wall-clock anyway: they write per retired
+      -- instruction and the uncached boot retires slowly. The real sim-speed lever
+      -- is reducing the SDRAM model's per-access latency -- see sim/system573/
+      -- README.md, Phase-3 "Next" item 1.)
       is_simu               => '1'
    )
    port map

@@ -9,8 +9,10 @@ no open-source tool co-simulates VHDL + Verilog in one kernel (see `docs/PHASE1_
 ## Run
 
 ```sh
-brew install nvc                       # one-time
+brew install nvc                            # one-time
 sim/system573/run.sh [STOP_TIME] [RAM8MB]   # e.g. sim/system573/run.sh 2ms 1
+REUSE=1 sim/system573/run.sh 20ms           # re-run the built design at a new stop-time (seconds, not minutes)
+tools/check_boot.py build                   # report which boot milestones were reached
 ```
 
 It applies the `psx/` patches, builds the `psx`/`mem`/`tb` libraries, copies the
@@ -19,11 +21,24 @@ game-in-BIOS image (`dumps/bios/700a01(gchgchmp).22g` — boots with no CD/secur
 in the git-ignored `build/`:
 
 - `bios_fetch.log` — SDRAM reads in the BIOS region (`0x800000+`) and main RAM: evidence the CPU is executing the BIOS.
+- `pc_trace.log` — CPU PC tap (non-sequential PC changes + periodic snapshots): the execution position.
+- `io_trace.log` — distinct PSX internal-I/O register accesses (`0x1F801xxx`): which GPU/SPU/timer/DMA/IRQ registers the BIOS touches.
 - `exp1_trace.log` — every EXP1 access (addr / we / re / wdata / returned rdata): what 573 peripherals the BIOS touches.
 - `gra_fb_out_vga.gra` (composited video-out, 640×480) and `gra_fb_out.gra` (raw VRAM, 1024×512) — convert with `tools/gra2png.py <in.gra> <out.png>`.
 
-NVC needs a large heap for the upstream memory models' big process arrays (`run.sh`
-passes `-M 3g -H 6g`).
+`run.sh` flags: `REUSE=1` skips the patch/analyze/elaborate and re-runs the already-built
+design at a new `STOP_TIME` (RAM8MB/TURBO/FAST_RAMTEST are then fixed at the cached build's
+values). `TURBO=0` / `FAST_RAMTEST=0` disable the bring-up accelerators for a realistic run.
+NVC prints `--stats` (build vs run wall-clock) and suppresses the benign NUMERIC_STD
+metavalue warnings (`--ieee-warnings=off`). It needs a large heap for the upstream memory
+models' big process arrays (`-M 3g -H 6g`).
+
+**`tools/check_boot.py build`** parses these traces and reports which BIOS boot milestones
+were reached — `reset → ram_test → watchdog → bss_clear → copy_loop → main_init →
+gpustat_poll → gpustat_done → draw → framebuffer`. `--require KEY` gates a phase (exit 1 if
+a milestone is missing); `--compare BASELINE_DIR` confirms a change (e.g. a sim accelerator)
+didn't regress the boot (every baseline milestone still reached, PC-milestone order
+preserved).
 
 ## Status
 
@@ -62,18 +77,31 @@ The framebuffer is still black (no draw yet) — the boot hasn't reached the dra
 > timing/clobbering, not the conclusion. Always run single-writer to `build/`.
 
 **Next (Phase 3 — to the boot screen):**
-1. **Sim speed is the sole gate.** The boot is dominated by *uncached* (KSEG1) memory work —
-   the 4 MB RAM test, the BSS/runtime clears, and the runtime copies — each access paying the
-   SDRAM model's latency (~hundreds of core cycles; TURBO only helps *cached* accesses, so it
-   barely moves the boot). The `~36 KB` copy at `0x4D4` alone is most of a 150 ms run. To get
-   past the copies to the drawing stage in tractable sim: reduce the SDRAM-model latency for
-   bring-up (carefully — the core's cache/DMA timing assumes the model's `done` cadence), or
-   run the boot once long and check-point via the PSX core's savestate for fast iteration.
-   (`ddrram_model` `SLOWTIMING=0` separately speeds the GPU VRAM path, relevant once drawing
-   starts.)
+1. **Sim speed.** The boot is dominated by *uncached* (KSEG1) execution — the 4 MB RAM test,
+   the BSS/runtime clears, and the runtime copies. **Measured finding (2026-06-01): the
+   bottleneck is the PSX core's per-uncached-access pipeline cost (~33 clk1x/access), NOT the
+   SDRAM sim-model latency.** A FASTTIMING spike on `sdram_model3x` (seed the data-ready shift
+   at bit 8 not 10 + a short `STATE_IDLE_3` walk, cutting model occupancy ~12→~6 clk3x) moved
+   boot progress by only **~6%** (FAST `bios_reads`/sim-ms ≈ slow ≈ 1000) — the model's
+   `ram_done` is only ~4 of the ~33 clk1x/access; the rest is CPU/memorymux FSM. TURBO only
+   helps *cached* accesses, and the BIOS read path (`memorymux` `READBIOS`, which waits on
+   `ram_done`) has **no TURBO bypass** — but compressing `ram_done` barely helps because it
+   isn't the dominant term. So **sim-model timing tweaks won't move the boot** (FASTTIMING was
+   tried and abandoned). The real levers, in order of value:
+   - **(a) savestate-checkpoint** the boot once past the copy and iterate from there — the right
+     tool given ~6 s wall-clock per sim-ms (see `local/wf_out/phase3_simspeed_analysis.json`
+     "A4"; medium effort, watch the FASTSIM-skips-RAM trap).
+   - **(b) shortcut more uncached BIOS phases** like `FAST_RAMTEST` already does. The **BSS
+     clear is redundant in sim** (`sdram_model3x.data` is 0-initialised) so it can be safely
+     skipped (~10%); the BIOS→RAM **copy cannot** (it sets up the cached code the BIOS then
+     runs).
+   - **(c) just run long** — past the copy the BIOS runs *cached* (fast in sim), so drawing
+     follows the copy without much extra sim-time. A single long run reaches the framebuffer.
+   (`ddrram_model SLOWTIMING=0` separately speeds the GPU VRAM path once drawing starts.)
 2. Once past the copies, grow the VHDL EXP1 responder's read values as the BIOS reaches any
    security/RTC/ASIC polls (so far only the watchdog is touched; the GPUSTAT poll already
    resolves). For confirming exact polled values, add a read-completion-timed data tap — the
    current `io_trace` `data` samples `dataFromBusses` early and under-reports.
-3. Drive to a non-black framebuffer (boot screen), compare against MAME `ksys573`, and add
-   `tools/check_boot.py` milestone gating. Confirm the integration once under `TURBO=0`.
+3. Drive to a non-black framebuffer (boot screen) and compare against MAME `ksys573`.
+   Milestone gating exists (`tools/check_boot.py`); the `draw`/`framebuffer` gates fire once
+   the GPU renders. Confirm the integration once under `TURBO=0`.

@@ -37,11 +37,39 @@ TURBO="${TURBO:-1}"
 # ORIGINAL dump is never touched; only the build/ copy is patched, for bring-up
 # only. The Quartus .rbf uses the pristine BIOS. Set FAST_RAMTEST=0 for the real test.
 FAST_RAMTEST="${FAST_RAMTEST:-1}"
+# REUSE=1: skip the (idempotent) patch-apply + analyze + elaborate and just re-run
+# the design already built in build/ with a (possibly different) STOP_TIME -- seconds
+# instead of minutes. Valid ONLY after a cold build (REUSE unset). RAM8MB/TURBO/
+# FAST_RAMTEST and the harness taps/RTL are FIXED at the cached build's values under
+# REUSE (the args/env that select them only affect elaboration); rebuild (drop REUSE)
+# to change any of them. (Without --ignore-time, NVC still warns if a source is newer
+# than the elaborated design -- the safety net for a forgotten rebuild.)
+REUSE="${REUSE:-0}"
 BIOS_SRC="$ROOT/dumps/bios/700a01(gchgchmp).22g"
 
 command -v nvc >/dev/null 2>&1 || { echo "error: nvc not found (brew install nvc)" >&2; exit 1; }
 [ -d "$RTL" ] || { echo "error: psx submodule missing. Run: git submodule update --init psx" >&2; exit 1; }
 [ -f "$BIOS_SRC" ] || { echo "error: BIOS not found: $BIOS_SRC" >&2; exit 1; }
+
+# NVC invocation. --ieee-warnings=off suppresses the NUMERIC_STD metavalue warnings
+# the core emits while signals settle from 'U' early in sim (benign -- e.g. reads of
+# the un-preloaded SPU RAM); they otherwise dominate stdout AND wall-clock.
+# --messages=compact shortens the rest. Both are diagnostics-only (no behavior change).
+NVC="nvc --std=2008 --ieee-warnings=off --messages=compact"
+analyze() { $NVC --work="$1:$WD/$1" -L "$WD" -a --relaxed "${@:2}"; }
+# -M / -H raise NVC's heap limits: the upstream memory models declare huge process
+# variables (sdram_model3x t_data = 2**27 ints ~512 MB each x2; ddrram_model
+# t_data = 2**28 ints ~1 GB). Default limits OOM at init.
+NVC_MEM="-M 3g -H 6g"
+
+if [ "$REUSE" = "1" ]; then
+  [ -f "$WD/tb/TB.TB_SYSTEM573.elab" ] || {
+    echo "error: REUSE=1 but no elaborated design in $WD; run once without REUSE first" >&2
+    exit 1; }
+  cd "$WD"
+  echo "== REUSE=1: skipping patch/analyze/elaborate; reusing $WD =="
+  echo "   (RAM8MB/TURBO/FAST_RAMTEST fixed at the cached build's values; drop REUSE to change)"
+else
 
 # Ensure the GPL-isolated psx/ edits (EXP1 widening) are applied.
 "$ROOT/tools/apply_psx_patches.sh" >/dev/null
@@ -65,9 +93,6 @@ open(p, "wb").write(b)
 print("FAST_RAMTEST: BIOS RAM-test stride patched 4->0x4000 (sim-only, build/ copy)")
 PY
 fi
-
-NVC="nvc --std=2008"
-analyze() { $NVC --work="$1:$WD/$1" -L "$WD" -a --relaxed "${@:2}"; }
 
 echo "== analyzing altera_mf stub =="
 analyze altera_mf "$NVCDIR/altera_mf_stub.vhd"
@@ -99,16 +124,13 @@ analyze tb "$TBSRC/globals.vhd" "$TBSRC/sdram_model3x.vhd" \
 echo "== analyzing tb_system573 =="
 analyze tb "$HERE/tb_system573.vhd"
 
-# -M / -H raise NVC's heap limits: the upstream memory models declare huge
-# process variables (sdram_model3x t_data = 2**27 ints ~512 MB each x2;
-# ddrram_model t_data = 2**28 ints ~1 GB). Default limits OOM at init.
-NVC_MEM="-M 3g -H 6g"
-
 echo "== elaborating tb_system573 (RAM8MB=$RAM8MB TURBO=$TURBO) =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'"
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 --stats -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'"
 
-echo "== running tb_system573 (stop-time=$STOP_TIME) =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -r tb_system573 --stop-time="$STOP_TIME"
+fi   # end of build (REUSE=0 path)
+
+echo "== running tb_system573 (stop-time=$STOP_TIME, reuse=$REUSE) =="
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -r tb_system573 --stats --stop-time="$STOP_TIME"
 
 echo
 echo "== outputs in $WD =="

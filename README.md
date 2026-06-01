@@ -36,11 +36,34 @@ The full register map (transcribed from psx-spx) lives in
 
 ## Status — honest accounting
 
-This is **not** a finished, game-booting core. A complete System 573 core has to
-sit on top of a full PlayStation 1 core (the kind of effort that took the MiSTer
-PSX core years). This repo implements and **unit-tests** the 573-specific glue
-that sits *around* a PS1, and provides clearly-marked integration stubs for the
-PS1 itself.
+The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
+core is integrated over EXP1**, and the **Konami BIOS now executes in full-system
+simulation**. It is not yet a game-booting `.rbf` — that still needs the rest of
+the boot bring-up, the MiSTer top-level wiring, and a Quartus build — but the core
+is well past "glue around a stub."
+
+**Where it is right now (updated 2026-06-01):**
+
+- **Phases 1 & 2 complete** (merged via reviewed PRs). The MiSTer PSX core
+  (`psx/`, vendored as a pinned submodule) is wired to this fabric over the
+  PlayStation **EXP1** bus, widened to a full 16-bit master with IRQ10. Those core
+  edits live as isolated patches in `psx_patches/`, re-applied by
+  `tools/apply_psx_patches.sh` — the submodule pin never moves.
+- A **full-system simulation harness** (`sim/system573/`) boots the **Konami
+  BIOS** on the integrated core under [**NVC**](https://www.nickg.me.uk/nvc/) (the
+  PSX core is VHDL-2008, which Verilator cannot consume — see
+  [`docs/PHASE1_PSX.md`](docs/PHASE1_PSX.md)). Verified: the CPU runs from the
+  reset vector through the 4 MB RAM test, BSS clear, **main init (`0x1FC05504`)**
+  and **GPU init** (the GPUSTAT poll resolves), kicking the 573 watchdog over EXP1
+  throughout. `tools/check_boot.py` gates these milestones.
+- **Phase 3 in progress:** driving the boot to a non-black framebuffer (the boot
+  screen). The current bottleneck is *simulation speed* — early boot runs uncached
+  (KSEG1) and is dominated by the SDRAM model's per-access latency.
+
+A complete System 573 core has to sit on top of a full PlayStation 1 (the kind of
+effort that took the MiSTer PSX core years); this repo implements and
+**unit-tests** the 573-specific glue around that PS1 and integrates a mature PS1
+core underneath it.
 
 | Module                         | File                  | State                  |
 |--------------------------------|-----------------------|------------------------|
@@ -62,13 +85,13 @@ PS1 itself.
 | Bank-switched flash (NOR-backed) | `rtl/s573_flash.v`  | ✅ banking impl + tested |
 | NOR flash command engine       | `rtl/flash_nor.v`     | ✅ implemented + tested |
 | Security-cartridge bus glue    | `rtl/s573_seccart.v`  | ✅ implemented + tested |
-| PS1 CPU/GPU/SPU subsystem      | `rtl/ps1_stub.v`      | 🔌 integration stub     |
-| MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold      |
-| MAS3507D MP3 / Digital I/O     | —                     | 📋 documented, not impl |
-| ATAPI CD-ROM                   | —                     | 📋 documented, not impl |
+| PS1 CPU/GPU/SPU subsystem      | `psx/` submodule      | ✅ integrated in sim (EXP1) |
+| PS1 integration stub (build)   | `rtl/ps1_stub.v`      | 🔌 still in `emu.sv` (Phase 4) |
+| MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold (Phase 4) |
+| MAS3507D MP3 decode (Phase 9)  | —                     | 📋 documented, not impl |
 
-✅ = real RTL with a passing testbench. 🔌 = compiles/wires but is a placeholder.
-📋 = specified in docs only.
+✅ = real RTL with a passing testbench (or, for `psx/`, executing the BIOS in the
+full-system NVC sim). 🔌 = compiles/wires but is a placeholder. 📋 = docs only.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the phases and
 [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) for the detailed plan from here
@@ -90,6 +113,29 @@ On Ubuntu, `iverilog` comes from `apt-get install -y iverilog`. A Claude Code
 `SessionStart` hook (`.claude/hooks/session-start.sh`, wired up in
 `.claude/settings.json`) installs the toolchain and runs the suite automatically
 at the start of each web session.
+
+### Full-system boot simulation (NVC)
+
+The PlayStation core is VHDL-2008 (Verilator can't consume it), so the
+full-system boot runs under [NVC](https://www.nickg.me.uk/nvc/):
+
+```sh
+brew install nvc                          # one-time
+sim/system573/run.sh [STOP_TIME] [RAM8MB] # e.g. sim/system573/run.sh 5ms 1
+REUSE=1 sim/system573/run.sh 20ms         # re-run a built design at a new stop-time
+```
+
+It applies `psx_patches/`, builds the core under NVC, loads the Konami
+game-in-BIOS image, runs, and writes traces + a framebuffer dump to the
+git-ignored `sim/system573/build/`. Convert the framebuffer to PNG with
+`tools/gra2png.py`, and check how far the boot got with:
+
+```sh
+tools/check_boot.py sim/system573/build   # report which boot milestones were reached
+```
+
+See [`sim/system573/README.md`](sim/system573/README.md) for the harness details
+and the current furthest-verified point.
 
 FPGA synthesis targets the standard MiSTer framework: the `sys/` directory is
 where the [MiSTer-devel `Template_MiSTer`](https://github.com/MiSTer-devel/Template_MiSTer)
