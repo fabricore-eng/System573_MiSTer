@@ -1,28 +1,31 @@
 # =============================================================================
-# Konami System 573 - Quartus project (MiSTer / DE10-Nano, Cyclone V)
+# Konami System 573 - Quartus project (MiSTer / DE10-Nano, Cyclone V).
 #
-# This is the standard MiSTer core project skeleton. The actual pin assignments,
-# the sys framework sources and the build flow come from sys/sys.qsf, which is
-# part of the MiSTer framework (see sys/README.md). Building requires that the
-# `sys` submodule be present.
+# Build (Quartus 17.0.2; see docs/DEPENDENCIES.md for the Colima/Docker recipe):
+#   tools/apply_psx_patches.sh            # apply the psx/ EXP1 widening first
+#   quartus_sh --flow compile Konami_System_573
+#
+# `sys/sys.tcl` (MiSTer framework) sets FAMILY/DEVICE, pulls sys.qip (which makes
+# `sys_top` the real top and adds sys_top.sdc), and wires the PRE_FLOW build_id +
+# the .sof->.rbf POST step. rtl/emu.sv (a clone of psx/PSX.sv with the 573 EXP1
+# deltas) is the `emu` that sys_top instantiates.
 # =============================================================================
 
-set_global_assignment -name FAMILY "Cyclone V"
-set_global_assignment -name DEVICE 5CSEBA6U23I7
-set_global_assignment -name TOP_LEVEL_ENTITY emu
+set_global_assignment -name TOP_LEVEL_ENTITY sys_top
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0.2
 set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
 
+# The vendored PSX core is VHDL-2008 (psx_patches/0003 uses the 2008 `maximum()`);
+# upstream sets this in psx/PSX.qsf. Required or the VHDL core won't analyze.
+set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
+
+# PSX_MiSTer needs the DDR3 framebuffer path (sys_top gates FB_* on this).
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 6
 
-# Core RTL
+# Core RTL (573 fabric + emu.sv + the nested psx/rtl PSX core qips).
 set_global_assignment -name QIP_FILE files.qip
-
-# MiSTer framework (provided by the sys submodule; see sys/README.md)
-# set_global_assignment -name QIP_FILE sys/sys.qip
-# set_global_assignment -name SDC_FILE sys/sys.sdc
-
-set_global_assignment -name SDC_FILE Konami_System_573.sdc
-
 set_global_assignment -name SEARCH_PATH rtl
+
+# MiSTer framework: sets device, sys.qip (sys_top + sys_top.sdc), build_id PRE_FLOW.
+source sys/sys.tcl
