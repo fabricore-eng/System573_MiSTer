@@ -1,0 +1,3 @@
+[submodule "psx"]
+	path = psx
+	url = https://github.com/MiSTer-devel/PSX_MiSTer.git

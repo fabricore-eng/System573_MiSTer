@@ -17,8 +17,8 @@ module tb_k573_mp3stream;
 
     // DRAM model (scrambled MP3 words)
     reg [15:0] mem [0:7];
-    assign rd_data_w = mem[rd_addr >> 1];
     wire [15:0] rd_data_w;
+    assign rd_data_w = mem[rd_addr >> 1];
 
     k573_mp3stream dut (
         .clk(clk), .rst(rst), .fpga_ctrl(fpga_ctrl), .ddrsbm(1'b0),

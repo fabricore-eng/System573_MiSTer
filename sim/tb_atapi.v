@@ -90,7 +90,7 @@ module tb_atapi;
         // disc[i] = i & 0xff ; sector 1 starts at byte 2048
         for (i = 0; i < 8; i = i + 1) begin
             io_read(4'd0, v);
-            chk(v, {((2048+2*i+1) & 8'hff), ((2048+2*i) & 8'hff)}, "READ data");
+            chk(v, (((2048+2*i+1) & 8'hff) << 8) | ((2048+2*i) & 8'hff), "READ data");
         end
 
         // ---- INTRQ assert + clear-on-status-read ----
