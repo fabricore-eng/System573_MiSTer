@@ -44,19 +44,25 @@ module tb_system573_top;
         end
     endtask
 
-    // EXP1 read modelled cycle-accurately after the PSX external-bus FSM
-    // (PSX_MiSTer memorymux.vhd): the strobe is asserted during EXT_READ_NEXT, a
-    // registered slave latches its data on that edge, and the FSM samples the data
-    // one cycle later in EXT_READ -- *after* the strobe has already deasserted.
-    // We reproduce that exactly (assert re, one posedge to latch, deassert re,
-    // then sample) so the test fails if the fabric ever regresses to a
-    // combinational read (which would collapse to 0 once exp1_re drops).
+    // EXP1 read modelled after the single-beat read latency of the PSX
+    // external-bus FSM (PSX_MiSTer memorymux.vhd): the strobe is asserted during
+    // EXT_READ_NEXT, a registered slave latches its data on that edge, and the FSM
+    // samples the data later in EXT_READ -- *after* the strobe has deasserted, and
+    // possibly several free-running clk edges later (the PSX core's ce gates the
+    // FSM but not this fabric). We assert re for one beat, deassert it, hold for a
+    // couple of clk edges, then sample. This fails if the fabric regresses to a
+    // combinational read (collapses to 0 once exp1_re drops) OR to an exp2-style
+    // clear-to-0 default (loses the value across the ce-gap cycles modelled here).
+    // It deliberately does NOT model multi-beat / wait-state transactions or the
+    // 8/16-bit byte stepping -- that is exercised end-to-end by the full-system
+    // sim (see docs/PHASE1_PSX.md).
     task exp1_read(input [23:0] a, output [15:0] d);
         begin
             @(negedge clk); exp1_addr = a; exp1_re = 1; exp1_we = 0; // EXT_READ_NEXT
             @(posedge clk);                 // slave latches rdata_mux on this edge
             @(negedge clk); exp1_re = 0;     // strobe deasserts (entering EXT_READ)
-            @(posedge clk); #1; d = exp1_rdata; // FSM's EXT_READ sample: must still hold
+            repeat (2) @(posedge clk);       // ce-gap: registered value must hold
+            #1; d = exp1_rdata;              // FSM's EXT_READ sample: must still hold
         end
     endtask
 
