@@ -1,0 +1,45 @@
+diff --git a/rtl/cpu.vhd b/rtl/cpu.vhd
+index b2f9eae..b55846a 100644
+--- a/rtl/cpu.vhd
++++ b/rtl/cpu.vhd
+@@ -691,8 +691,12 @@ begin
+       
+       if (mem_done = '1' and memoryMuxStage4 = '0') then 
+          case (to_integer(unsigned(FetchLastAddr(31 downto 29)))) is
+-            when 0 | 4 => -- cached
+-               tag_wren_a   <= '1';
++            when 0 | 4 => -- cached (but NOT the 573 BIOS mirror, which runs uncached)
++               if (FetchLastAddr(28 downto 0) >= 16#1FC00000# and FetchLastAddr(28 downto 0) < 16#1FC80000#) then
++                  null;
++               else
++                  tag_wren_a   <= '1';
++               end if;
+             when others => null;
+          end case;
+       end if;
+@@ -720,7 +724,15 @@ begin
+             case (to_integer(FetchAddr(31 downto 29))) is
+                
+                when 0 | 4 => -- cache
+-                  if (cacheHitTest = '1') then
++                  if (FetchAddr(28 downto 0) >= 16#1FC00000# and FetchAddr(28 downto 0) < 16#1FC80000#) then
++                     -- System 573: the BIOS runs from the cached KSEG0 mirror
++                     -- (0x9FC00000), an access pattern the upstream i-cache fill/hold
++                     -- path mishandles (delivers a stale word -> bad jump -> crash).
++                     -- Run BIOS fetches uncached, as a real PSX does (the kernel runs
++                     -- from 0xBFC00000); games still execute cached from RAM.
++                     mem1_request      <= '1';
++                     stallNew1         <= '1';
++                  elsif (cacheHitTest = '1') then
+                      cacheHitNext      <= '1';
+                      PCnext            <= FetchAddr + 4;
+                   else
+@@ -863,7 +875,7 @@ begin
+ --##############################################################
+ --############################### stage 2
+ --##############################################################
+-   
++
+    opcodeCacheMuxed <= cacheValueLast when cacheHitLast = '1' else
+                        unsigned(cache_q_b( 31 downto  0)) when (cacheHit = '1' and PCold0(3 downto 2) = "00") else
+                        unsigned(cache_q_b( 63 downto 32)) when (cacheHit = '1' and PCold0(3 downto 2) = "01") else

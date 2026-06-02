@@ -119,8 +119,28 @@ Notably, the simulation-side "black framebuffer" (Phase-3) turned out to be a
 **sim artifact** (the NVC harness's behavioral EXP1 responder returns zeros); on
 correctly-pinned, timing-met silicon the render→display path just works.
 
+## Boot driven past the color bars — the i-cache crash (2026-06-02)
+Deeper analysis (NVC CPU trace + capstone disasm) showed the **color bars are a
+CRASH, not a healthy parked test screen**: the BIOS draws its video-test pattern,
+then the R3000 i-cache delivers a *wrong instruction word* while executing from the
+cached KSEG0 BIOS mirror (`0x9FC00000`) — decoded as a `jal` to an unmapped address
+— and the kernel faults. Two sim-validated fixes (both in `psx_patches/`):
+- **0004** — suppress a stale i-cache *hit* on a branch/exception redirect that
+  crosses cache lines (helps all cached execution).
+- **0005** — run **BIOS fetches uncached** (as a real PSX does — the kernel runs at
+  `0xBFC00000`), sidestepping a separate fill/hold race the cached BIOS mirror
+  triggers. Games still execute **cached from RAM** (the upstream-proven path), so
+  there is no regression risk to game execution.
+
+With both applied, the BIOS in the NVC sim **advances ~80 ms past the old 220.6 ms
+crash** through normal init (a large ROM→RAM copy) to 300 ms with **zero AdEL /
+reserved-instruction / unmapped-fetch faults**. Remaining: confirm on silicon
+(rebuild) and run a real game — the flash data + HPS load path (the hyperbbc 16 MB
+onboard-flash image is built and CRC-verified against MAME; SDRAM home @
+`0x02000000` and the load path are mapped).
+
 **Remaining polish / next:** clk_2x and the HDMI PLL are still ~2–3 ns short at
 the worst (hot/slow) corner — the core works but is not fully timing-clean (98%
-ALM congestion); drive the menu with real inputs (JAMMA mapping/polarity); then
-CD / security-cart / flash for the broader library. Phases 2–5 below are still
-largely unbuilt.
+ALM congestion). Next: rebuild with the i-cache fix + HW-test; then the onboard-
+flash load path to boot **hyperbbc** (first flash-only game). Phases 2–5 below are
+still largely unbuilt.
