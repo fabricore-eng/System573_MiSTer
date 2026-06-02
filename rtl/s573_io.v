@@ -71,11 +71,19 @@ module s573_io (
     end
 
     // --- read mux ---
-    // 0x04 DIP / JVS / security status
+    // 0x04 H8 (18E) response nibble + security + DIP
+    // Bits [7:4] are the H8/3644 MCU (board location 18E) response nibble. The GX700
+    // power-on self-test pulses the H8 response clock (control reg bit 8) to step an
+    // index through the H8's internal 64-byte response ROM and compares bits [7:4] at
+    // each step; a mismatch fails the 18E check and the BIOS gates boot there. For the
+    // 700A BIOS the response ROM (dumps/bios/h8a01.bin) is 64x 0x0C, so the constant
+    // nibble 0xC passes at every index. (These bits were previously mislabelled "JVS
+    // error/status" -- the JVS serial-packet I/O path is a separate thing; see
+    // 0x1f680000.) TODO multi-BIOS: 700B's h8b01.bin varies, so it needs a
+    // clock-stepped ROM-backed shift register here instead of this constant.
     wire [15:0] r_status =
         { sec_in,                 // [15:8] security I0-I7
-          2'b00,                  // [7:6]  JVS error (unused here)
-          2'b00,                  // [5:4]  JVS status (unused here)
+          4'b1100,                // [7:4]  H8/18E response nibble = 0xC (h8a01.bin)
           dip_sw };               // [3:0]  DIP switches
 
     // 0x06 misc inputs
