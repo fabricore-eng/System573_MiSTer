@@ -40,7 +40,7 @@ The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
 core is integrated over EXP1**, the **Konami BIOS executes in full-system
 simulation**, and — as of 2026-06-01 — **the core boots that BIOS and displays it
 on real MiSTer hardware**: a built `.rbf` brings up the gchgchmp 573 BIOS to its
-test screen (clean color bars + a working menu) with a locked component signal on
+video-test screen (clean color bars) with a locked component signal on
 a CRT (Cyclone V, DE10-Nano-class; verified on a SuperStation One). There's plenty
 left — inputs, CD/security/flash, full game compatibility — but it is a real,
 booting core now, not glue around a stub.
@@ -65,7 +65,7 @@ booting core now, not glue around a stub.
 - **Phase 4 (hardware) — boots on real hardware:** `rtl/emu.sv` is the real MiSTer
   top — a clone of the proven `psx/PSX.sv` with the 573 EXP1 deltas — and the design
   builds a `.rbf` (Quartus 17.0 via Colima/Docker, 30 GB swap for the PS1 core's
-  memory-heavy A&S) that **boots the Konami BIOS to color bars + a menu on a real
+  memory-heavy A&S) that **boots the Konami BIOS to its color-bar test screen on a real
   board**. Getting there fixed the Quartus-hostile RTL (`synthesis translate_off`
   guards, M10K NVRAM, constant-folded flash) **and** two build-config defects found
   by an adversarial review — a mis-pinned bitstream (no pin-location files →
