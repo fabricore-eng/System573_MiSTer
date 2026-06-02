@@ -34,8 +34,9 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [x] Bring up the 512 KB Konami BIOS in place of the SCPH BIOS (executes in the
       NVC sim **and** on real hardware via the `games/PSX/boot.rom` path)
 - [~] Map 4 MB main / 2 MB VRAM — 4 MB main RAM done (`ram8mb=1`, sim-validated);
-      the 573's **2 MB VRAM** (vs the PSX core's 1 MB) is **not yet addressed**
-      and is a candidate factor in the open video-output issue
+      the 573's **2 MB VRAM** (vs the PSX core's 1 MB) is **not yet addressed**, but
+      there is no evidence it blocks the current boot frontier — video works on real
+      hardware (boot reaches the GX700 self-test) with 1 MB
 
 ## Phase 2 — make it boot
 - [~] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
@@ -53,7 +54,9 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       (conservatively routed in `emu.sv`: `joy[7:0]` → p1/p2; full JAMMA map TODO)
 - [~] Get the Konami BIOS to POST and reach the CD boot — POSTs through RAM test,
       BSS clear, **main init** and GPU init in the NVC sim; gchgchmp (game-in-BIOS)
-      needs no CD. **Open frontier:** no visible video yet (see below)
+      needs no CD. **Status:** video works on real hardware; the BIOS boots past the
+      color bars to the GX700 power-on self-test (next gate: CDR). See the hardware
+      bring-up section below.
 
 ## Phase 3 — security & per-game
 - [x] Security cart EEPROM: X76F100 bit-banged I2C (`rtl/x76f100.v`, tested)
@@ -94,10 +97,12 @@ Phases 1–5 are large. Phase 0 (the 573 glue) is *done and verified*, and
 the Konami BIOS in simulation **and boots + displays it on real MiSTer hardware**
 (Cyclone V, 98% ALM / 100% DSP fit; see [`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
 
-## Hardware bring-up status — IT BOOTS (2026-06-01)
+## Hardware bring-up status — IT BOOTS (2026-06-02)
 **The core boots the Konami BIOS and displays correctly on real hardware.** On a
-SuperStation One the gchgchmp BIOS comes up to its test screen — clean SMPTE-style
-color bars (the BIOS's video test pattern) — with a locked, perfect component signal on a CRT
+SuperStation One the gchgchmp BIOS reaches its color-bar video-test screen — which was
+*initially a CPU i-cache crash* (fixed by `psx_patches/` 0004/0005); with the 18E
+self-test answered (PR #16) the BIOS now boots **past** the color bars to the GX700
+power-on self-test — with a locked, perfect component signal on a CRT
 (and a matching HDMI scaler capture). So the R3000 CPU runs from real SDRAM, the
 GPU renders into VRAM, and video scans out end-to-end.
 
@@ -134,13 +139,15 @@ cached KSEG0 BIOS mirror (`0x9FC00000`) — decoded as a `jal` to an unmapped ad
 
 With both applied, the BIOS in the NVC sim **advances ~80 ms past the old 220.6 ms
 crash** through normal init (a large ROM→RAM copy) to 300 ms with **zero AdEL /
-reserved-instruction / unmapped-fetch faults**. Remaining: confirm on silicon
-(rebuild) and run a real game — the flash data + HPS load path (the hyperbbc 16 MB
-onboard-flash image is built and CRC-verified against MAME; SDRAM home @
-`0x02000000` and the load path are mapped).
+reserved-instruction / unmapped-fetch faults**. Confirmed on silicon: with 0004/0005
++ the 18E self-test fix (PR #16) the BIOS boots past the color bars to the GX700
+power-on self-test, now parked at the CDR (CD-ROM) check. The hyperbbc 16 MB
+onboard-flash image is built and CRC-verified under `dumps/` (built by
+`tools/pack_hyperbbc.py`); the SDRAM-backed flash-load path is designed in
+`docs/FLASH_LOAD_PLAN.md` (not yet built). Next: pass the CDR gate and wire the
+flash-load path for hyperbbc.
 
 **Remaining polish / next:** clk_2x and the HDMI PLL are still ~2–3 ns short at
 the worst (hot/slow) corner — the core works but is not fully timing-clean (98%
-ALM congestion). Next: rebuild with the i-cache fix + HW-test; then the onboard-
-flash load path to boot **hyperbbc** (first flash-only game). Phases 2–5 below are
-still largely unbuilt.
+ALM congestion). Next: pass the CDR gate, then the onboard-flash load path to boot
+**hyperbbc** (first flash-only game). Phases 2–5 below are still largely unbuilt.

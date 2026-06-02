@@ -11,6 +11,12 @@ on it. See also [`PHASE1_PSX.md`](PHASE1_PSX.md) (PSX integration detail),
 [`../dumps/README.md`](../dumps/README.md) (the dump manifest), and
 [`ROADMAP.md`](ROADMAP.md).
 
+Current state (2026-06-02): the CPU i-cache crash that produced the color bars is
+**fixed** (`psx_patches/` 0004/0005), the 18E (H8/3644) I/O-MCU self-test fix is
+**merged** (`rtl/s573_io.v`, PR #16), and the BIOS now boots to the GX700 power-on
+self-test on real hardware (next gate: the CDR / CD-ROM check). Builds run natively on
+**slave1** (`ssh slave1`); the Mac Colima VM was deleted (fallback-only).
+
 ---
 
 ## 1. Operating model (how I work without waiting on you)
@@ -19,8 +25,9 @@ I verify on a three-rung ladder, top rung preferred because it's the most
 observable and scriptable:
 
 1. **Unit sim** (`make -C sim`, iverilog) — already the suite; stays green always.
-2. **Full-system sim** (Verilator) — the workhorse. PSX core + this fabric + the
-   real BIOS/CD/security dumps, booting for real. I have **total observability**:
+2. **Full-system sim** (NVC — the PSX core is VHDL-2008, which Verilator cannot
+   consume) — the workhorse. PSX core + this fabric + the real BIOS/CD/security
+   dumps, booting for real. I have **total observability**:
    - dump the GPU framebuffer to a **PNG I can open and look at**,
    - trace the CPU (PC, BIOS milestones), peripheral accesses, IRQs,
    - assert on known good states ("BIOS POST reached", "CD boot sector read").
@@ -47,9 +54,9 @@ Everything else, I keep moving. If I finish a phase early, I start the next one.
 | Tool | Use | How it's obtained |
 |------|-----|-------------------|
 | iverilog | unit sim | apt (session-start hook already installs it) |
-| **Verilator** + a C++ toolchain | full-system sim | `apt-get install -y verilator`; I'll add this to the hook |
+| **NVC** (VHDL-2008 sim; the PSX core is VHDL, so Verilator cannot consume it) | full-system sim | `brew install nvc` (apt on Ubuntu) |
 | zlib/libpng (or stb_image_write) | dump sim frames to PNG | apt / vendored header |
-| **Quartus Prime Lite 20.1+** (Cyclone V) | build the `.rbf` for hardware | see §9 — this is the one heavy dependency |
+| **Quartus Prime Lite 17.0.x** (matches `pll_q17`; Cyclone V) | build the `.rbf` for hardware | primary build box **slave1** (Dell OptiPlex 7050, Ubuntu 26.04, `ssh slave1`), native Quartus 17.0.x; the Mac Colima VM was deleted (fallback-only) |
 | ssh/scp | load core + read back from the MiSTer | present; needs the connection config |
 | chdman / bin-cue tools | read CD images | apt (`mame-tools`) or vendored |
 
@@ -65,8 +72,10 @@ machine builds the `.rbf`). I'll say so explicitly rather than stall.
 
 ## 3. Observability harness (built early, in Phase 2)
 
-- `sim/system/` — a Verilator top that wires PSX_MiSTer + `system573_top`, loads
-  the dumps, runs N cycles, and on exit writes `out/frame_*.png` + `out/trace.log`.
+- `sim/system573/` — an NVC harness that wires PSX_MiSTer + `system573_top`, loads
+  the dumps, runs N cycles, and on exit writes the GPU framebuffer (`.gra` → PNG via
+  `tools/gra2png.py`) + CPU PC / EXP1 / I/O traces. (The PSX core is VHDL, so this is
+  NVC, not Verilator.)
 - `tools/check_boot.py` — scans a trace for milestone markers and exits non-zero
   if a gate isn't met (so phases self-gate).
 - On hardware: `tools/mister_load.sh` (scp the `.rbf`, trigger load),
@@ -113,9 +122,9 @@ commit, push, then continue.
 - **Hardware:** none yet.
 
 ### Phase 2 — Full-system sim harness + observability
-- **Build:** §3 harness — Verilator top, PNG frame dump, trace, `check_boot.py`.
-  Extend the session-start hook to install Verilator and (when dumps exist) run a
-  smoke sim.
+- **Build:** §3 harness — NVC top, framebuffer dump, trace, `check_boot.py`.
+  Extend the session-start hook to install NVC and (when dumps exist) run a
+  smoke sim. (NVC, not Verilator — the PSX core is VHDL.)
 - **Verify:** harness elaborates and runs the PSX core executing from the Konami
   BIOS for a few frames without the fabric faulting; produces a PNG + trace.
 - **Gate:** a frame PNG is produced and the trace shows the CPU fetching BIOS.
@@ -200,8 +209,8 @@ Roughly the order they appear:
 1. `psx/` (submodule), `rtl/exp1_adapter.v`, `sim/tb_exp1_adapter.v`, BIOS/RAM/VRAM
    edits in the PSX core (isolated patch set), `Konami_System_573.qsf`/`files.qip`
    updates. *(P1)*
-2. `sim/system/` (Verilator top + C++ driver), `tools/check_boot.py`,
-   `.claude/hooks/session-start.sh` (add Verilator), `tools/png_write.h`. *(P2)*
+2. `sim/system573/` (NVC harness + VHDL EXP1 responder), `tools/check_boot.py`,
+   `.claude/hooks/session-start.sh` (add NVC), `tools/gra2png.py`. *(P2)*
 3. boot-bringup fixes across `rtl/s573_io.v`, `rtl/m48t58.v`, `rtl/watchdog.v`,
    `rtl/s573_seccart.v` as the BIOS demands. *(P3)*
 4. `rtl/emu.sv` (MiSTer video/audio/inputs, screenshot, debug status block),

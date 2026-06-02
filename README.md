@@ -38,10 +38,12 @@ The full register map (transcribed from psx-spx) lives in
 
 The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
 core is integrated over EXP1**, the **Konami BIOS executes in full-system
-simulation**, and — as of 2026-06-01 — **the core boots that BIOS and displays it
-on real MiSTer hardware**: a built `.rbf` brings up the gchgchmp 573 BIOS to its
-video-test screen (clean color bars) with a locked component signal on
-a CRT (Cyclone V, DE10-Nano-class; verified on a SuperStation One). There's plenty
+simulation**, and — as of 2026-06-02 — **the core boots that BIOS and displays it
+on real MiSTer hardware**: a built `.rbf` brings up the gchgchmp 573 BIOS; the color
+bars (initially a CPU i-cache crash, fixed via `psx_patches/` 0004/0005) are now
+passed and the BIOS reaches the GX700 power-on self-test (parked at CDR), with a
+locked component signal on a CRT (Cyclone V, DE10-Nano-class; verified on a
+SuperStation One). There's plenty
 left — inputs, CD/security/flash, full game compatibility — but it is a real,
 booting core now, not glue around a stub.
 
@@ -59,14 +61,20 @@ booting core now, not glue around a stub.
   reset vector through the 4 MB RAM test, BSS clear, **main init (`0x1FC05504`)**
   and **GPU init** (the GPUSTAT poll resolves), kicking the 573 watchdog over EXP1
   throughout. `tools/check_boot.py` gates these milestones.
-- **Phase 3 in progress:** driving the boot to a non-black framebuffer (the boot
-  screen). The current bottleneck is *simulation speed* — early boot runs uncached
-  (KSEG1) and is dominated by the SDRAM model's per-access latency.
+- **Phase 3 — BIOS self-tests on hardware:** the color bars turned out to be a CPU
+  i-cache *crash* (wrong instruction word on the cached KSEG0 BIOS mirror), now fixed
+  by `psx_patches/` 0004 (i-cache redirect) + 0005 (run BIOS fetches uncached). With
+  the 18E (H8/3644) I/O-MCU self-test answered (`rtl/s573_io.v`, PR #16), the BIOS boots
+  past the color bars to the GX700 power-on self-test on real hardware. The self-test
+  is a sequential gate, now parked at CDR (CD-ROM), the next check. Sim speed was the
+  Phase-3 frontier earlier but is no longer the blocker.
 - **Phase 4 (hardware) — boots on real hardware:** `rtl/emu.sv` is the real MiSTer
   top — a clone of the proven `psx/PSX.sv` with the 573 EXP1 deltas — and the design
-  builds a `.rbf` (Quartus 17.0 via Colima/Docker, 30 GB swap for the PS1 core's
-  memory-heavy A&S) that **boots the Konami BIOS to its color-bar test screen on a real
-  board**. Getting there fixed the Quartus-hostile RTL (`synthesis translate_off`
+  builds a `.rbf` (Quartus 17.0 built natively on **slave1** (Dell OptiPlex 7050,
+  Ubuntu 26.04; `ssh slave1`) — the Mac's Colima/Quartus VM was deleted to free disk
+  and is fallback-only) that **boots the Konami BIOS past the color bars (an i-cache
+  crash now fixed) to the GX700 power-on self-test, parked at the CDR check**. Getting
+  there fixed the Quartus-hostile RTL (`synthesis translate_off`
   guards, M10K NVRAM, constant-folded flash) **and** two build-config defects found
   by an adversarial review — a mis-pinned bitstream (no pin-location files →
   `sys_pins.tcl`) and unmet timing (unsourced `psx/PSX.sdc`). clk_1x/clk_vid now

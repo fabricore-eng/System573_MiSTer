@@ -43,11 +43,20 @@ inherit GPL-2.0 and should be kept as isolated, offer-back-able diffs.
 `CORE_RBF=Konami_System_573.rbf`). `ssh mister` is confirmed working (kernel 5.15.1
 armv7l). `MISTER_SHOT_DIR=/media/fat/screenshots` is auto-created on first capture.
 
-## FPGA bitstream build (Quartus in Docker via Colima) — STAGED & VALIDATED
+## FPGA bitstream build (native Quartus 17.0 on slave1)
 
 The `.rbf` needs x86-64 Quartus Prime Lite 17.0.x (Cyclone V `5CSEBA6U23I7`); the
-MiSTer's ARM CPU can't build it. The builder is **this Mac**, running an amd64 Quartus
-container under **Colima + Apple-Virtualization + Rosetta**. This is set up and proven:
+MiSTer ARM CPU can not build it. The **primary build box is `slave1`** (Dell OptiPlex
+7050, Ubuntu 26.04, reached via `ssh slave1` / `slave1.local`), which runs Quartus 17.0
+natively. Build there with `ssh slave1 ... quartus_sh --flow compile Konami_System_573`
+→ `output_files/Konami_System_573.rbf`.
+
+### Fallback: Quartus in Colima/Docker on the Mac (LEGACY — VM deleted June 2026)
+
+> The Mac's Colima/Quartus VM was **deleted to free disk** — this recipe is kept for
+> reference as a fallback only, not the current build path. Builds now run natively on
+> `slave1` (above).
+
 `raetro/quartus:17.0` (17.1 GB, bundles **Quartus 17.0.2 Build 602 Lite** + Cyclone V —
 no Intel-login installer needed) is pulled into the VM. A **full compile was validated
 end-to-end under Rosetta**: a minimal design targeting the DE10-Nano part

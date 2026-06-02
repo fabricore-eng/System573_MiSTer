@@ -4,7 +4,9 @@ This is the plan for the one piece this repository deliberately does **not**
 implement from scratch: the PlayStation 1 itself (R3000A + GTE + DMA + GPU + SPU).
 Everything else in the core is built and unit-tested around the EXP1 master
 contract that this PS1 core must drive. This document is the concrete integration
-plan; it is not yet implemented (`rtl/ps1_stub.v` is the placeholder).
+plan; see **Implementation status (2026-06-02)** below — it is now implemented
+(`rtl/emu.sv` is a clone of `psx/PSX.sv` with the 573 EXP1 deltas; `ps1_stub` is
+replaced).
 
 ## What we're integrating
 
@@ -103,7 +105,14 @@ peripheral tests.
 - Whether DMA ch5 needs cycle-accurate behavior for the BIOS CD reader or whether
   PIO suffices for initial boot.
 
-## Implementation status
+## Implementation status (2026-06-02)
+
+**Implemented:** `rtl/emu.sv` is a clone of `psx/PSX.sv` with the 573 EXP1 deltas
+(`ps1_stub` replaced). Two CPU i-cache fixes — `psx_patches/` 0004 (redirect) + 0005
+(BIOS-uncached) — fixed the color-bar crash, and the 18E (H8/3644) I/O-MCU self-test
+fix (`rtl/s573_io.v`, PR #16) lets the BIOS pass POST. The BIOS now boots to the GX700
+power-on self-test on real hardware (next gate: the CDR / CD-ROM check). See
+`docs/ROADMAP.md` for the i-cache-crash analysis.
 
 The simulation strategy is settled empirically: the PSX core is VHDL-2008 and is
 simulated under **NVC** (Verilator cannot consume it; mixed VHDL+Verilog co-sim of the
