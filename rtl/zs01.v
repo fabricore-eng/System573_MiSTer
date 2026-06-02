@@ -204,6 +204,12 @@ module zs01 #(
                             shift <= 8'd0;
                             wbuf[bytec] = shift;                 // store byte
                             if (bytec == 8'd11) begin
+                                // synthesis translate_off
+                                // SIM-ONLY: the ZS01 security-packet engine -- unrolled
+                                // decrypt/encrypt ciphers + CRC + two 112-byte clocked
+                                // full-array clears, all in one clock edge. Quartus-
+                                // hostile, and the security cart is bypassed at BIOS boot
+                                // (gchgchmp no-security path), so it never runs there.
                                 // ===== full packet processing (behavioral) =====
                                 decrypt_cmd;
                                 if (wbuf[0] & 8'h04) decrypt_data(prevbyte);
@@ -253,6 +259,7 @@ module zs01 #(
                                 rbuf[11] = crc2[7:0];
                                 encrypt_resp;
                                 prevbyte <= pbnext;
+                                // synthesis translate_on
                                 bytec <= 8'd0;
                                 state <= ST_READ;
                             end else

@@ -74,18 +74,37 @@ module flash_nor #(
                         else state <= ST_READ;
                     end
                     ST_PROG: begin
+                        // synthesis translate_off
+                        // SIM-ONLY: NOR program is a read-modify-write -- it reads the
+                        // array combinationally to AND-in 1->0 bits. That async read on
+                        // the write port blocks M10K inference; with the erase paths
+                        // also guarded, mem has no synthesizable writes, so Quartus
+                        // folds the four flash windows to a constant 0xFFFF instead of
+                        // ~131k logic registers (which overflow the device). Flash is
+                        // therefore READ-ONLY in hardware for now -- gchgchmp never
+                        // writes flash; a sync-friendly (M10K, 2-cycle) program path
+                        // plus an HPS flash-image load is future work. iverilog ignores
+                        // the pragma, so the program/erase unit tests still pass.
                         mem[addr[10:0]] <= mem[addr[10:0]] & din;   // NOR: 1->0 only
+                        // synthesis translate_on
                         state <= ST_READ;
                     end
                     ST_ER1:  state <= (hit1 && din[7:0]==8'hAA) ? ST_ER2 : ST_READ;
                     ST_ER2:  state <= (hit2 && din[7:0]==8'h55) ? ST_ERCMD : ST_READ;
                     ST_ERCMD: begin
+                        // synthesis translate_off
+                        // SIM-ONLY: JEDEC chip/sector erase is a clocked full-array
+                        // write (2048 / 512 words set in one edge). Quartus-hostile
+                        // (blocks BRAM inference, builds a wide parallel write-decode)
+                        // and never issued at BIOS boot -- POST only reads/ID-checks
+                        // flash; bulk erase happens during game/data flashing.
                         if (hit1 && din[7:0]==8'h10)                 // chip erase
                             for (i = 0; i < WORDS; i = i + 1) mem[i] <= 16'hFFFF;
                         else if (din[7:0]==8'h30) begin              // sector erase
                             base = (addr[10:0] / SECTOR_WORDS) * SECTOR_WORDS;
                             for (i = 0; i < SECTOR_WORDS; i = i + 1) mem[base+i] <= 16'hFFFF;
                         end
+                        // synthesis translate_on
                         state <= ST_READ;
                     end
                     ST_AUTO:  state <= ST_AUTO;   // exits via the F0 reset above

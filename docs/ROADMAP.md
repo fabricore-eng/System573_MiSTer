@@ -25,11 +25,17 @@ The 573 is a PS1. The only sane way forward is to integrate an existing,
 open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 See [`PHASE1_PSX.md`](PHASE1_PSX.md) for the concrete integration plan (EXP1
 hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
-- [ ] Vendor in / submodule the MiSTer PSX core (`MiSTer-devel/PSX_MiSTer`)
-- [ ] Replace `ps1_stub.v` with the real core's EXP1 master + video/audio
-- [ ] Expose the EXP1 bus and route it through `s573_bus`
-- [ ] Bring up the 512 KB Konami BIOS in place of the SCPH BIOS
-- [ ] Map 4 MB main / 2 MB VRAM (the 573's enlarged memories vs. retail PS1)
+- [x] Vendor in / submodule the MiSTer PSX core (`MiSTer-devel/PSX_MiSTer`,
+      pinned; EXP1 widening + NVC-strictness fixes live in `psx_patches/`)
+- [x] Replace `ps1_stub.v` with the real core's EXP1 master + video/audio
+      (`rtl/emu.sv` = a clone of `psx/PSX.sv` with the 573 EXP1 deltas)
+- [x] Expose the EXP1 bus and route it through `s573_bus` (widened to a full
+      16-bit master + IRQ10; `system573_top` is the EXP1 slave)
+- [x] Bring up the 512 KB Konami BIOS in place of the SCPH BIOS (executes in the
+      NVC sim **and** on real hardware via the `games/PSX/boot.rom` path)
+- [~] Map 4 MB main / 2 MB VRAM — 4 MB main RAM done (`ram8mb=1`, sim-validated);
+      the 573's **2 MB VRAM** (vs the PSX core's 1 MB) is **not yet addressed**
+      and is a candidate factor in the open video-output issue
 
 ## Phase 2 — make it boot
 - [~] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
@@ -43,8 +49,11 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       - [x] AMD/Fujitsu NOR program/erase command engine (`rtl/flash_nor.v`,
             tested), wired as s573_flash's per-bank backing (writes go through
             the unlock/program/erase sequences); DDR3-backed store still to do
-- [ ] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
-- [ ] Get the Konami BIOS to POST and reach the CD boot
+- [~] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
+      (conservatively routed in `emu.sv`: `joy[7:0]` → p1/p2; full JAMMA map TODO)
+- [~] Get the Konami BIOS to POST and reach the CD boot — POSTs through RAM test,
+      BSS clear, **main init** and GPU init in the NVC sim; gchgchmp (game-in-BIOS)
+      needs no CD. **Open frontier:** no visible video yet (see below)
 
 ## Phase 3 — security & per-game
 - [x] Security cart EEPROM: X76F100 bit-banged I2C (`rtl/x76f100.v`, tested)
@@ -80,5 +89,38 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [ ] Save/restore of NVRAM + security state to SD
 - [ ] Per-game timing, video options, MiSTer OSD menu
 
-Phases 1–5 are large. Phase 0 (this repo) is the part that is *done and
-verified*; everything below is specified but unbuilt.
+Phases 1–5 are large. Phase 0 (the 573 glue) is *done and verified*, and
+**Phase 1 (sit on a real PSX core) is complete** — the integrated core executes
+the Konami BIOS in simulation **and boots + displays it on real MiSTer hardware**
+(Cyclone V, 98% ALM / 100% DSP fit; see [`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
+
+## Hardware bring-up status — IT BOOTS (2026-06-01)
+**The core boots the Konami BIOS and displays correctly on real hardware.** On a
+SuperStation One the gchgchmp BIOS comes up to its test screen — clean SMPTE-style
+color bars and a working menu — with a locked, perfect component signal on a CRT
+(and a matching HDMI scaler capture). So the R3000 CPU runs from real SDRAM, the
+GPU renders into VRAM, and video scans out end-to-end.
+
+Getting there took fixing **two build-config defects** in the first `.rbf` (found
+by the video-output investigation + the PR #14 adversarial review; the early
+"runs on hardware" claim before these was wrong):
+
+1. **Mis-pinned bitstream** — the project sourced the framework HDL (`sys.qip`)
+   but *no* pin-location files, so all 145 board pins (SDRAM, HDMI, VGA…) were
+   auto-placed to arbitrary balls. SDRAM mis-pinned ⇒ the BIOS couldn't run; VGA
+   mis-pinned ⇒ the CRT wouldn't lock (the HPS side still worked, masking it).
+   Fixed: `sys_pins.tcl`.
+2. **Timing not met** — `psx/PSX.sdc` (the pll2→clk_vid generated clock + cross-
+   PLL false-paths) was never sourced, so STA reported huge negative slack
+   (clk_1x ~28.5 MHz vs the ~33.8 it needs). "0 A&S errors" ≠ timing met. Fixed:
+   source `psx/PSX.sdc` — clk_1x and clk_vid now meet.
+
+Notably, the simulation-side "black framebuffer" (Phase-3) turned out to be a
+**sim artifact** (the NVC harness's behavioral EXP1 responder returns zeros); on
+correctly-pinned, timing-met silicon the render→display path just works.
+
+**Remaining polish / next:** clk_2x and the HDMI PLL are still ~2–3 ns short at
+the worst (hot/slow) corner — the core works but is not fully timing-clean (98%
+ALM congestion); drive the menu with real inputs (JAMMA mapping/polarity); then
+CD / security-cart / flash for the broader library. Phases 2–5 below are still
+largely unbuilt.

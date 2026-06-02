@@ -200,12 +200,18 @@ module x76f100 #(
                                         if (!match) begin
                                             if (retry == 4'd7) begin
                                                 // lockout: zero passwords + data
+                                                // synthesis translate_off
+                                                // SIM-ONLY: 112-byte + 16-byte clocked
+                                                // full-array clear (Quartus-hostile).
+                                                // The 8-fail lockout never trips at BIOS
+                                                // boot -- the cart is read, not brute-forced.
                                                 for (j = 0; j < 8; j = j + 1) begin
                                                     rpw[j] <= 8'h00;
                                                     wpw[j] <= 8'h00;
                                                 end
                                                 for (j = 0; j < 112; j = j + 1)
                                                     data[j] <= 8'h00;
+                                                // synthesis translate_on
                                                 retry <= 4'd0;
                                             end else
                                                 retry <= retry + 4'd1;

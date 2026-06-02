@@ -37,10 +37,13 @@ The full register map (transcribed from psx-spx) lives in
 ## Status — honest accounting
 
 The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
-core is integrated over EXP1**, and the **Konami BIOS now executes in full-system
-simulation**. It is not yet a game-booting `.rbf` — that still needs the rest of
-the boot bring-up, the MiSTer top-level wiring, and a Quartus build — but the core
-is well past "glue around a stub."
+core is integrated over EXP1**, the **Konami BIOS executes in full-system
+simulation**, and — as of 2026-06-01 — **the core boots that BIOS and displays it
+on real MiSTer hardware**: a built `.rbf` brings up the gchgchmp 573 BIOS to its
+test screen (clean color bars + a working menu) with a locked component signal on
+a CRT (Cyclone V, DE10-Nano-class; verified on a SuperStation One). There's plenty
+left — inputs, CD/security/flash, full game compatibility — but it is a real,
+booting core now, not glue around a stub.
 
 **Where it is right now (updated 2026-06-01):**
 
@@ -59,6 +62,16 @@ is well past "glue around a stub."
 - **Phase 3 in progress:** driving the boot to a non-black framebuffer (the boot
   screen). The current bottleneck is *simulation speed* — early boot runs uncached
   (KSEG1) and is dominated by the SDRAM model's per-access latency.
+- **Phase 4 (hardware) — boots on real hardware:** `rtl/emu.sv` is the real MiSTer
+  top — a clone of the proven `psx/PSX.sv` with the 573 EXP1 deltas — and the design
+  builds a `.rbf` (Quartus 17.0 via Colima/Docker, 30 GB swap for the PS1 core's
+  memory-heavy A&S) that **boots the Konami BIOS to color bars + a menu on a real
+  board**. Getting there fixed the Quartus-hostile RTL (`synthesis translate_off`
+  guards, M10K NVRAM, constant-folded flash) **and** two build-config defects found
+  by an adversarial review — a mis-pinned bitstream (no pin-location files →
+  `sys_pins.tcl`) and unmet timing (unsourced `psx/PSX.sdc`). clk_1x/clk_vid now
+  meet; clk_2x is ~3 ns short at the worst corner (a polish item). See
+  [`docs/PHASE4_HARDWARE.md`](docs/PHASE4_HARDWARE.md).
 
 A complete System 573 core has to sit on top of a full PlayStation 1 (the kind of
 effort that took the MiSTer PSX core years); this repo implements and
@@ -86,12 +99,12 @@ core underneath it.
 | NOR flash command engine       | `rtl/flash_nor.v`     | ✅ implemented + tested |
 | Security-cartridge bus glue    | `rtl/s573_seccart.v`  | ✅ implemented + tested |
 | PS1 CPU/GPU/SPU subsystem      | `psx/` submodule      | ✅ integrated in sim (EXP1) |
-| PS1 integration stub (build)   | `rtl/ps1_stub.v`      | 🔌 still in `emu.sv` (Phase 4) |
-| MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold (Phase 4) |
+| MiSTer top level               | `rtl/emu.sv`          | ✅ PSX.sv clone + 573 deltas; **boots BIOS on real hardware** |
 | MAS3507D MP3 decode (Phase 9)  | —                     | 📋 documented, not impl |
 
 ✅ = real RTL with a passing testbench (or, for `psx/`, executing the BIOS in the
-full-system NVC sim). 🔌 = compiles/wires but is a placeholder. 📋 = docs only.
+full-system NVC sim). 🏗️ = real RTL that synthesizes but isn't hardware-verified
+yet. 📋 = docs only.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the phases and
 [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) for the detailed plan from here
