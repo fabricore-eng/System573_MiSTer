@@ -24,12 +24,17 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/fla
 # (apply via tools/apply_psx_patches.sh BEFORE building). rtl/emu.sv is a clone
 # of psx/PSX.sv (the proven top) with the 573 EXP1 deltas, so it -- NOT
 # psx/PSX.sv -- is the core top. Pull the PSX RTL via its nested qips; do NOT
-# source psx/files.qip (it would also pull PSX.sv/PSX.sdc). pll.qip is included
-# explicitly: upstream gets `pll` (pll_q17) from psx/sys, which we don't use.
+# source psx/files.qip (it would also pull PSX.sv/PSX.sdc). emu.sv instantiates
+# BOTH `pll` (clk_1x/2x/3x) and `pll2` (clk_vid), so pll.qip AND pll2.qip are
+# included explicitly -- each adds its wrapper + the pll*/pll*_0002 IP (library
+# pll / pll2). The pll_0002 IP lives in the psx/rtl/pll subdir, which the bare
+# SEARCH_PATH does not reach, so the qip (not search-path discovery) is required.
+# The sys framework's own `pll_q17` (psx/sys) is a different, unused entity.
 # ps1_stub.v is removed -- the real psx_mister replaces it.
 # ---------------------------------------------------------------------------
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/psx.qip]
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/mem.qip]
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/pll.qip]
 set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) psx/rtl/pll2.qip]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) psx/rtl/sdram.sv]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) psx/rtl/ddram.sv]

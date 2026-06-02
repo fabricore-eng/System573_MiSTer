@@ -378,12 +378,19 @@ module x76f041 #(
                                 ST_RESET_RPW:
                                     for (j = 0; j < 8; j = j + 1) rpw[j] <= 8'h00;
                                 ST_MASS_PROGRAM, ST_MASS_ERASE: begin
+                                    // synthesis translate_off
+                                    // SIM-ONLY: mass program/erase sets all 512 data
+                                    // bytes (+ 4 config arrays) in one edge -- a clocked
+                                    // full-array write that blocks BRAM inference.
+                                    // Reached only via CONFIG sub-cmds 0x70/0x80, which
+                                    // the 573 BIOS never issues at boot.
                                     nb = (state == ST_MASS_ERASE) ? 8'hff : 8'h00;
                                     for (j = 0; j < 512; j = j + 1) data[j] <= nb;
                                     for (j = 0; j < 8;   j = j + 1) begin
                                         cpw[j]  <= nb; creg[j] <= nb;
                                         wpw[j]  <= nb; rpw[j]  <= nb;
                                     end
+                                    // synthesis translate_on
                                 end
                                 default: ;
                             endcase

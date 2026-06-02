@@ -25,9 +25,18 @@ module tb_m48t58;
         end
     endtask
 
+    // RTC register reads are combinational.
     task rd(input [12:0] a, output [7:0] d);
         begin
             addr = a; #1; d = dout;
+        end
+    endtask
+
+    // NVRAM reads are synchronous now (registered M10K output): present the address,
+    // then wait a clock edge for the read data before sampling.
+    task rd_nv(input [12:0] a, output [7:0] d);
+        begin
+            addr = a; @(posedge clk); #1 d = dout;
         end
     endtask
 
@@ -46,8 +55,8 @@ module tb_m48t58;
         // 1) NVRAM persistence.
         wr(13'd100, 8'hAB);
         wr(13'd8000, 8'h5A);
-        rd(13'd100, got);  check(got, 8'hAB, "nvram@100");
-        rd(13'd8000, got); check(got, 8'h5A, "nvram@8000");
+        rd_nv(13'd100, got);  check(got, 8'hAB, "nvram@100");
+        rd_nv(13'd8000, got); check(got, 8'h5A, "nvram@8000");
 
         // 2) Set time via WRITE freeze, then release and advance 3 seconds.
         wr(CTRL, 8'h80);          // enter write freeze (clock paused)

@@ -60,7 +60,14 @@ module atapi #(
     // small disc backing store (sim) with a deterministic per-byte pattern
     reg [7:0]  disc [0:NSECT*2048-1];
     integer    s;
+    // synthesis translate_off
+    // SIM-ONLY disc fill (deterministic per-byte pattern). Not synthesizable: the
+    // NSECT*2048 loop exceeds Quartus's 5000-iteration unroll limit, and on real
+    // hardware the disc store is DDR3-backed (Phase 7/8), not this array. For the
+    // BIOS boot (gchgchmp, no CD) disc[] is never read, so leaving it uninitialized
+    // in synthesis is functionally harmless.
     initial for (s = 0; s < NSECT*2048; s = s + 1) disc[s] = s[7:0];
+    // synthesis translate_on
 
     assign intrq = irq_pending & ~r_devctl[1];   // nIEN = device control bit1
 

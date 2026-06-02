@@ -45,20 +45,24 @@ module tb_system573_top;
     endtask
 
     // EXP1 read modelled after the single-beat read latency of the PSX
-    // external-bus FSM (PSX_MiSTer memorymux.vhd): the strobe is asserted during
-    // EXT_READ_NEXT, a registered slave latches its data on that edge, and the FSM
-    // samples the data later in EXT_READ -- *after* the strobe has deasserted, and
-    // possibly several free-running clk edges later (the PSX core's ce gates the
-    // FSM but not this fabric). We assert re for one beat, deassert it, hold for a
-    // couple of clk edges, then sample. This fails if the fabric regresses to a
-    // combinational read (collapses to 0 once exp1_re drops) OR to an exp2-style
+    // external-bus FSM (PSX_MiSTer memorymux.vhd). The FSM holds the address stable
+    // for an R-delay cycle (EXT_READ_WAIT) BEFORE asserting the strobe in
+    // EXT_READ_NEXT, so synchronous EXP1 slaves (e.g. the M48T58 NVRAM, a registered
+    // M10K read) have valid data when the slave latches rdata_mux on that edge; the
+    // FSM then samples the data later in EXT_READ -- *after* the strobe has
+    // deasserted, and possibly several free-running clk edges later (the PSX core's
+    // ce gates the FSM but not this fabric). We present the address with re low for a
+    // settle cycle, assert re for one beat, deassert it, hold for a couple of clk
+    // edges, then sample. This fails if the fabric regresses to an exp2-style
     // clear-to-0 default (loses the value across the ce-gap cycles modelled here).
     // It deliberately does NOT model multi-beat / wait-state transactions or the
     // 8/16-bit byte stepping -- that is exercised end-to-end by the full-system
     // sim (see docs/PHASE1_PSX.md).
     task exp1_read(input [23:0] a, output [15:0] d);
         begin
-            @(negedge clk); exp1_addr = a; exp1_re = 1; exp1_we = 0; // EXT_READ_NEXT
+            @(negedge clk); exp1_addr = a; exp1_re = 0; exp1_we = 0; // EXT_READ_WAIT: addr settles
+            @(posedge clk);                 // synchronous slaves register their read here
+            @(negedge clk); exp1_re = 1;     // EXT_READ_NEXT: assert read strobe
             @(posedge clk);                 // slave latches rdata_mux on this edge
             @(negedge clk); exp1_re = 0;     // strobe deasserts (entering EXT_READ)
             repeat (2) @(posedge clk);       // ce-gap: registered value must hold
