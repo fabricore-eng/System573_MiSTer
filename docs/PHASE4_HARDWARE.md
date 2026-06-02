@@ -4,6 +4,12 @@ The goal: a buildable `.rbf` (Quartus 17.0.2, Cyclone V `5CSEBA6U23I7`, DE10-Nan
 whose `sys_top`/`emu` boots the Konami 573 BIOS and shows the boot screen on the
 physical board.
 
+As of 2026-06-02 the core boots the Konami BIOS on real hardware **past the color
+bars** to the GX700 power-on self-test (CDR is the next gate). Two CPU i-cache fixes
+(`psx_patches/` 0004 redirect + 0005 BIOS-uncached) fixed the color-bar crash; the 18E
+(H8/3644) I/O-MCU self-test fix (`rtl/s573_io.v`, PR #16) lets the BIOS pass POST.
+Builds now run natively on **slave1** (`ssh slave1`); the Mac Colima VM was deleted.
+
 ## Key insight
 
 `emu.sv` should be a **near-clone of the upstream `psx/PSX.sv`** (the proven
@@ -47,9 +53,10 @@ The full-system NVC harness `sim/system573/tb_system573.vhd` is the authoritativ
 6. **`Konami_System_573.sdc`**: drop the `CLK_50M` placeholder clock (sys.sdc +
    PLL constraints come from sys). If timing fails, port multicycle/false-path
    lines from `psx/PSX.sdc`.
-7. **Build** the `.rbf` — Colima + `raetro/quartus:17.0` (see docs/DEPENDENCIES.md):
-   `colima start` → `quartus_sh --flow compile Konami_System_573` →
-   `output_files/Konami_System_573.rbf`. ~30–60 min.
+7. **Build** the `.rbf` on **slave1** (native Quartus 17.0; `ssh slave1`):
+   `quartus_sh --flow compile Konami_System_573` →
+   `output_files/Konami_System_573.rbf`. ~30–60 min. (The Mac Colima/`raetro/quartus:17.0`
+   path is legacy fallback-only — that VM was deleted; see docs/DEPENDENCIES.md.)
 8. **Deploy tooling** (TODO, don't exist yet): `tools/mister_load.sh` (scp `.rbf` +
    BIOS, load) and `tools/mister_shot.sh` (pull the screenshot) using `local/mister.env`
    (192.168.1.40, key mister_crt, `/media/fat/_Arcade`, `/media/fat/screenshots`).
@@ -74,7 +81,7 @@ CD images + security carts come via the HPS `sd_*`/`img_mounted` path later.
 See docs/EXECUTION_PLAN.md (Phase 4), docs/DEPENDENCIES.md (Colima/Quartus recipe),
 docs/PHASE1_PSX.md (EXP1 contract), and the project memory.
 
-## Build status (2026-06-01)
+## Build status (2026-06-02)
 
 The integration **compiles and synthesizes**. Quartus elaborates the full
 hierarchy (`emu | psx_mister | psx_top | cpu | spu | gpu | memorymux |
@@ -131,9 +138,11 @@ adversarial PR review; both now fixed):**
    SDC_FILE psx/PSX.sdc`.
 
 So the *original* "builds clean / runs on hardware" claim was wrong. **With both
-fixes, the rebuilt `.rbf` BOOTS:** on a SuperStation One the gchgchmp BIOS comes
-up to its color-bar video-test screen — with a locked
-component signal on a CRT (and a matching HDMI scaler capture). The CPU runs from
+fixes, the rebuilt `.rbf` BOOTS to the color bars.** Those color bars were
+*subsequently* identified as a CPU i-cache crash (not a healthy parked screen) and
+fixed (`psx_patches/` 0004/0005); with the 18E self-test answered (PR #16) the BIOS now
+boots **past** the color bars to the GX700 power-on self-test (parked at CDR). The
+locked component signal on a CRT / HDMI scaler capture still hold. The CPU runs from
 real SDRAM, the GPU renders into VRAM, and video scans out. The sim's "black
 framebuffer" (Phase-3) was a sim artifact (the NVC harness's behavioral EXP1
 responder returns zeros); on correct silicon the render→display path works.

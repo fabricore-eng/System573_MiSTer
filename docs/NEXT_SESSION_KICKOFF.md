@@ -52,9 +52,15 @@ saves, verified in full-system simulation AND on real hardware.
   `MEMORY_MAP.md`, `dumps/README.md`. Read your memory files. Keep `ROADMAP.md`
   checkboxes current; maintain `docs/COMPAT.md` as you bring titles up.
 
-### Current state (don't re-derive — updated 2026-06-01)
+### Current state (don't re-derive — updated 2026-06-02)
 **Phases 1 & 2 are DONE and merged to `main` (7 reviewed PRs, #5–#10); the Konami BIOS
-executes on the integrated PSX+573 core in simulation and reaches main init.** Read
+executes on the integrated PSX+573 core in simulation and reaches main init.**
+- i-cache fixes `psx_patches/` 0004 (redirect) + 0005 (BIOS-uncached) are MERGED; the
+  18E (H8/3644) self-test fix (`rtl/s573_io.v`, PR #16) is MERGED. On real hardware the
+  BIOS now boots **past the color bars** (which were an i-cache crash) to the GX700
+  power-on self-test, parked at the CDR gate.
+
+Read
 `sim/system573/README.md`, `docs/PHASE1_PSX.md`, and project memory (`MEMORY.md` →
 `phase1-2-integration-done`, `sim-toolchain-verdict`) for the precise verified state.
 - 20+ peripheral modules done; unit sim 19/19 green (`make -C sim`).
@@ -73,18 +79,17 @@ executes on the integrated PSX+573 core in simulation and reaches main init.** R
   `FAST_RAMTEST`/`TURBO` accelerators + CPU PC tap + I/O tap. **Verified (clean 150 ms run):
   BIOS → main init `0x1FC05504` → GPU init (GPUSTAT poll resolves) → grinding a large
   uncached BIOS→RAM copy.** Framebuffer still black (no draw yet).
-- **Phase 3 frontier = SIM SPEED (the only gate to a boot screen):** the boot is dominated by
-  uncached (KSEG1) memory work paying the SDRAM-model latency; TURBO only helps cached. Next
-  levers: reduce the SDRAM-model latency for bring-up (carefully — core cache/DMA timing
-  depends on the model's `done` cadence) OR savestate-checkpoint the boot; then drive to a
-  non-black framebuffer, compare vs MAME `ksys573`, add `tools/check_boot.py`.
+- **Phase 3 — done on hardware:** the boot reaches the GX700 power-on self-test on real
+  silicon (color bars were an i-cache crash, fixed). Current frontier is the **CDR (CD-ROM)
+  gate** in the sequential POST, plus the hyperbbc flash-load path (docs/FLASH_LOAD_PLAN.md).
   **PROCESS LESSON:** run the NVC harness SINGLE-WRITER to `build/` — a concurrent run
   clobbering `build/` once produced corrupted traces and an overclaim (caught in review).
 - Dumps in `dumps/` (git-ignored): BIOS in `dumps/bios/` (incl. `700a01(gchgchmp).22g` — the
   game-in-BIOS that boots with NO CD/security; the current harness target), Redump discs, and
   `dumps/mame573/` carts + disc CHDs + `k573dio`/`k573msu` ROMs. Salaryman Champ (`salarymc`)
   = a clean plain CD + X76F100 first-game target. See `dumps/README.md`.
-- Board reachable: `ssh mister` works (`local/mister.env`). Builder = this Mac (below).
+- Board reachable: `ssh mister` works (`local/mister.env`). Builder = **slave1** (Dell
+  OptiPlex 7050, Ubuntu 26.04, `ssh slave1`); the Mac Colima VM was deleted (fallback-only).
 
 ### Verification ladder (self-verify every step — you have eyes, use PNGs)
 1. **Unit sim** (iverilog): keep 19/19 green; add tests for new RTL.
@@ -98,16 +103,16 @@ executes on the integrated PSX+573 core in simulation and reaches main init.** R
 3. **Hardware**: build the `.rbf` (below), scp to the MiSTer, load, screenshot back,
    LOOK; poll a debug status block. Build `tools/mister_{load,shot,dbg}.sh`.
 
-### Hardware build path (Quartus in x86 Docker on this Mac)
-- The `.rbf` needs x86-64 Quartus Prime Lite (Cyclone V; 17.0.x to match `pll_q17`).
-  The MiSTer's ARM CPU cannot build it. Run Quartus headless in an amd64 Linux
-  container on this Apple-Silicon Mac. Colima is pre-staged for this (see
-  `docs/DEPENDENCIES.md` / the Colima section) — prefer the Apple-Virtualization +
-  Rosetta x86_64 path over plain qemu for speed.
+### Hardware build path (native Quartus 17.0 on slave1)
+- The `.rbf` needs x86-64 Quartus Prime Lite 17.0.x (Cyclone V, to match `pll_q17`).
+  Build it on **slave1** (Dell OptiPlex 7050, Ubuntu 26.04, `ssh slave1`), which runs
+  Quartus natively: `quartus_sh --flow compile Konami_System_573` →
+  `output_files/Konami_System_573.rbf`. The Mac Colima/Docker recipe in
+  `docs/DEPENDENCIES.md` is fallback-only (that VM was deleted).
   * Build headless: `quartus_sh --flow compile Konami_System_573` →
     `output_files/Konami_System_573.rbf` (after the DEPENDENCIES.md `.qsf`/`.qip`
     wiring: TOP_LEVEL_ENTITY sys_top, `source sys/sys.tcl`, nested `psx/rtl/*.qip`).
-- Emulated builds are SLOW and RAM-hungry: iterate functionality in the Verilator sim;
+- Builds are SLOW and RAM-hungry: iterate functionality in the NVC sim;
   run the Quartus build only at phase gates, not per change.
 - If the Quartus image/installer isn't fully staged (Intel gates the installer behind a
   login), DO NOT BLOCK: keep doing ALL sim-based development + verification (that covers
