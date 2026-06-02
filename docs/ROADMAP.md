@@ -25,11 +25,17 @@ The 573 is a PS1. The only sane way forward is to integrate an existing,
 open PS1 core rather than re-implement R3000A + GTE + GPU + SPU from scratch.
 See [`PHASE1_PSX.md`](PHASE1_PSX.md) for the concrete integration plan (EXP1
 hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
-- [ ] Vendor in / submodule the MiSTer PSX core (`MiSTer-devel/PSX_MiSTer`)
-- [ ] Replace `ps1_stub.v` with the real core's EXP1 master + video/audio
-- [ ] Expose the EXP1 bus and route it through `s573_bus`
-- [ ] Bring up the 512 KB Konami BIOS in place of the SCPH BIOS
-- [ ] Map 4 MB main / 2 MB VRAM (the 573's enlarged memories vs. retail PS1)
+- [x] Vendor in / submodule the MiSTer PSX core (`MiSTer-devel/PSX_MiSTer`,
+      pinned; EXP1 widening + NVC-strictness fixes live in `psx_patches/`)
+- [x] Replace `ps1_stub.v` with the real core's EXP1 master + video/audio
+      (`rtl/emu.sv` = a clone of `psx/PSX.sv` with the 573 EXP1 deltas)
+- [x] Expose the EXP1 bus and route it through `s573_bus` (widened to a full
+      16-bit master + IRQ10; `system573_top` is the EXP1 slave)
+- [x] Bring up the 512 KB Konami BIOS in place of the SCPH BIOS (executes in the
+      NVC sim **and** on real hardware via the `games/PSX/boot.rom` path)
+- [~] Map 4 MB main / 2 MB VRAM — 4 MB main RAM done (`ram8mb=1`, sim-validated);
+      the 573's **2 MB VRAM** (vs the PSX core's 1 MB) is **not yet addressed**
+      and is a candidate factor in the open video-output issue
 
 ## Phase 2 — make it boot
 - [~] ATAPI CD-ROM block (task-file regs, packet command, IRQ10, DMA ch5)
@@ -43,8 +49,11 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       - [x] AMD/Fujitsu NOR program/erase command engine (`rtl/flash_nor.v`,
             tested), wired as s573_flash's per-bank backing (writes go through
             the unlock/program/erase sequences); DDR3-backed store still to do
-- [ ] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
-- [ ] Get the Konami BIOS to POST and reach the CD boot
+- [~] Wire `s573_io` JAMMA inputs to the MiSTer `joystick`/keyboard HPS inputs
+      (conservatively routed in `emu.sv`: `joy[7:0]` → p1/p2; full JAMMA map TODO)
+- [~] Get the Konami BIOS to POST and reach the CD boot — POSTs through RAM test,
+      BSS clear, **main init** and GPU init in the NVC sim; gchgchmp (game-in-BIOS)
+      needs no CD. **Open frontier:** no visible video yet (see below)
 
 ## Phase 3 — security & per-game
 - [x] Security cart EEPROM: X76F100 bit-banged I2C (`rtl/x76f100.v`, tested)
@@ -80,5 +89,18 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [ ] Save/restore of NVRAM + security state to SD
 - [ ] Per-game timing, video options, MiSTer OSD menu
 
-Phases 1–5 are large. Phase 0 (this repo) is the part that is *done and
-verified*; everything below is specified but unbuilt.
+Phases 1–5 are large. Phase 0 (the 573 glue) is *done and verified*, and
+**Phase 1 (sit on a real PSX core) is essentially complete** — the integrated
+core executes the Konami BIOS in simulation and the design now **builds a MiSTer
+`.rbf` that runs on real hardware** (Cyclone V, 98% logic fit; see
+[`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
+
+## Hardware bring-up status (current frontier)
+The `.rbf` builds clean (Quartus 17.0, 0 errors) and loads + runs on a real
+MiSTer-class board: the core comes up, the gchgchmp BIOS loads, no crash. **But
+there is no usable picture yet** — on a CRT over component the signal won't lock
+(input-label + a slowly-rolling faint gradient); the digital scaler capture is a
+valid-resolution but black frame. So the open work is the **GPU video-output →
+display/sync path** (and possibly the unaddressed 2 MB VRAM deviation). This is
+the same render→display gap seen in simulation, now reproduced and debuggable on
+hardware. Everything in Phases 2–5 below remains specified but largely unbuilt.
