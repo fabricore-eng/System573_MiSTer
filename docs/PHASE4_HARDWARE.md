@@ -130,9 +130,19 @@ adversarial PR review; both now fixed):**
    is *tool success, not timing met*. **Fix:** `set_global_assignment -name
    SDC_FILE psx/PSX.sdc`.
 
-So the original "builds clean / runs on hardware" claim was wrong; a rebuild with
-both fixes is the real gate to a meaningful hardware test, after which timing
-(STA) must be confirmed *met*, not merely run.
+So the *original* "builds clean / runs on hardware" claim was wrong. **With both
+fixes, the rebuilt `.rbf` BOOTS:** on a SuperStation One the gchgchmp BIOS comes
+up to its test screen — clean color bars + a working menu — with a locked
+component signal on a CRT (and a matching HDMI scaler capture). The CPU runs from
+real SDRAM, the GPU renders into VRAM, and video scans out. The sim's "black
+framebuffer" (Phase-3) was a sim artifact (the NVC harness's behavioral EXP1
+responder returns zeros); on correct silicon the render→display path works.
+
+Timing after the fix: clk_1x **+1.43 ns** and clk_vid **+0.94 ns** now MEET (were
+−18.8 / −8.9); **clk_2x −3.29 ns and pll_hdmi −1.75 ns are still short** at the
+worst hot/slow corner (98% ALM congestion) — so it is *not fully timing-clean*,
+but the core demonstrably works (those corners are pessimistic vs a board at
+typical temp). Closing clk_2x is a tracked follow-up.
 
 **Build prerequisite:** `quartus_sh --flow compile Konami_System_573` needs a
 project file. If `Konami_System_573.qpf` is absent (it is git-ignored, since

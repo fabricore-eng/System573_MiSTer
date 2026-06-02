@@ -90,30 +90,37 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 - [ ] Per-game timing, video options, MiSTer OSD menu
 
 Phases 1–5 are large. Phase 0 (the 573 glue) is *done and verified*, and
-**Phase 1 (sit on a real PSX core) is essentially complete** — the integrated
-core executes the Konami BIOS in simulation and the design **builds a MiSTer
-`.rbf`** (Cyclone V, 98% ALM / 100% DSP fit; see
-[`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
+**Phase 1 (sit on a real PSX core) is complete** — the integrated core executes
+the Konami BIOS in simulation **and boots + displays it on real MiSTer hardware**
+(Cyclone V, 98% ALM / 100% DSP fit; see [`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
 
-## Hardware bring-up status (current frontier)
-The design synthesizes and assembles a `.rbf` (Quartus A&S 0 errors). **It does
-not yet run correctly on hardware.** The first `.rbf` deployed to a SuperStation
-One loaded (the core appeared via the HPS) but showed only black + a CRT that
-wouldn't lock over component — and investigation + an adversarial review found
-**two build-config defects** that fully explain that, independent of any GPU bug:
+## Hardware bring-up status — IT BOOTS (2026-06-01)
+**The core boots the Konami BIOS and displays correctly on real hardware.** On a
+SuperStation One the gchgchmp BIOS comes up to its test screen — clean SMPTE-style
+color bars and a working menu — with a locked, perfect component signal on a CRT
+(and a matching HDMI scaler capture). So the R3000 CPU runs from real SDRAM, the
+GPU renders into VRAM, and video scans out end-to-end.
+
+Getting there took fixing **two build-config defects** in the first `.rbf` (found
+by the video-output investigation + the PR #14 adversarial review; the early
+"runs on hardware" claim before these was wrong):
 
 1. **Mis-pinned bitstream** — the project sourced the framework HDL (`sys.qip`)
    but *no* pin-location files, so all 145 board pins (SDRAM, HDMI, VGA…) were
-   auto-placed to arbitrary balls. With SDRAM on the wrong pins the PSX core
-   couldn't reach main RAM, so the BIOS almost certainly never executed on
-   hardware (the HPS side still works, which masked it). Fixed: `sys_pins.tcl`.
+   auto-placed to arbitrary balls. SDRAM mis-pinned ⇒ the BIOS couldn't run; VGA
+   mis-pinned ⇒ the CRT wouldn't lock (the HPS side still worked, masking it).
+   Fixed: `sys_pins.tcl`.
 2. **Timing not met** — `psx/PSX.sdc` (the pll2→clk_vid generated clock + cross-
-   PLL false-paths) was never sourced, so STA reported large negative slack
+   PLL false-paths) was never sourced, so STA reported huge negative slack
    (clk_1x ~28.5 MHz vs the ~33.8 it needs). "0 A&S errors" ≠ timing met. Fixed:
-   source `psx/PSX.sdc`.
+   source `psx/PSX.sdc` — clk_1x and clk_vid now meet.
 
-A rebuild with both fixes is the gate to a meaningful hardware test. Only *after*
-a correctly-pinned, timing-met `.rbf` runs should the simulation-side render→VRAM
-black-framebuffer issue (GPUSTAT DisplayDisable / Phase-3 frontier) and the 2 MB
-VRAM deviation be re-evaluated — they may or may not still matter. Everything in
-Phases 2–5 below remains specified but largely unbuilt.
+Notably, the simulation-side "black framebuffer" (Phase-3) turned out to be a
+**sim artifact** (the NVC harness's behavioral EXP1 responder returns zeros); on
+correctly-pinned, timing-met silicon the render→display path just works.
+
+**Remaining polish / next:** clk_2x and the HDMI PLL are still ~2–3 ns short at
+the worst (hot/slow) corner — the core works but is not fully timing-clean (98%
+ALM congestion); drive the menu with real inputs (JAMMA mapping/polarity); then
+CD / security-cart / flash for the broader library. Phases 2–5 below are still
+largely unbuilt.
