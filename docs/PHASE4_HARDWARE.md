@@ -132,7 +132,7 @@ adversarial PR review; both now fixed):**
 
 So the *original* "builds clean / runs on hardware" claim was wrong. **With both
 fixes, the rebuilt `.rbf` BOOTS:** on a SuperStation One the gchgchmp BIOS comes
-up to its test screen — clean color bars + a working menu — with a locked
+up to its color-bar video-test screen — with a locked
 component signal on a CRT (and a matching HDMI scaler capture). The CPU runs from
 real SDRAM, the GPU renders into VRAM, and video scans out. The sim's "black
 framebuffer" (Phase-3) was a sim artifact (the NVC harness's behavioral EXP1

@@ -97,7 +97,7 @@ the Konami BIOS in simulation **and boots + displays it on real MiSTer hardware*
 ## Hardware bring-up status — IT BOOTS (2026-06-01)
 **The core boots the Konami BIOS and displays correctly on real hardware.** On a
 SuperStation One the gchgchmp BIOS comes up to its test screen — clean SMPTE-style
-color bars and a working menu — with a locked, perfect component signal on a CRT
+color bars (the BIOS's video test pattern) — with a locked, perfect component signal on a CRT
 (and a matching HDMI scaler capture). So the R3000 CPU runs from real SDRAM, the
 GPU renders into VRAM, and video scans out end-to-end.
 

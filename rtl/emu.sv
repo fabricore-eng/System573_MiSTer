@@ -1357,12 +1357,19 @@ system573_top u_s573
    .exp1_we        (exp1_we),
    .exp1_re        (exp1_re),
    .exp1_rdata     (exp1_dataRead),
-   .dip_sw         (4'h0),
-   .p1_ctrl        (joy[7:0]),
-   .p2_ctrl        (joy2[7:0]),
-   .coin_sw        (2'b00),
-   .service_btn    (1'b0),
-   .test_btn       (1'b0),
+   // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
+   // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
+   // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and
+   // parked on its color-bar test screen. Now idle = not-pressed, so the BIOS boots
+   // normally; COIN/SERVICE/TEST are mapped to joy bits (assign physical buttons in
+   // the MiSTer OSD "Define buttons"). joy[0..7]=R,L,D,U,B1,B2,B3,B4 already matches
+   // the 573 P1 JAMMA bit order (docs/MEMORY_MAP.md, 0x1f400008).
+   .dip_sw         (4'hF),                 // DIP switches, active-low (idle = off)
+   .p1_ctrl        (~joy[7:0]),            // JAMMA P1, active-low
+   .p2_ctrl        (~joy2[7:0]),           // JAMMA P2, active-low
+   .coin_sw        (~{joy2[9], joy[9]}),   // P2/P1 coin, active-low
+   .service_btn    (~joy[10]),             // service button, active-low
+   .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
    .pcmcia_present (2'b00),
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
