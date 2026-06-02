@@ -15,6 +15,10 @@ set_global_assignment -name TOP_LEVEL_ENTITY sys_top
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0.2
 set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
 
+# Emit the MiSTer-loadable .rbf during assembly (upstream PSX.qsf sets this; the
+# qsf bypasses sys/sys.tcl's post-flow, so wire the .rbf generation here instead).
+set_global_assignment -name GENERATE_RBF_FILE ON
+
 # The vendored PSX core is VHDL-2008 (psx_patches/0003 uses the 2008 `maximum()`);
 # upstream sets this in psx/PSX.qsf. Required or the VHDL core won't analyze.
 set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
