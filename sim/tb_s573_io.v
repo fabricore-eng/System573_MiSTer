@@ -76,8 +76,10 @@ module tb_s573_io;
             errors = errors + 1;
         end
 
-        // 0x04 status: {sec_in, jvserr, jvsstat, dip}
-        rd_reg(4'h4, r); chk(r, {sec_in, 2'b00, 2'b00, dip_sw}, "status");
+        // 0x04 status: {sec_in, H8/18E response nibble = 0xC, dip}
+        rd_reg(4'h4, r); chk(r, {sec_in, 4'b1100, dip_sw}, "status");
+        // explicit 18E gate: bits[7:4] must read the H8 response nibble 0xC (h8a01.bin)
+        chk({12'h0, r[7:4]}, 16'h000C, "h8_18E_nibble");
 
         // 0x08 JAMMA: {p1, p2}
         rd_reg(4'h8, r); chk(r, {p1_ctrl, p2_ctrl}, "jamma");

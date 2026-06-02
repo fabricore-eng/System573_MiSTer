@@ -35,14 +35,13 @@ accesses require the PS1 `EXP1` config register `0x1f801008 = 0x24173f47` and us
 | 5    | Audio amplifier enable                      |
 | 6    | External audio input mute                   |
 | 7    | SPU DAC enable                              |
-| 8    | JVS MCU reset (active-low)                   |
+| 8    | H8/3644 (18E) MCU response clock — pulsing steps the self-test response index (was mislabelled "JVS MCU reset") |
 
 ### `0x1f400004` — DIP / JVS / security status (read)
 | Bits  | Meaning                          |
 |-------|----------------------------------|
 | 0–3   | DIP switches                     |
-| 4–5   | JVS MCU status code (0–2)         |
-| 6–7   | JVS MCU error code               |
+| 4–7   | H8/3644 (18E) MCU response nibble — the GX700 self-test clocks control bit 8 to step an index through the H8's 64-byte response ROM and compares this; 700A (`h8a01.bin`) = const `0xC`. (Was mislabelled "JVS MCU status/error" — the JVS serial path is separate, `0x1f680000`.) |
 | 8–15  | Security cartridge I0–I7 inputs   |
 
 ### `0x1f400006` — misc inputs (read)

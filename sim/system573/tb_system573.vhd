@@ -248,9 +248,16 @@ begin
 
          wrote := false;
 
-         -- READ: model returns benign 0 (iterate here). Latch+hold registered.
+         -- READ: model returns benign 0, EXCEPT the Konami ASIC status word at
+         -- 0x1f400004, whose bits[7:4] must return the H8 (18E) response nibble 0xC so
+         -- the BIOS GX700 self-test passes the 18E check. Mirrors rtl/s573_io.v; keep
+         -- the two in sync (the boot sim uses this behavioral stub, not the RTL).
          if exp1_re = '1' then
-            rdata := (others => '0');
+            if exp1_addr(23 downto 16) = x"40" and exp1_addr(3 downto 0) = x"4" then
+               rdata := x"00C0";
+            else
+               rdata := (others => '0');
+            end if;
             exp1_dataRead <= rdata;        -- registered, held until next read
             write(l, string'("EXP1 RE  addr=0x")); put_hex(l, exp1_addr);
             write(l, string'(" rdata=0x"));        put_hex(l, rdata);
