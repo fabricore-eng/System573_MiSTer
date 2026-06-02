@@ -111,12 +111,40 @@ device fits (Cyclone V `5CSEBA6U23I7`):
   0 errors (~32 s, 2 GB).
 
 The full `quartus_sh --flow compile Konami_System_573` (map→fit→asm→sta) runs
-with the 30 GB swap to produce `output_files/Konami_System_573.rbf`.
+with the 30 GB swap and assembles `output_files/Konami_System_573.rbf`. Fit:
+**98% ALMs (41,076/41,910), 100% DSP (112/112, no headroom), 76% RAM blocks,
+4 PLLs** — it fits, but DSP is fully consumed, which matters for any later
+video/VRAM work.
 
-**Known first-boot limitations (revisit after a boot screen):** flash is
+**Two build-config defects in the first full build (found by investigation + an
+adversarial PR review; both now fixed):**
+1. **Mis-pinned bitstream** — the qsf sourced the framework HDL (`sys.qip`) but
+   *no* pin-location files, so all 145 board pins (SDRAM/HDMI/VGA…) auto-placed
+   to arbitrary balls. SDRAM on wrong pins ⇒ the PSX core can't reach main RAM ⇒
+   the BIOS almost certainly never executed on hardware (the HPS side works
+   regardless, masking it). **Fix:** `sys_pins.tcl` (pin locations extracted from
+   `psx/sys/sys.tcl` + `sys_analog.tcl`), sourced from the qsf.
+2. **Timing not met** — `psx/PSX.sdc` (the pll2→clk_vid generated clock + cross-
+   PLL false-paths) was never sourced, so STA reported worst setup slack
+   −18.8 ns and clk_1x closing at ~28.5 MHz vs the ~33.8 it needs. "0 A&S errors"
+   is *tool success, not timing met*. **Fix:** `set_global_assignment -name
+   SDC_FILE psx/PSX.sdc`.
+
+So the original "builds clean / runs on hardware" claim was wrong; a rebuild with
+both fixes is the real gate to a meaningful hardware test, after which timing
+(STA) must be confirmed *met*, not merely run.
+
+**Build prerequisite:** `quartus_sh --flow compile Konami_System_573` needs a
+project file. If `Konami_System_573.qpf` is absent (it is git-ignored, since
+Quartus rewrites its timestamp), create a minimal one:
+`printf 'PROJECT_REVISION = "Konami_System_573"\n' > Konami_System_573.qpf`.
+
+**Known first-boot limitations (revisit after a verified boot screen):** flash is
 read-only on hardware (no game can persist save data yet — gchgchmp doesn't
 need it; a sync-friendly M10K 2-cycle program + an HPS flash-image load are TODO);
-the security cart / CD / MP3 paths are present in sim but not exercised at boot.
+JAMMA inputs are routed conservatively and not yet polarity/bit-mapped to real
+controls; the security cart / CD / MP3 paths are present in sim but not exercised
+at boot; the 573's 2 MB VRAM (vs the PSX core's 1 MB) is not yet addressed.
 
 ## Deploy (once a .rbf exists)
 Our `emu.sv` is a PSX-core clone, so it identifies as **"PSX"** in its CONF_STR

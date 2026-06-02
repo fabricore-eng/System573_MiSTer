@@ -77,6 +77,13 @@ module m48t58 #(
     // 1-cycle NVRAM read latency is absorbed and system573_top captures the settled
     // value while the strobe is asserted. The small RTC register file (top 8 bytes)
     // stays combinational.
+    //
+    // PRECONDITION: this holds only when the BIOS-programmed EXP1 R-delay >= 1
+    // (ext_memctrl(7:4) > 0). The PSX reset default is 3 and the 573 BIOS only
+    // raises EXP1 timing for its slow ASIC/flash/RTC, so it is satisfied in
+    // practice; if EXP1 R-delay were ever 0, EXT_IDLE -> EXT_READ_NEXT has no
+    // settle cycle and a same-cycle read would latch stale NVRAM. The unit test
+    // (tb_system573_top exp1_read) models the >=1 settle explicitly.
     reg [7:0] ram_q;
     always @(posedge clk) ram_q <= ram[addr];
 

@@ -91,16 +91,29 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
 
 Phases 1–5 are large. Phase 0 (the 573 glue) is *done and verified*, and
 **Phase 1 (sit on a real PSX core) is essentially complete** — the integrated
-core executes the Konami BIOS in simulation and the design now **builds a MiSTer
-`.rbf` that runs on real hardware** (Cyclone V, 98% logic fit; see
+core executes the Konami BIOS in simulation and the design **builds a MiSTer
+`.rbf`** (Cyclone V, 98% ALM / 100% DSP fit; see
 [`PHASE4_HARDWARE.md`](PHASE4_HARDWARE.md)).
 
 ## Hardware bring-up status (current frontier)
-The `.rbf` builds clean (Quartus 17.0, 0 errors) and loads + runs on a real
-MiSTer-class board: the core comes up, the gchgchmp BIOS loads, no crash. **But
-there is no usable picture yet** — on a CRT over component the signal won't lock
-(input-label + a slowly-rolling faint gradient); the digital scaler capture is a
-valid-resolution but black frame. So the open work is the **GPU video-output →
-display/sync path** (and possibly the unaddressed 2 MB VRAM deviation). This is
-the same render→display gap seen in simulation, now reproduced and debuggable on
-hardware. Everything in Phases 2–5 below remains specified but largely unbuilt.
+The design synthesizes and assembles a `.rbf` (Quartus A&S 0 errors). **It does
+not yet run correctly on hardware.** The first `.rbf` deployed to a SuperStation
+One loaded (the core appeared via the HPS) but showed only black + a CRT that
+wouldn't lock over component — and investigation + an adversarial review found
+**two build-config defects** that fully explain that, independent of any GPU bug:
+
+1. **Mis-pinned bitstream** — the project sourced the framework HDL (`sys.qip`)
+   but *no* pin-location files, so all 145 board pins (SDRAM, HDMI, VGA…) were
+   auto-placed to arbitrary balls. With SDRAM on the wrong pins the PSX core
+   couldn't reach main RAM, so the BIOS almost certainly never executed on
+   hardware (the HPS side still works, which masked it). Fixed: `sys_pins.tcl`.
+2. **Timing not met** — `psx/PSX.sdc` (the pll2→clk_vid generated clock + cross-
+   PLL false-paths) was never sourced, so STA reported large negative slack
+   (clk_1x ~28.5 MHz vs the ~33.8 it needs). "0 A&S errors" ≠ timing met. Fixed:
+   source `psx/PSX.sdc`.
+
+A rebuild with both fixes is the gate to a meaningful hardware test. Only *after*
+a correctly-pinned, timing-met `.rbf` runs should the simulation-side render→VRAM
+black-framebuffer issue (GPUSTAT DisplayDisable / Phase-3 frontier) and the 2 MB
+VRAM deviation be re-evaluated — they may or may not still matter. Everything in
+Phases 2–5 below remains specified but largely unbuilt.
