@@ -37,10 +37,11 @@ The full register map (transcribed from psx-spx) lives in
 ## Status — honest accounting
 
 The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
-core is integrated over EXP1**, and the **Konami BIOS now executes in full-system
-simulation**. It is not yet a game-booting `.rbf` — that still needs the rest of
-the boot bring-up, the MiSTer top-level wiring, and a Quartus build — but the core
-is well past "glue around a stub."
+core is integrated over EXP1**, the **Konami BIOS executes in full-system
+simulation**, and the **MiSTer hardware top now synthesizes** — the full
+`emu | psx_mister | …` hierarchy passes Quartus Analysis & Synthesis for the
+DE10-Nano (Cyclone V), and the `.rbf` build is running. It is not yet a verified
+game-booting bitstream, but the core is well past "glue around a stub."
 
 **Where it is right now (updated 2026-06-01):**
 
@@ -59,6 +60,14 @@ is well past "glue around a stub."
 - **Phase 3 in progress:** driving the boot to a non-black framebuffer (the boot
   screen). The current bottleneck is *simulation speed* — early boot runs uncached
   (KSEG1) and is dominated by the SDRAM model's per-access latency.
+- **Phase 4 (hardware) in progress:** `rtl/emu.sv` is now the real MiSTer top — a
+  clone of the proven `psx/PSX.sv` with the 573 EXP1 deltas — and the whole design
+  **synthesizes** in Quartus 17.0 (via Colima/Docker on the build Mac, using a 30 GB
+  swap on the data disk for the PS1 core's memory-heavy A&S). Getting there fixed
+  the Quartus-hostile RTL: clocked full-array writes are guarded with `synthesis
+  translate_off`, the M48T58 NVRAM reads synchronously so it infers M10K, and flash
+  is read-only in synthesis (constant-folded) for first boot. The `.rbf` build
+  (map→fit→asm→sta) is running; see [`docs/PHASE4_HARDWARE.md`](docs/PHASE4_HARDWARE.md).
 
 A complete System 573 core has to sit on top of a full PlayStation 1 (the kind of
 effort that took the MiSTer PSX core years); this repo implements and
@@ -86,12 +95,12 @@ core underneath it.
 | NOR flash command engine       | `rtl/flash_nor.v`     | ✅ implemented + tested |
 | Security-cartridge bus glue    | `rtl/s573_seccart.v`  | ✅ implemented + tested |
 | PS1 CPU/GPU/SPU subsystem      | `psx/` submodule      | ✅ integrated in sim (EXP1) |
-| PS1 integration stub (build)   | `rtl/ps1_stub.v`      | 🔌 still in `emu.sv` (Phase 4) |
-| MiSTer top level               | `rtl/emu.sv`          | 🔌 wiring scaffold (Phase 4) |
+| MiSTer top level               | `rtl/emu.sv`          | 🏗️ PSX.sv clone + 573 deltas; **synthesizes**, `.rbf` building |
 | MAS3507D MP3 decode (Phase 9)  | —                     | 📋 documented, not impl |
 
 ✅ = real RTL with a passing testbench (or, for `psx/`, executing the BIOS in the
-full-system NVC sim). 🔌 = compiles/wires but is a placeholder. 📋 = docs only.
+full-system NVC sim). 🏗️ = real RTL that synthesizes but isn't hardware-verified
+yet. 📋 = docs only.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the phases and
 [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) for the detailed plan from here

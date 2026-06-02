@@ -76,36 +76,62 @@ docs/PHASE1_PSX.md (EXP1 contract), and the project memory.
 
 ## Build status (2026-06-01)
 
-The integration **compiles** — Quartus elaborates the full hierarchy
-(`emu | psx_mister | psx_top | cpu | spu | gpu | memorymux | datacache | …`).
-Three elaboration errors were found and fixed by iterating the Colima/Quartus
-build: (1) `emu.sv` must be `SYSTEMVERILOG_FILE` (it's the PSX.sv clone); (2)
-patch 0003 `maximum()` → portable `clamp0()` (Quartus 17.0 lacks the VHDL-2008
-builtin); (3) build against `psx/sys` not the repo `sys/` (HPS_BUS packing).
+The integration **compiles and synthesizes**. Quartus elaborates the full
+hierarchy (`emu | psx_mister | psx_top | cpu | spu | gpu | memorymux |
+datacache | …`) and Analysis & Synthesis runs clean. Errors found and fixed
+along the way:
 
-**Open (hard blocker): build-host RAM.** `quartus_map` (analysis & synthesis) of
-the full PSX core **OOMs** in the 11 GB Colima VM on this 16 GB Mac (`Error
-293007: ended unexpectedly … sufficient memory`). **Confirmed across 4 attempts:**
-6-parallel (OOM @1:55), serial `NUM_PARALLEL_PROCESSORS=1` (OOM @1:55), and
-serial + an 8 GB VM swapfile (got further — OOM @8:28 — but the VM root disk is
-19 GB and 100% full, so the swapfile was unreliable). **Verdict: this 16 GB Mac
-cannot build the PS1 core**; synthesis needs well over the ~10 GB usable here.
+Elaboration: (1) `emu.sv` must be `SYSTEMVERILOG_FILE`; (2) patch 0003
+`maximum()` → portable `clamp0()` (Quartus 17.0 lacks the VHDL-2008 builtin);
+(3) build against `psx/sys` not the repo `sys/` (HPS_BUS packing); (4)
+`files.qip` must include `psx/rtl/pll.qip` — emu.sv instantiates both `pll` and
+`pll2`, and `pll_0002` lives in the `psx/rtl/pll` subdir that the bare
+`SEARCH_PATH` does not reach.
 
-To produce the `.rbf` (the integration is validated, so it's a pure compile):
-- **(a) RECOMMENDED — a ≥32 GB machine** (VM/native Quartus 17.0.x can use ~16 GB+).
-  Pure compile: `git submodule update --init psx && tools/apply_psx_patches.sh &&
-  quartus_sh --flow compile Konami_System_573` (or the Colima/Docker recipe in
-  docs/DEPENDENCIES.md). Then `tools/mister_load.sh output_files/Konami_System_573.rbf`.
-- **(b) Local slow build** — restart Colima with a **bigger disk** (`colima stop;
-  colima start --disk 120`) so a real ~24 GB swapfile fits, then rebuild serial.
-  Multi-hour paging build; uncertain (may still thrash/OOM). Not recommended.
-- **(c) CI** — a large/self-hosted runner (≥16 GB); standard GitHub Actions
-  (~7 GB) is too small. A `.github/workflows` Quartus build can be authored if
-  a suitable runner is available.
+**Build-host RAM — SOLVED.** `quartus_map` of the full PSX core needs ~11 GB,
+which OOMs the ~10 GB Colima VM on this 16 GB Mac. The fix: a **30 GB swapfile
+on the Colima data disk** (`/mnt/lima-colima`, which has room — the VM *root*
+disk does not), giving 10 GB RAM + 30 GB swap. A&S then completes without OOM.
+(Recipe in docs/DEPENDENCIES.md.)
+
+**573-fabric synthesis — FIXED (commit "make the fabric + emu integration
+synthesizable").** Two classes of Quartus-hostile RTL were resolved so the
+device fits (Cyclone V `5CSEBA6U23I7`):
+- *Clocked single-cycle full-array writes* (flash erase/program, x76 mass-erase
+  /lockout, the zs01 security-packet engine, the atapi sim disc fill) build N
+  parallel write ports / unroll huge loops. All are wrapped in `synthesis
+  translate_off` — unreachable during the gchgchmp boot, and iverilog/NVC still
+  run them so the 19/19 unit suite is unchanged.
+- *Async-read RAM register overflow* (Error 276003: ~196k registers > device).
+  `m48t58` now reads its 8 KB NVRAM **synchronously** → infers M10K (the
+  wait-stated EXP1 bus, memorymux `EXT_READ_WAIT`, holds the address stable
+  before the read strobe, absorbing the +1 cycle). `flash_nor` is **read-only
+  in synthesis** (program/erase guarded) so the four windows fold to constant
+  `0xFFFF` instead of ~131k registers. The standalone 573 A&S then passes with
+  0 errors (~32 s, 2 GB).
+
+The full `quartus_sh --flow compile Konami_System_573` (map→fit→asm→sta) runs
+with the 30 GB swap to produce `output_files/Konami_System_573.rbf`.
+
+**Known first-boot limitations (revisit after a boot screen):** flash is
+read-only on hardware (no game can persist save data yet — gchgchmp doesn't
+need it; a sync-friendly M10K 2-cycle program + an HPS flash-image load are TODO);
+the security cart / CD / MP3 paths are present in sim but not exercised at boot.
 
 ## Deploy (once a .rbf exists)
-- `tools/mister_load.sh [core.rbf]` — scp the `.rbf` to `/media/fat/_Arcade` and
-  `load_core` it via `/dev/MiSTer_cmd` (verified present on the board).
-- `tools/mister_shot.sh [out.png]` — pull the newest `/media/fat/screenshots` PNG.
-- BIOS delivery: the PSX core wants the BIOS as HPS index-0; for first boot use
-  the OSD file picker or author a `.mra` mapping the Konami BIOS to ROM index 0.
+Our `emu.sv` is a PSX-core clone, so it identifies as **"PSX"** in its CONF_STR
+and auto-loads the index-0 BIOS from the MiSTer console path
+`/media/fat/games/PSX/boot.rom`. The board already holds a real PlayStation BIOS
+there, so first-boot bring-up swaps in a 573 BIOS with a backup/restore:
+
+- `tools/mister_boot573.sh [core.rbf] [bios]` — back up the real PSX `boot.rom`,
+  install the 573 BIOS (default `dumps/bios/700a01(gchgchmp).22g`) as `boot.rom`,
+  scp the `.rbf` to `/media/fat/_Console`, and `load_core` it via `/dev/MiSTer_cmd`.
+- `tools/mister_boot573.sh --shot [out.png]` — pull the newest screenshot.
+- `tools/mister_boot573.sh --restore` — put the genuine PlayStation BIOS back.
+- (`tools/mister_load.sh` / `tools/mister_shot.sh` remain the generic .rbf load /
+  screenshot helpers.)
+
+A cleaner long-term delivery is to rename the core (CONF_STR `SYSTEM573`) so it
+uses its own `games/SYSTEM573/boot.rom`, or to author an `.mra` mapping the BIOS
+to ROM index 0 — both deferred until after the first boot screen.
