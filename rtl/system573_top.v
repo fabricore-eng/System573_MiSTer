@@ -150,12 +150,15 @@ module system573_top #(
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
         .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq)
     );
-    // No CD drive attached for no_cdrom flash games (gchgchmp/hyperbbc): a real driveless
-    // 573 floats the IDE bus, so the BIOS device-detect (0xEB14 signature + register echo)
-    // fails and it SKIPS the CD/CDR self-test, booting from onboard flash instead. Without
-    // this the always-present atapi model is detected, fails the self-test, and the BIOS
-    // halts at "HARDWARE ERROR... RESET". Gate the IDE read mux + INTRQ on cd_present
-    // (tied 0 today; drive it from a CD-loaded signal when CD games are added).
+    // cd_present gates the IDE read mux + INTRQ. CORRECTION (HW-verified 2026-06-03):
+    // a real 573 -- even for no_cdrom flash games (gchgchmp/hyperbbc) -- carries a CR-589
+    // CD-ROM on the IDE bus, and the GX700 POST "DRIVE CHECK" probes it UNCONDITIONALLY
+    // (it is NOT gated by the boot-device DIP). With cd_present=0 the bus floats to 0xFFFF,
+    // so STATUS reads BSY-stuck (0xFF), the BIOS's BSY-clear wait times out, and CDR reads
+    // BAD -> "HARDWARE ERROR... RESET". emu.sv therefore drives cd_present=1 to present an
+    // empty drive; atapi.v answers the 0xEB14 signature + IDENTIFY PACKET DEVICE (0xA1) so
+    // the UNMODIFIED Konami BIOS passes CDR. (The earlier "0xFFFF makes the BIOS skip CDR"
+    // claim was wrong: the BIOS does not skip it -- it fails it.)
     assign cdrom_irq = cd_present ? atapi_intrq : 1'b0;
 
     // --- BEMANI Digital I/O board ---

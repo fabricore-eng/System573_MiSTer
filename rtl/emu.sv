@@ -1408,7 +1408,13 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .service_btn    (~joy[10]),             // service button, active-low
    .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
    .pcmcia_present (2'b00),
-   .cd_present     (1'b0),                 // no CD drive (no_cdrom flash config): BIOS skips the CDR self-test
+   .cd_present     (1'b1),                 // CD drive present (empty). A real 573 -- even for flash/no_cdrom
+                                           // games -- has a CR-589 on the IDE bus, and the GX700 POST "DRIVE
+                                           // CHECK" probes it unconditionally (independent of the boot-device
+                                           // DIP). With cd_present=0 the bus floats to 0xFFFF, STATUS reads
+                                           // BSY-stuck and the check times out -> CDR BAD -> HARDWARE ERROR.
+                                           // Presenting the drive lets atapi.v answer the 0xEB14 signature +
+                                           // IDENTIFY PACKET DEVICE (0xA1) so CDR reads OK with the UNMODIFIED BIOS.
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),

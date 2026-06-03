@@ -93,6 +93,20 @@ module tb_atapi;
             chk(v, (((2048+2*i+1) & 8'hff) << 8) | ((2048+2*i) & 8'hff), "READ data");
         end
 
+        // ---- IDENTIFY PACKET DEVICE (0xA1): the GX700 POST "DRIVE CHECK" ----
+        // The 573 BIOS drive check issues 0xA1, requires DRQ set, byte count <= 0x800,
+        // a 256-word data-in, and ERR clear at completion. Content is not validated.
+        io_write(4'd7, 16'h00A1);                  // IDENTIFY PACKET DEVICE
+        io_read(4'd7, v); chk(v, 16'h0048, "IDENT status");     // DRDY|DRQ
+        io_read(4'd2, v); chk(v, 16'h0002, "IDENT ireason");    // I/O=1, C/D=0
+        io_read(4'd4, v); chk(v, 16'h0000, "IDENT bc lo");      // byte count 0x0200
+        io_read(4'd5, v); chk(v, 16'h0002, "IDENT bc hi");
+        io_read(4'd0, word[0]); chk(word[0], 16'h85C0, "IDENT word0"); // ATAPI CD-ROM config
+        io_read(4'd0, v);       chk(v, 16'h0000, "IDENT word1");        // zero-filled
+        for (i = 2; i < 255; i = i + 1) io_read(4'd0, v);   // drain to the last word
+        io_read(4'd0, v);                                   // 256th word -> completion
+        io_read(4'd7, v); chk(v, 16'h0050, "IDENT done status"); // DRDY|DSC, ERR clear
+
         // ---- INTRQ assert + clear-on-status-read ----
         io_write(4'd7, 16'h00A0); send_packet(8'h00); // TUR -> completion asserts INTRQ
         if (intrq !== 1'b1) begin $display("FAIL: intrq not asserted"); errors=errors+1; end
