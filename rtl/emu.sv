@@ -337,7 +337,7 @@ always @(posedge clk_1x) begin : ffwd
 	fast_forward <= (FFrequest | ff_latch);
 end
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | cdDownloadReset;
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | cdDownloadReset;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -1405,6 +1405,7 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .service_btn    (~joy[10]),             // service button, active-low
    .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
    .pcmcia_present (2'b00),
+   .cd_present     (1'b0),                 // no CD drive (no_cdrom flash config): BIOS skips the CDR self-test
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),

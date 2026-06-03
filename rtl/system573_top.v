@@ -53,6 +53,7 @@ module system573_top #(
     input  wire        service_btn,
     input  wire        test_btn,
     input  wire [1:0]  pcmcia_present,
+    input  wire        cd_present,      // 1 = ATAPI CD drive attached; 0 = no_cdrom flash config (MAME konami573 no_cdrom)
     input  wire [7:0]  adc_ch0,
     input  wire [7:0]  adc_ch1,
     input  wire [7:0]  adc_ch2,
@@ -140,14 +141,22 @@ module system573_top #(
 
     // --- ATAPI CD-ROM (IDE bank 0 = command block, bank 1 = control block) ---
     wire [15:0] atapi_dout;
+    wire        atapi_intrq;
     wire        atapi_sel = sel_ide0 | sel_ide1;
     wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
     atapi u_atapi (
         .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
-        .din(exp1_wdata), .dout(atapi_dout), .intrq(cdrom_irq)
+        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq)
     );
+    // No CD drive attached for no_cdrom flash games (gchgchmp/hyperbbc): a real driveless
+    // 573 floats the IDE bus, so the BIOS device-detect (0xEB14 signature + register echo)
+    // fails and it SKIPS the CD/CDR self-test, booting from onboard flash instead. Without
+    // this the always-present atapi model is detected, fails the self-test, and the BIOS
+    // halts at "HARDWARE ERROR... RESET". Gate the IDE read mux + INTRQ on cd_present
+    // (tied 0 today; drive it from a CD-loaded signal when CD games are added).
+    assign cdrom_irq = cd_present ? atapi_intrq : 1'b0;
 
     // --- BEMANI Digital I/O board ---
     wire [15:0] digio_dout;
@@ -198,7 +207,7 @@ module system573_top #(
         if (sel_asic)            rdata_mux = asic_dout;
         else if (sel_rtc)        rdata_mux = {8'h00, rtc_dout};
         else if (sel_flash)      rdata_mux = flash_dout;
-        else if (sel_ide0 | sel_ide1) rdata_mux = atapi_dout;
+        else if (sel_ide0 | sel_ide1) rdata_mux = cd_present ? atapi_dout : 16'hFFFF;
         else if (sel_digio)      rdata_mux = digio_dout;
         else                     rdata_mux = 16'h0000;
     end

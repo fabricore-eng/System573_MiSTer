@@ -27,6 +27,7 @@ module tb_system573_top;
         .dip_sw(dip_sw), .p1_ctrl(p1_ctrl), .p2_ctrl(p2_ctrl),
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
         .pcmcia_present(pcmcia_present),
+        .cd_present(1'b1),   // this integration test exercises the ATAPI/CD path, so model a drive present
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
