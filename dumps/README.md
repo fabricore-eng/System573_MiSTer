@@ -1,20 +1,20 @@
 # Dumps manifest
 
 Drop the real dumps here at the **exact paths** below. The actual binaries are
-git-ignored (`*.bin`, CD images, etc.) — only this manifest is committed. I check
-for each file's presence before the phase that needs it and proceed automatically
-once it's there; if it's missing I pause and name it.
+git-ignored (`*.bin`, CD images, etc.) — only this manifest is committed. Each phase
+checks for the file it needs before running; a missing dump is named in the build/sim
+output.
 
-**Easiest single source:** a MAME `ksys573` romset for your target game bundles
+**Easiest single source:** a MAME `ksys573` romset for the target game bundles
 the BIOS, the CD/flash/card image(s), the security-cart default data, and the
-DS2401 ids. Point me at the set and I'll sort files into the layout below.
+DS2401 ids. Place files from the set into the layout below.
 
 Replace `<game>` with a short slug, e.g. `bishi` (Hyper Bishi Bashi Champ) or
 `80sgallery` (Konami 80's Arcade Gallery) — the recommended first targets.
 
 ---
 
-## Order I use them
+## Order they are needed
 
 ### 1. BIOS POST (Phase 3 — needed first)
 | Path | What | Size | Consumed by |
@@ -73,12 +73,12 @@ dumps/
 ```
 
 ## Notes
-- **Endianness / layout:** I'll match each blob to how its module expects it
-  (e.g. DS2401 byte order, EEPROM page layout). If a dump's layout is ambiguous
-  I'll cross-check against MAME's loader for that device.
-- **CD:** CHD preferred (I extract sectors with `chdman`); BIN/CUE also fine.
-- **Security data:** if you only have the MAME nvram/romset blobs, drop them as-is
-  and tell me — I'll split/convert them into the files above.
+- **Endianness / layout:** each blob must match how its module expects it
+  (e.g. DS2401 byte order, EEPROM page layout). If a dump's layout is ambiguous,
+  cross-check against MAME's loader for that device.
+- **CD:** CHD preferred (extract sectors with `chdman`); BIN/CUE also fine.
+- **Security data:** if only the MAME nvram/romset blobs are available, drop them
+  as-is and split/convert them into the files above.
 - Nothing here is committed; see `.gitignore`.
 
 ---

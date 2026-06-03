@@ -34,7 +34,7 @@ SHOT_DIR="${MISTER_SHOT_DIR:-/media/fat/screenshots}"
 if ssh -o ConnectTimeout=6 -o BatchMode=yes mister true 2>/dev/null; then
   SSH=(ssh mister); SCP_PFX="mister:"
 else
-  KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
+  KEY="${MISTER_SSH_KEY:-~/.ssh/mister_id_ed25519}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}")
   SCP_PFX="${MISTER_USER:-root}@${MISTER_HOST}:"
 fi

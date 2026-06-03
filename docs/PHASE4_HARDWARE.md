@@ -8,7 +8,8 @@ As of 2026-06-02 the core boots the Konami BIOS on real hardware **past the colo
 bars** to the GX700 power-on self-test (CDR is the next gate). Two CPU i-cache fixes
 (`psx_patches/` 0004 redirect + 0005 BIOS-uncached) fixed the color-bar crash; the 18E
 (H8/3644) I/O-MCU self-test fix (`rtl/s573_io.v`, PR #16) lets the BIOS pass POST.
-Builds now run natively on **slave1** (`ssh slave1`); the Mac Colima VM was deleted.
+Builds run on x86-64 Linux with Quartus Prime Lite 17.0 (the `raetro/quartus:17.0`
+Docker image works as a fallback).
 
 ## Key insight
 
@@ -53,13 +54,13 @@ The full-system NVC harness `sim/system573/tb_system573.vhd` is the authoritativ
 6. **`Konami_System_573.sdc`**: drop the `CLK_50M` placeholder clock (sys.sdc +
    PLL constraints come from sys). If timing fails, port multicycle/false-path
    lines from `psx/PSX.sdc`.
-7. **Build** the `.rbf` on **slave1** (native Quartus 17.0; `ssh slave1`):
+7. **Build** the `.rbf` on an x86-64 Linux host with Quartus 17.0:
    `quartus_sh --flow compile Konami_System_573` →
-   `output_files/Konami_System_573.rbf`. ~30–60 min. (The Mac Colima/`raetro/quartus:17.0`
-   path is legacy fallback-only — that VM was deleted; see docs/DEPENDENCIES.md.)
+   `output_files/Konami_System_573.rbf`. ~30–60 min. (A Docker fallback image,
+   `raetro/quartus:17.0`, is in docs/DEPENDENCIES.md.)
 8. **Deploy tooling** (TODO, don't exist yet): `tools/mister_load.sh` (scp `.rbf` +
    BIOS, load) and `tools/mister_shot.sh` (pull the screenshot) using `local/mister.env`
-   (192.168.1.40, key mister_crt, `/media/fat/_Arcade`, `/media/fat/screenshots`).
+   (board host, SSH key, core/screenshot dirs).
 9. **Deploy + boot gchgchmp BIOS, screenshot, LOOK.** Compare to the sim `.gra`→PNG.
 
 ## BIOS delivery on hardware
@@ -78,8 +79,8 @@ CD images + security carts come via the HPS `sd_*`/`img_mounted` path later.
 5. **Watchdog** (`system573_top.v:72`) — keep `wdog_reset` off the reset path for first boot.
 6. **Build = ~1 hr**; iterate functionality in the NVC sim, build only at the gate.
 
-See docs/EXECUTION_PLAN.md (Phase 4), docs/DEPENDENCIES.md (Colima/Quartus recipe),
-docs/PHASE1_PSX.md (EXP1 contract), and the project memory.
+See docs/EXECUTION_PLAN.md (Phase 4), docs/DEPENDENCIES.md (Quartus/Docker build
+recipe), and docs/PHASE1_PSX.md (EXP1 contract).
 
 ## Build status (2026-06-02)
 
@@ -95,11 +96,9 @@ Elaboration: (1) `emu.sv` must be `SYSTEMVERILOG_FILE`; (2) patch 0003
 `pll2`, and `pll_0002` lives in the `psx/rtl/pll` subdir that the bare
 `SEARCH_PATH` does not reach.
 
-**Build-host RAM — SOLVED.** `quartus_map` of the full PSX core needs ~11 GB,
-which OOMs the ~10 GB Colima VM on this 16 GB Mac. The fix: a **30 GB swapfile
-on the Colima data disk** (`/mnt/lima-colima`, which has room — the VM *root*
-disk does not), giving 10 GB RAM + 30 GB swap. A&S then completes without OOM.
-(Recipe in docs/DEPENDENCIES.md.)
+**Build-host RAM.** `quartus_map` of the full PSX core needs ~11 GB RAM. On low-RAM
+hosts add swap (or build serially, `NUM_PARALLEL_PROCESSORS=1`); A&S then completes
+without OOM.
 
 **573-fabric synthesis — FIXED (commit "make the fabric + emu integration
 synthesizable").** Two classes of Quartus-hostile RTL were resolved so the

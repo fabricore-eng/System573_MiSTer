@@ -1,7 +1,7 @@
 # =============================================================================
 # Konami System 573 - Quartus project (MiSTer / DE10-Nano, Cyclone V).
 #
-# Build (Quartus 17.0.2; see docs/DEPENDENCIES.md for the Colima/Docker recipe):
+# Build (Quartus 17.0.2; see docs/DEPENDENCIES.md for the Docker build recipe):
 #   tools/apply_psx_patches.sh            # apply the psx/ EXP1 widening first
 #   quartus_sh --flow compile Konami_System_573
 #
@@ -25,9 +25,10 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
 # PSX_MiSTer needs the DDR3 framebuffer path (sys_top gates FB_* on this).
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
-# 1 (not 6): this Mac has 16 GB RAM and the Colima VM is 11 GB; 6 parallel synthesis
-# workers OOM quartus_map on the large PSX core under Rosetta. Serial = lower peak RAM
-# (slower). See docs/PHASE4_HARDWARE.md (build RAM constraint).
+# Serial (1, not 6): quartus_map of the large PSX core is RAM-heavy; >1 parallel
+# synthesis worker can OOM on machines with limited RAM. Serial = lower peak RAM
+# (slower). Raise NUM_PARALLEL_PROCESSORS if your build host has headroom.
+# See docs/PHASE4_HARDWARE.md (build RAM constraint).
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
 
 # Core RTL (573 fabric + emu.sv + the nested psx/rtl PSX core qips).

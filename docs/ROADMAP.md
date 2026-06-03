@@ -3,8 +3,7 @@
 The honest path from this repository to a System 573 core that boots a game.
 
 > **For the forward plan** (PSX integration → BIOS POST → first game → full game
-> compatibility), including how I work autonomously against a locally-attached
-> MiSTer and the ordered file/dump manifest, see
+> compatibility), including the ordered file/dump manifest, see
 > [`EXECUTION_PLAN.md`](EXECUTION_PLAN.md) and [`../dumps/README.md`](../dumps/README.md).
 > This roadmap tracks the coarse phases; the execution plan is the working doc.
 
