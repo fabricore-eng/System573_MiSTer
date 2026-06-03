@@ -446,6 +446,7 @@ begin
       exp1_we               => exp1_we,
       exp1_re               => exp1_re,
       exp1_dataRead         => exp1_dataRead,
+      exp1_wait             => '0',   -- NVC harness has no flash backing: never stall
       exp_irq10             => exp_irq10,
       ram_refresh           => ram_refresh,
       ram_dataWrite         => ram_dataWrite,

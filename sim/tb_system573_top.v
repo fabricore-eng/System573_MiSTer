@@ -30,7 +30,11 @@ module tb_system573_top;
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
-        .cdrom_irq(cdrom_irq), .lamp_out(lamp_out)
+        .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
+        // SIM_BACKING defaults to 1: inline flash; flash_wait stays 0, SDRAM unused.
+        .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
+        .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
     );
 
     always #5 clk = ~clk;

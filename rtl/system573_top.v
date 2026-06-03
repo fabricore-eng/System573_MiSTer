@@ -12,7 +12,10 @@
 module system573_top #(
     parameter integer CLK_FREQ_HZ      = 33_868_800,
     parameter [47:0]  CART_SERIAL      = 48'h0000_0000_0001,
-    parameter integer WDOG_TIMEOUT     = 32'd1_000_000
+    parameter integer WDOG_TIMEOUT     = 32'd1_000_000,
+    // SIM_BACKING=1 (default, iverilog): inline flash_nor BRAM (flash_wait=0).
+    // 0 (Quartus/HW, set from emu.sv): 16 MB SDRAM-backed flash line buffer.
+    parameter integer FLASH_SIM_BACKING = 1
 )(
     input  wire        clk,
     input  wire        rst,
@@ -23,6 +26,24 @@ module system573_top #(
     input  wire        exp1_we,
     input  wire        exp1_re,
     output reg  [15:0] exp1_rdata,
+
+    // EXP1 read wait handshake (-> psx memorymux bus_exp1_wait, psx_patches/0006).
+    // High while a flash array read is stalled on its SDRAM line fill; the PSX
+    // external-bus FSM holds in its read-strobe state until this drops. Always 0
+    // for every non-flash EXP1 access and for flash ID reads / HITs.
+    output wire        flash_wait,
+
+    // SDRAM flash line-fill port (used only when FLASH_SIM_BACKING=0; driven by
+    // emu.sv's SDRAM read client into the 16 MB onboard-flash image).
+    output wire        flash_mem_req,
+    output wire [26:0] flash_mem_addr,
+    input  wire [127:0] flash_mem_q,
+    input  wire        flash_mem_ready,
+
+    // M48T58 NVRAM image load (e.g. hyperbbc 876ea.22h), streamed in at reset.
+    input  wire        nvram_we,
+    input  wire [12:0] nvram_addr,
+    input  wire [7:0]  nvram_din,
 
     // Board inputs (JAMMA / coins / DIP) from the MiSTer host
     input  wire [3:0]  dip_sw,
@@ -88,13 +109,24 @@ module system573_top #(
     wire [15:0] flash_dout;
     wire [5:0]  flash_bank;
     wire        sec_io0_dir, flash_cpld;
-    s573_flash u_flash (
+    wire        flash_ready;
+    // exp1_addr[21:1] = the full 21-bit (2 M-word = 4 MB) window offset. The old
+    // [16:1] slice exposed only 128 KB of each 4 MB bank (a real bug).
+    s573_flash #(.SIM_BACKING(FLASH_SIM_BACKING)) u_flash (
         .clk(clk), .rst(rst),
         .ctl_we(sel_bankctl & exp1_we), .ctl_din(exp1_wdata),
         .bank(flash_bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(flash_cpld),
-        .win_sel(sel_flash), .win_addr(exp1_addr[16:1]),
-        .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout)
+        .win_sel(sel_flash), .win_addr(exp1_addr[21:1]),
+        .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout),
+        .flash_ready(flash_ready),
+        .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
+        .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready)
     );
+    // The EXP1 wait is asserted ONLY while a flash access is not ready (a missed
+    // array read filling its line). For every non-flash EXP1 select and for flash
+    // ID reads / line-buffer HITs flash_ready=1, so flash_wait=0 -- a stuck-high
+    // wait would hang the whole 573 bus.
+    assign flash_wait = sel_flash & ~flash_ready;
 
     // --- security cartridge (EEPROM + board DS2401) via the D0-D7 latch ---
     wire        sec_io0, sec_drdy, sec_irdy;
@@ -136,7 +168,8 @@ module system573_top #(
         .addr(rtc_off[12:0]),
         .din(exp1_wdata[7:0]),
         .we(sel_rtc & exp1_we),
-        .dout(rtc_dout)
+        .dout(rtc_dout),
+        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din)
     );
 
     // --- Konami ASIC I/O ---

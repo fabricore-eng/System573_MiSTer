@@ -12,7 +12,8 @@ module tb_m48t58;
     localparam SEC = 13'd8185, MIN = 13'd8186, CTRL = 13'd8184;
 
     m48t58 #(.CLK_FREQ_HZ(1)) dut (
-        .clk(clk), .rst(rst), .addr(addr), .din(din), .we(we), .dout(dout)
+        .clk(clk), .rst(rst), .addr(addr), .din(din), .we(we), .dout(dout),
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
     );
 
     always #5 clk = ~clk;

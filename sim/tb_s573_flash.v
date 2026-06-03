@@ -10,15 +10,23 @@ module tb_s573_flash;
     wire [5:0] bank;
     wire       sec_io0_dir, cpld_sig;
     reg        win_sel = 0, win_we = 0;
-    reg [15:0] win_addr = 0, win_din = 0;
+    reg [20:0] win_addr = 0;
+    reg [15:0] win_din = 0;
     wire [15:0] win_dout;
+    wire        flash_ready;
+    wire        flash_mem_req;
+    wire [26:0] flash_mem_addr;
     integer errors = 0;
 
-    s573_flash #(.WIN_WORDS(2048), .SECTOR_WORDS(512), .NUM_BANKS(4)) dut (
+    // SIM_BACKING=1 (default): inline flash_nor chips; the SDRAM ports are unused.
+    s573_flash #(.WIN_WORDS(2048), .SECTOR_WORDS(512), .NUM_BANKS(4),
+                 .SIM_BACKING(1)) dut (
         .clk(clk), .rst(rst), .ctl_we(ctl_we), .ctl_din(ctl_din),
         .bank(bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(cpld_sig),
         .win_sel(win_sel), .win_addr(win_addr), .win_we(win_we),
-        .win_din(win_din), .win_dout(win_dout)
+        .win_din(win_din), .win_dout(win_dout), .flash_ready(flash_ready),
+        .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
+        .flash_mem_q(128'd0), .flash_mem_ready(1'b0)
     );
 
     always #5 clk = ~clk;

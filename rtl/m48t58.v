@@ -34,7 +34,14 @@ module m48t58 #(
     input  wire [12:0] addr,    // byte address 0..8191
     input  wire [7:0]  din,
     input  wire        we,      // 1-cycle write strobe
-    output reg  [7:0]  dout      // async read data
+    output reg  [7:0]  dout,     // async read data
+    // NVRAM image load port (e.g. hyperbbc 876ea.22h via ioctl). Streams the 8 KB
+    // contents into the lower NVRAM (and, for the top 8 bytes, the clock register
+    // file). Lower priority than a concurrent bus write -- loads happen at reset
+    // time before the BIOS runs, so they never actually collide.
+    input  wire        nvram_we,
+    input  wire [12:0] nvram_addr,
+    input  wire [7:0]  nvram_din
 );
     localparam [12:0] RTC_BASE = 13'd8184;
     localparam integer DIVMAX  = (CLK_FREQ_HZ > 1) ? CLK_FREQ_HZ - 1 : 0;
@@ -136,6 +143,10 @@ module m48t58 #(
                 end else begin
                     ram[addr] <= din;
                 end
+            // Image load (lower priority than a bus write; only the lower NVRAM is
+            // streamed -- the top 8 RTC bytes are live clock state, not loaded).
+            end else if (nvram_we && nvram_addr < RTC_BASE) begin
+                ram[nvram_addr] <= nvram_din;
             end
 
             // Advance the oscillator (paused in write freeze or when stopped).

@@ -23,7 +23,9 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           "$ROOT/psx_patches/0002-s573-nvc-cd-positionInIndex-init.patch" \
           "$ROOT/psx_patches/0003-s573-nvc-gpu-videoout-linemax-clamp.patch" \
           "$ROOT/psx_patches/0004-s573-cpu-icache-redirect-fix.patch" \
-          "$ROOT/psx_patches/0005-s573-cpu-bios-uncached.patch" )
+          "$ROOT/psx_patches/0005-s573-cpu-bios-uncached.patch" \
+          "$ROOT/psx_patches/0006-s573-exp1-flash-wait.patch" \
+          "$ROOT/psx_patches/0007-sdram-ch4-flash.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
@@ -37,12 +39,35 @@ touched_files() { for p in "${PATCHES[@]}"; do sed -n 's#^+++ b/##p' "$p"; done 
 
 case "$mode" in
   --check)
+    # Validate the patch STACK, not each patch in isolation. Later patches
+    # (e.g. 0006/0007) extend the same files/regions earlier ones (0001) add, so
+    # a per-patch reverse/forward check against the live tree gives false
+    # "WILL NOT APPLY" once the stack is applied. Instead, reconstruct the pinned
+    # baseline of every touched file in a scratch dir and apply the patches there
+    # in order -- exactly the sequence `apply` produces -- writing NOTHING to the
+    # real psx working tree.
     rc=0
+    scratch="$(mktemp -d)"
+    trap 'rm -rf "$scratch"' EXIT
+    # Seed scratch with the pinned (PIN) version of each touched file.
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      mkdir -p "$scratch/$(dirname "$f")"
+      git show "$PIN:$f" > "$scratch/$f" 2>/dev/null \
+        || { echo "error: cannot read pinned $f" >&2; exit 1; }
+    done < <(touched_files)
     for p in "${PATCHES[@]}"; do
       [ -f "$p" ] || { echo "error: missing patch $p" >&2; exit 1; }
-      if   git apply --reverse --check "$p" 2>/dev/null; then echo "already applied:  $(basename "$p")"
-      elif git apply           --check "$p" 2>/dev/null; then echo "applies cleanly:  $(basename "$p")"
-      else echo "WILL NOT APPLY:   $(basename "$p")"; git apply --check "$p" || true; rc=1
+      # Apply (check, then apply) into the scratch tree so later patches in the
+      # stack see earlier ones. `git apply -p1` operates on the files in $scratch
+      # without needing it to be a git repo (we run it with the scratch dir as cwd).
+      if ( cd "$scratch" && git apply -p1 --check "$p" 2>/dev/null \
+                          && git apply -p1         "$p" 2>/dev/null ); then
+        echo "applies cleanly:  $(basename "$p")"
+      else
+        echo "WILL NOT APPLY:   $(basename "$p")"
+        ( cd "$scratch" && git apply -p1 --check "$p" ) || true
+        rc=1
       fi
     done
     exit $rc
@@ -58,6 +83,17 @@ case "$mode" in
   apply|"")
     head="$(git rev-parse HEAD)"
     [ "$head" = "$PIN" ] || echo "warning: psx at $head, expected pinned $PIN; patches may not apply cleanly." >&2
+    # Fast path: the patches form a STACK (later ones extend the same regions
+    # earlier ones add). The topmost patch on each file reverse-checks clean iff
+    # the whole stack is already applied; so if the LAST patch reverse-applies,
+    # everything is in place -- skip the per-patch dance (whose isolated reverse-
+    # check gives false negatives on bottom-of-stack patches like 0001, forcing an
+    # unnecessary reset+reapply of the whole tree).
+    if [ "${#PATCHES[@]}" -gt 0 ] && \
+       git apply --reverse --check "${PATCHES[${#PATCHES[@]}-1]}" 2>/dev/null; then
+      for p in "${PATCHES[@]}"; do echo "already applied: $(basename "$p")"; done
+      exit 0
+    fi
     for p in "${PATCHES[@]}"; do
       [ -f "$p" ] || { echo "error: missing patch $p" >&2; exit 1; }
       if git apply --reverse --check "$p" 2>/dev/null; then

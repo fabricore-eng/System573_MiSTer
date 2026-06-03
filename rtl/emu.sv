@@ -630,9 +630,12 @@ hps_ext hps_ext
 //////////////////////////  ROM DETECT  /////////////////////////////////
 
 reg bios_download, exe_download, cdinfo_download, code_download;
+reg flash_download, nvram_download;
 always @(posedge clk_1x) begin
 	bios_download    <= ioctl_download & (ioctl_index[5:0] == 0);
 	exe_download     <= ioctl_download & (ioctl_index == 1);
+	flash_download   <= ioctl_download & (ioctl_index == 2);   // 573 onboard flash (16 MB)
+	nvram_download   <= ioctl_download & (ioctl_index == 3);   // 573 M48T58 NVRAM (8 KB)
 	cdinfo_download  <= ioctl_download & (ioctl_index == 251);
 	code_download    <= ioctl_download & (ioctl_index == 255);
 end
@@ -646,6 +649,10 @@ end
 
 localparam EXE_START = 16777216;
 localparam BIOS_START = 8388608;
+// 573 onboard flash: 16 MB at SDRAM byte 0x02000000 (RAM@0x0, BIOS@0x00800000,
+// EXE@0x01000000 -- all below 0x02000000). The line buffer indexes it by flat
+// 16-bit word; the SDRAM byte address is FLASH_START + (word << 1).
+localparam [26:0] FLASH_START = 27'h0200_0000;
 
 reg [26:0] ramdownload_wraddr;
 reg [31:0] ramdownload_wrdata;
@@ -694,12 +701,13 @@ reg [31:0] exe_stackpointer;
 
 always @(posedge clk_1x) begin
 	ramdownload_wr <= 0;
-	if(exe_download | bios_download | cdinfo_download) begin
+	if(exe_download | bios_download | cdinfo_download | flash_download) begin
       if (ioctl_wr) begin
          if(~ioctl_addr[1]) begin
             ramdownload_wrdata[15:0] <= ioctl_dout;
             if (bios_download)         ramdownload_wraddr  <= {4'd1, 2'b00, ioctl_index[7:6], ioctl_addr[18:0]};
             else if (exe_download)     ramdownload_wraddr  <= ioctl_addr[22:0] + EXE_START[26:0];
+            else if (flash_download)   ramdownload_wraddr  <= {3'd0, ioctl_addr[23:0]} + FLASH_START;
             else if (cdinfo_download)  ramdownload_wraddr  <= ioctl_addr[26:0];
          end else begin
             ramdownload_wrdata[31:16] <= ioctl_dout;
@@ -1117,6 +1125,7 @@ psx
    .exp1_we(exp1_we),
    .exp1_re(exp1_re),
    .exp1_dataRead(exp1_dataRead),
+   .exp1_wait(exp1_wait),
    .exp_irq10(exp_irq10),
    .ram_refresh(sdr_refresh),
    .ram_dataWrite(sdr_sdram_din),
@@ -1347,8 +1356,23 @@ wire        exp1_we;
 wire        exp1_re;
 wire [15:0] exp1_dataRead;
 wire        exp_irq10;
+wire        exp1_wait;          // 573 flash line-fill stall -> psx_mister EXP1 wait
 
-system573_top u_s573
+// 573 onboard-flash SDRAM line-fill bridge (system573_top <-> sdram ch4).
+wire        flash_mem_req;
+wire [26:0] flash_mem_addr;     // flat 16-bit word index into the 16 MB image
+wire [127:0] flash_mem_q;
+wire        flash_mem_ready;
+
+// 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB streamed a byte at a time).
+wire        nvram_we   = nvram_download & ioctl_wr;
+wire [12:0] nvram_addr = ioctl_addr[12:0];
+wire [7:0]  nvram_din  = ioctl_dout[7:0];
+// ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
+// word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
+wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
+
+system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
    .rst            (reset),
@@ -1357,6 +1381,14 @@ system573_top u_s573
    .exp1_we        (exp1_we),
    .exp1_re        (exp1_re),
    .exp1_rdata     (exp1_dataRead),
+   .flash_wait     (exp1_wait),
+   .flash_mem_req  (flash_mem_req),
+   .flash_mem_addr (flash_mem_addr),
+   .flash_mem_q    (flash_mem_q),
+   .flash_mem_ready(flash_mem_ready),
+   .nvram_we       (nvram_we),
+   .nvram_addr     (nvram_addr),
+   .nvram_din      (nvram_din),
    // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
    // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and
@@ -1477,13 +1509,19 @@ sdram sdram
 	.ch2_be   (sdram_be),
 	.ch2_ready(sdram_writeack),
 
-	.ch3_addr ((exe_download | bios_download) ? ramdownload_wraddr : cheats_addr),
-	.ch3_din  ((exe_download | bios_download) ? ramdownload_wrdata : cheats_dout),
+	.ch3_addr ((exe_download | bios_download | flash_download) ? ramdownload_wraddr : cheats_addr),
+	.ch3_din  ((exe_download | bios_download | flash_download) ? ramdownload_wrdata : cheats_dout),
 	.ch3_dout (cheats_din),
-	.ch3_req  ((exe_download | bios_download) ? ramdownload_wr     : cheats_ena),
+	.ch3_req  ((exe_download | bios_download | flash_download) ? ramdownload_wr     : cheats_ena),
 	.ch3_rnw  (cheats_rnw),
-	.ch3_be   ((exe_download | bios_download) ? 4'b1111            : cheats_be),
+	.ch3_be   ((exe_download | bios_download | flash_download) ? 4'b1111            : cheats_be),
 	.ch3_ready(sdramCh3_done),
+
+	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).
+	.ch4_addr (flash_ch4_addr),
+	.ch4_dout (flash_mem_q),
+	.ch4_req  (flash_mem_req),
+	.ch4_ready(flash_mem_ready),
 
 	.dmafifo_adr  (sdram_dmafifo_adr),
 	.dmafifo_data (sdram_dmafifo_data),
