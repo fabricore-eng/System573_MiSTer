@@ -67,6 +67,15 @@ module tb_drivecheck;
         end
     endtask
 
+    // issue a PACKET (0xA0) command + 12-byte CDB (only CDB[0]=opcode matters to atapi.v)
+    task packet_send(input [7:0] op);
+        integer w; begin
+            exp1_write(24'h48000e, 16'h00A0);          // PACKET command
+            exp1_write(24'h480000, {8'h00, op});       // CDB word0 (opcode in low byte)
+            for (w = 0; w < 5; w = w + 1) exp1_write(24'h480000, 16'h0000);
+        end
+    endtask
+
     reg [15:0] v;
     integer i;
     initial begin
@@ -108,6 +117,38 @@ module tb_drivecheck;
 
         // completion: STATUS back to DRDY|DSC (0x50), ERR clear
         exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "IDENT done STATUS");
+
+        // ---- the previously-missing CD-ROM init PACKET commands (Tier A) ----
+        // REQUEST SENSE (0x03): 16-byte data-in, sense key 0; BIOS requires byte-count==0x10.
+        packet_send(8'h03);
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0048, "REQSENSE DRQ");
+        exp1_read(24'h480008, v); chk(v & 16'h00ff, 16'h0010, "REQSENSE byte count");
+        exp1_read(24'h480000, v); chk(v, 16'h0070, "REQSENSE word0");                 // {resp[1],resp[0]} = 0x0070
+        exp1_read(24'h480000, v); chk(v & 16'h00ff, 16'h0000, "REQSENSE key=0");       // {resp[3],resp[2]} low = key 0
+        for (i = 2; i < 8; i = i + 1) exp1_read(24'h480000, v);                        // 8 data words total = 16 bytes
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "REQSENSE done");
+
+        // READ TOC (0x43): 12-byte data-in; BIOS requires byte-count==12.
+        packet_send(8'h43);
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0048, "READTOC DRQ");
+        exp1_read(24'h480008, v); chk(v & 16'h00ff, 16'h000C, "READTOC byte count");
+        for (i = 0; i < 6; i = i + 1) exp1_read(24'h480000, v);                        // 6 words = 12 bytes
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "READTOC done");
+
+        // MODE SENSE(10) (0x5A): 24-byte data-in; BIOS requires byte-count==0x18.
+        packet_send(8'h5A);
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0048, "MODESENSE DRQ");
+        exp1_read(24'h480008, v); chk(v & 16'h00ff, 16'h0018, "MODESENSE byte count");
+        for (i = 0; i < 12; i = i + 1) exp1_read(24'h480000, v);                       // 12 words = 24 bytes
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "MODESENSE done");
+
+        // MODE SELECT(10) (0x55): 24-byte data-OUT; BIOS requires byte-count==0x18, ireason data-out.
+        packet_send(8'h55);
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0048, "MODESEL DRQ");
+        exp1_read(24'h480004, v); chk(v & 16'h00ff, 16'h0000, "MODESEL ireason dataout"); // C/D=0,I/O=0
+        exp1_read(24'h480008, v); chk(v & 16'h00ff, 16'h0018, "MODESEL byte count");
+        for (i = 0; i < 12; i = i + 1) exp1_write(24'h480000, 16'h0000);               // host writes 24 bytes
+        exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "MODESEL done");
 
         if (errors == 0) $display("RESULT: PASS (drivecheck)");
         else             $display("RESULT: FAIL (drivecheck, %0d errors)", errors);

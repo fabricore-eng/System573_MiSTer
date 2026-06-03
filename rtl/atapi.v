@@ -43,7 +43,7 @@ module atapi #(
     // interrupt reason (sector-count) bits: C/D=bit0, I/O=bit1
     localparam [7:0] IR_CD=8'h01, IR_IO=8'h02;
 
-    localparam [1:0] S_IDLE=2'd0, S_PKT=2'd1, S_DATAIN=2'd2;
+    localparam [1:0] S_IDLE=2'd0, S_PKT=2'd1, S_DATAIN=2'd2, S_DATAOUT=2'd3;
 
     reg [7:0] r_error, r_feat, r_ireason, r_lbalo, r_bclo, r_bchi, r_device, r_status, r_devctl;
     reg [1:0] state;
@@ -159,6 +159,68 @@ module atapi #(
                                           r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; state <= S_DATAIN;
                                       end
+                                      8'h03: begin              // REQUEST SENSE (data-in) -- empty drive: NO SENSE
+                                          // 18-byte fixed-format sense; present the 16 the BIOS asks for
+                                          // (alloc 0x10) and checks (byte-count==0x10 @0x803cbc0c). Sense
+                                          // key (resp[2]) MUST be 0 -- the re-detect loop 0x803cc6d8 gates
+                                          // on key==0 @0x803cc738 to mark the drive ready.
+                                          resp[0]<=8'h70; resp[1]<=8'h00; resp[2]<=8'h00; // resp code 0x70, key 0
+                                          resp[3]<=8'h00; resp[4]<=8'h00; resp[5]<=8'h00; resp[6]<=8'h00;
+                                          resp[7]<=8'h0A;                                 // add'l sense length 10
+                                          for (i=8;i<18;i=i+1) resp[i]<=8'h00;            // info/ASC/ASCQ = 0
+                                          n = 7'd16;
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ;
+                                          r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN;
+                                      end
+                                      8'h43: begin              // READ TOC/PMA/ATIP (data-in) -- minimal 1-track header
+                                          // 12 bytes (alloc CDB[8]=0x0C). BIOS checks only byte-count==12
+                                          // @0x803cbe04 + handshake; no TOC content is validated.
+                                          resp[0]<=8'h00; resp[1]<=8'h0A;                 // TOC data length = 10
+                                          resp[2]<=8'h01; resp[3]<=8'h01;                 // first / last track = 1
+                                          resp[4]<=8'h00; resp[5]<=8'h14;                 // reserved; ADR=1/CTRL=4 (data)
+                                          resp[6]<=8'h01; resp[7]<=8'h00;                 // track 1; reserved
+                                          resp[8]<=8'h00; resp[9]<=8'h00; resp[10]<=8'h00; resp[11]<=8'h00; // start LBA 0
+                                          n = 7'd12;
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ;
+                                          r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN;
+                                      end
+                                      8'h5A: begin              // MODE SENSE(10) page 0x0E (data-in)
+                                          // 24 bytes (alloc CDB[8]=0x18): 8-byte mode header + 16-byte
+                                          // CD-audio-control page. BIOS checks only byte-count==0x18; content
+                                          // is not validated (only replayed on a MODE SELECT that is off-path).
+                                          resp[0]<=8'h00; resp[1]<=8'h16;                 // mode data length = 22
+                                          resp[2]<=8'h00; resp[3]<=8'h00; resp[4]<=8'h00; resp[5]<=8'h00;
+                                          resp[6]<=8'h00; resp[7]<=8'h00;                 // block descriptor length = 0
+                                          resp[8]<=8'h0E; resp[9]<=8'h0E;                 // page 0x0E, page length 14
+                                          resp[10]<=8'h04; resp[11]<=8'h00; resp[12]<=8'h00; resp[13]<=8'h00;
+                                          resp[14]<=8'h00; resp[15]<=8'h4B;
+                                          resp[16]<=8'h01; resp[17]<=8'hFF; resp[18]<=8'h02; resp[19]<=8'hFF;
+                                          resp[20]<=8'h00; resp[21]<=8'h00; resp[22]<=8'h00; resp[23]<=8'h00;
+                                          n = 7'd24;
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ;
+                                          r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN;
+                                      end
+                                      8'h55: begin              // MODE SELECT(10) (data-OUT) -- accept + discard
+                                          // Off the live drive-check path (insurance/faithfulness). Request
+                                          // the 24-byte param list (BIOS checks byte-count==0x18 @0x803cc1a8),
+                                          // accept the host word-writes, validate nothing.
+                                          n = 7'd24;
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0;
+                                          r_status <= ST_DRDY | ST_DRQ;
+                                          r_ireason <= 8'h00;   // C/D=0, I/O=0 -> data-OUT phase
+                                          r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAOUT;
+                                      end
                                       default: begin            // unsupported -> CHECK CONDITION
                                           r_status  <= ST_DRDY | ST_ERR;
                                           r_error   <= 8'h50;   // sense key 5 (illegal request)
@@ -168,6 +230,16 @@ module atapi #(
                                       end
                                   endcase
                               end
+                          end else if (state == S_DATAOUT) begin
+                              // MODE SELECT data-OUT: accept + discard the host's param-list words
+                              if (ridx + 13'd2 >= resp_len) begin   // last word -> complete
+                                  r_status  <= ST_DRDY | ST_DSC;
+                                  r_ireason <= IR_CD | IR_IO;
+                                  r_error   <= 8'h00;
+                                  irq_pending <= 1'b1;
+                                  state <= S_IDLE;
+                              end else
+                                  ridx <= ridx + 13'd2;
                           end
                     4'd1: r_feat    <= din[7:0];
                     4'd2: r_ireason <= din[7:0];
