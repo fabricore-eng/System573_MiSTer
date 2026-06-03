@@ -226,12 +226,27 @@ module atapi #(
         end
     end
 
+    // disc data-in word. SIM reads the disc[] backing store; SYNTHESIS returns 0 so
+    // Quartus does NOT infer the NSECT*2048-byte array as distributed RAM. The disc[]
+    // read is asynchronous (combinational), so it cannot map to block RAM -- left live
+    // in synthesis it explodes into ~64 Kbit of LUT RAM and overflows the device (the
+    // real CD-data path is DDR3-backed, future work; the BIOS boot / flash games never
+    // read the disc). The translate_off pragma is honored by Quartus and ignored by
+    // iverilog, so the READ(10/12) sim test still streams real sector bytes.
+    reg [15:0] disc_dout;
+    always @(*) begin
+        disc_dout = 16'h0000;
+        // synthesis translate_off
+        disc_dout = {disc[disc_base + ridx + 13'd1], disc[disc_base + ridx]};
+        // synthesis translate_on
+    end
+
     // read mux
     always @(*) begin
         case (addr)
             4'd0:    dout = (state != S_DATAIN) ? 16'h0000 :
                             datain_ident ? ident_word(ridx) :
-                            datain_disc  ? {disc[disc_base + ridx + 13'd1], disc[disc_base + ridx]}
+                            datain_disc  ? disc_dout
                                          : {resp[ridx[5:0] + 6'd1], resp[ridx[5:0]]};
             4'd1:    dout = {8'h00, r_error};
             4'd2:    dout = {8'h00, r_ireason};
