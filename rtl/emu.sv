@@ -355,6 +355,7 @@ parameter CONF_STR = {
 	"F1,EXE,Load Exe;",
 	"F2,BIN,Load 573 Flash;",
 	"F3,BIN,Load 573 NVRAM;",
+	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
 	"-;",
 	"d6C,Cheats;",
 	"h6O[6],Cheats Enabled,Yes,No;",
@@ -1398,8 +1399,9 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    // normally; COIN/SERVICE/TEST are mapped to joy bits (assign physical buttons in
    // the MiSTer OSD "Define buttons"). joy[0..7]=R,L,D,U,B1,B2,B3,B4 already matches
    // the 573 P1 JAMMA bit order (docs/MEMORY_MAP.md, 0x1f400008).
-   .dip_sw         (4'h7),                 // DIP SW4 (bit3)=0 => Start Up Device = Flash ROM (boot onboard
-                                           // flash, no CD required; MAME ksys573 DIP SW:4). SW1-3 off (active-low).
+   .dip_sw         ({status[93], 3'b111}), // DIP SW4 (bit3) from OSD "573 Boot Device": 0=Flash ROM (default,
+                                           // boots onboard flash, no CD needed), 1=CD-ROM. 0x1f400004 bit3,
+                                           // MAME ksys573 DIP SW:4. SW1-3 left off (active-low).
    .p1_ctrl        (~joy[7:0]),            // JAMMA P1, active-low
    .p2_ctrl        (~joy2[7:0]),           // JAMMA P2, active-low
    .coin_sw        (~{joy2[9], joy[9]}),   // P2/P1 coin, active-low
