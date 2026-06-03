@@ -353,6 +353,8 @@ parameter CONF_STR = {
 	"H7S1,CUECHD,Load CD;",
 	"h7-,Reload core for CD;",
 	"F1,EXE,Load Exe;",
+	"F2,BIN,Load 573 Flash;",
+	"F3,BIN,Load 573 NVRAM;",
 	"-;",
 	"d6C,Cheats;",
 	"h6O[6],Cheats Enabled,Yes,No;",
