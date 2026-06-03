@@ -61,7 +61,9 @@ rc=$?
 echo "== dell build DONE $(date -u +%FT%TZ) rc=$rc =="
 RUNNER
 
-ssh dell "chmod +x /tmp/dell_build_run.sh; \
+# rm (not just truncate) the log first: `>` keeps the inode, so its birth time (stat %W)
+# would stay frozen at the first-ever build and any %W-based elapsed timer runs away.
+ssh dell "rm -f '$LOG'; chmod +x /tmp/dell_build_run.sh; \
   setsid nohup bash /tmp/dell_build_run.sh '$REF' > '$LOG' 2>&1 < /dev/null & \
   echo \"launched detached: pid \$!\""
 
