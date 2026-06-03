@@ -49,7 +49,7 @@ module atapi #(
     reg [1:0] state;
 
     reg [7:0]  pkt  [0:11];
-    reg [7:0]  resp [0:63];
+    reg [7:0]  resp_cmd;      // active fixed data-in response (selects the resp_byte ROM)
     reg [6:0]  pkt_idx;       // bytes received (0..12)
     reg [12:0] ridx;          // data-in byte index
     reg [12:0] resp_len;
@@ -68,6 +68,42 @@ module atapi #(
             8'd0:    ident_word = 16'h85C0;
             default: ident_word = 16'h0000;
         endcase
+    endfunction
+
+    // Fixed data-in responses as a combinational ROM (was a 64-byte resp[] register
+    // array + per-command write muxing -- removing it nets the block SMALLER than the
+    // register version while supporting more commands, which is what lets the CDR fix
+    // fit). Byte 'k' of the response for command 'cmd'. The drive check validates only
+    // the handshake + byte count (not content), except REQUEST SENSE key (resp[2]==0)
+    // which is naturally 0 here.
+    function [7:0] resp_byte(input [7:0] cmd, input [5:0] k);
+        reg [7:0] b;
+        begin
+            b = 8'h00;
+            case (cmd)
+                8'h12: begin                       // INQUIRY (36 bytes)
+                    case (k)
+                        6'd0: b=8'h05; 6'd1: b=8'h80; 6'd3: b=8'h21; 6'd4: b=8'h1f;
+                        6'd8: b=8'h4b; 6'd9: b=8'h4f; 6'd10:b=8'h4e;   // "KON"
+                        6'd11:b=8'h41; 6'd12:b=8'h4d; 6'd13:b=8'h49;   // "AMI"
+                        6'd16:b=8'h35; 6'd17:b=8'h37; 6'd18:b=8'h33;   // "573"
+                        6'd32:b=8'h31; 6'd33:b=8'h2e; 6'd34:b=8'h30; 6'd35:b=8'h30; // "1.00"
+                        default: if ((k>=6'd14 && k<=6'd15) || (k>=6'd19 && k<=6'd31)) b=8'h20; // spaces
+                    endcase
+                end
+                8'h25: case (k)                    // READ CAPACITY (8 bytes): last-LBA, blklen 2048
+                    6'd1:b=8'h01; 6'd2:b=8'h23; 6'd3:b=8'h44; 6'd6:b=8'h08; default:b=8'h00; endcase
+                8'h03: case (k)                    // REQUEST SENSE (16/18): resp code 0x70, key 0
+                    6'd0:b=8'h70; 6'd7:b=8'h0a; default:b=8'h00; endcase
+                8'h43: case (k)                    // READ TOC (12): 1 data track, MSF 0
+                    6'd1:b=8'h0a; 6'd2:b=8'h01; 6'd3:b=8'h01; 6'd5:b=8'h14; 6'd6:b=8'h01; default:b=8'h00; endcase
+                8'h5A: case (k)                    // MODE SENSE(10) page 0x0E (24)
+                    6'd1:b=8'h16; 6'd8:b=8'h0e; 6'd9:b=8'h0e; 6'd10:b=8'h04; 6'd15:b=8'h4b;
+                    6'd16:b=8'h01; 6'd17:b=8'hff; 6'd18:b=8'h02; 6'd19:b=8'hff; default:b=8'h00; endcase
+                default: b=8'h00;
+            endcase
+            resp_byte = b;
+        end
     endfunction
 
     // small disc backing store (sim) with a deterministic per-byte pattern
@@ -120,91 +156,40 @@ module atapi #(
                                           irq_pending <= 1'b1;
                                           state <= S_IDLE;
                                       end
-                                      8'h12: begin              // INQUIRY (data-in)
-                                          resp[0]<=8'h05; resp[1]<=8'h80; resp[2]<=8'h00;
-                                          resp[3]<=8'h21; resp[4]<=8'h1f; resp[5]<=8'h00;
-                                          resp[6]<=8'h00; resp[7]<=8'h00;
-                                          resp[8]<=8'h4b;  resp[9]<=8'h4f;  resp[10]<=8'h4e; // "KON"
-                                          resp[11]<=8'h41; resp[12]<=8'h4d; resp[13]<=8'h49; // "AMI"
-                                          resp[14]<=8'h20; resp[15]<=8'h20;
-                                          for (i=16;i<32;i=i+1) resp[i]<=8'h20;             // product
-                                          resp[16]<=8'h35; resp[17]<=8'h37; resp[18]<=8'h33;// "573"
-                                          resp[32]<=8'h31; resp[33]<=8'h2e;                 // "1."
-                                          resp[34]<=8'h30; resp[35]<=8'h30;                 // "00"
-                                          n = 7'd36;
+                                      // Fixed data-in commands: select the resp_byte ROM + set the
+                                      // exact byte count the BIOS latches/checks. (Bytes live in the
+                                      // resp_byte() combinational ROM, not a register array.)
+                                      8'h12: begin n = 7'd36; resp_cmd <= 8'h12;        // INQUIRY
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ;
-                                          r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
-                                      end
-                                      8'h25: begin              // READ CAPACITY (data-in)
-                                          resp[0]<=8'h00; resp[1]<=8'h01; resp[2]<=8'h23; resp[3]<=8'h44;
-                                          resp[4]<=8'h00; resp[5]<=8'h00; resp[6]<=8'h08; resp[7]<=8'h00;
-                                          n = 7'd8;
+                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                      8'h25: begin n = 7'd8;  resp_cmd <= 8'h25;        // READ CAPACITY
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ;
-                                          r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
-                                      end
+                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                      8'h03: begin n = 7'd16; resp_cmd <= 8'h03;        // REQUEST SENSE (key 0 = ready)
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00; // BIOS checks bc==0x10 @0x803cbc0c
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                      8'h43: begin n = 7'd12; resp_cmd <= 8'h43;        // READ TOC (bc==12 @0x803cbe04)
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                      8'h5A: begin n = 7'd24; resp_cmd <= 8'h5A;        // MODE SENSE(10) (bc==0x18)
+                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
+                                          irq_pending <= 1'b1; state <= S_DATAIN; end
                                       8'h28, 8'hA8: begin       // READ(10) / READ(12) (disc data-in)
-                                          // LBA in pkt[2..5] (big-endian); one
-                                          // 2048-byte sector streamed per request.
+                                          // LBA in pkt[2..5] (big-endian); one 2048-byte sector per request.
                                           disc_base <= {pkt[5][$clog2(NSECT)-1:0], 11'd0};
                                           resp_len  <= 13'd2048;
                                           r_bclo <= 8'h00; r_bchi <= 8'h08; // 0x0800
                                           ridx <= 0; datain_disc <= 1'b1; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ;
-                                          r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
-                                      end
-                                      8'h03: begin              // REQUEST SENSE (data-in) -- empty drive: NO SENSE
-                                          // 18-byte fixed-format sense; present the 16 the BIOS asks for
-                                          // (alloc 0x10) and checks (byte-count==0x10 @0x803cbc0c). Sense
-                                          // key (resp[2]) MUST be 0 -- the re-detect loop 0x803cc6d8 gates
-                                          // on key==0 @0x803cc738 to mark the drive ready.
-                                          resp[0]<=8'h70; resp[1]<=8'h00; resp[2]<=8'h00; // resp code 0x70, key 0
-                                          resp[3]<=8'h00; resp[4]<=8'h00; resp[5]<=8'h00; resp[6]<=8'h00;
-                                          resp[7]<=8'h0A;                                 // add'l sense length 10
-                                          for (i=8;i<18;i=i+1) resp[i]<=8'h00;            // info/ASC/ASCQ = 0
-                                          n = 7'd16;
-                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ;
-                                          r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
-                                      end
-                                      8'h43: begin              // READ TOC/PMA/ATIP (data-in) -- minimal 1-track header
-                                          // 12 bytes (alloc CDB[8]=0x0C). BIOS checks only byte-count==12
-                                          // @0x803cbe04 + handshake; no TOC content is validated.
-                                          resp[0]<=8'h00; resp[1]<=8'h0A;                 // TOC data length = 10
-                                          resp[2]<=8'h01; resp[3]<=8'h01;                 // first / last track = 1
-                                          resp[4]<=8'h00; resp[5]<=8'h14;                 // reserved; ADR=1/CTRL=4 (data)
-                                          resp[6]<=8'h01; resp[7]<=8'h00;                 // track 1; reserved
-                                          resp[8]<=8'h00; resp[9]<=8'h00; resp[10]<=8'h00; resp[11]<=8'h00; // start LBA 0
-                                          n = 7'd12;
-                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ;
-                                          r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
-                                      end
-                                      8'h5A: begin              // MODE SENSE(10) page 0x0E (data-in)
-                                          // 24 bytes (alloc CDB[8]=0x18): 8-byte mode header + 16-byte
-                                          // CD-audio-control page. BIOS checks only byte-count==0x18; content
-                                          // is not validated (only replayed on a MODE SELECT that is off-path).
-                                          resp[0]<=8'h00; resp[1]<=8'h16;                 // mode data length = 22
-                                          resp[2]<=8'h00; resp[3]<=8'h00; resp[4]<=8'h00; resp[5]<=8'h00;
-                                          resp[6]<=8'h00; resp[7]<=8'h00;                 // block descriptor length = 0
-                                          resp[8]<=8'h0E; resp[9]<=8'h0E;                 // page 0x0E, page length 14
-                                          resp[10]<=8'h04; resp[11]<=8'h00; resp[12]<=8'h00; resp[13]<=8'h00;
-                                          resp[14]<=8'h00; resp[15]<=8'h4B;
-                                          resp[16]<=8'h01; resp[17]<=8'hFF; resp[18]<=8'h02; resp[19]<=8'hFF;
-                                          resp[20]<=8'h00; resp[21]<=8'h00; resp[22]<=8'h00; resp[23]<=8'h00;
-                                          n = 7'd24;
-                                          resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ;
                                           r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; state <= S_DATAIN;
@@ -319,7 +304,8 @@ module atapi #(
             4'd0:    dout = (state != S_DATAIN) ? 16'h0000 :
                             datain_ident ? ident_word(ridx) :
                             datain_disc  ? disc_dout
-                                         : {resp[ridx[5:0] + 6'd1], resp[ridx[5:0]]};
+                                         : {resp_byte(resp_cmd, ridx[5:0] + 6'd1),
+                                            resp_byte(resp_cmd, ridx[5:0])};
             4'd1:    dout = {8'h00, r_error};
             4'd2:    dout = {8'h00, r_ireason};
             4'd3:    dout = {8'h00, r_lbalo};
