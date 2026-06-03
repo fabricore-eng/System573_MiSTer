@@ -54,6 +54,8 @@ module atapi #(
     reg [12:0] ridx;          // data-in byte index
     reg [12:0] resp_len;
     reg        irq_pending;
+    reg        irq_event;     // 1-clk strobe: a fresh interrupt event was raised this cycle
+    reg        irq_out;       // edge-guaranteed INTRQ level (see assign intrq below)
     reg        datain_disc;   // data-in source: 1 = disc store, 0 = resp[]
     reg        datain_ident;  // data-in source: 1 = generated IDENTIFY block
     reg [12:0] disc_base;     // byte base into the disc store for READ commands
@@ -118,7 +120,14 @@ module atapi #(
     initial for (s = 0; s < NSECT*2048; s = s + 1) disc[s] = s[7:0];
     // synthesis translate_on
 
-    assign intrq = irq_pending & ~r_devctl[1];   // nIEN = device control bit1
+    // INTRQ edge guarantee. psx/rtl/irq.vhd latches I_STATUS bit10 on a RISING EDGE of
+    // this line (irqIn AND NOT irqIn_1). When two consecutive ATAPI interrupt events
+    // (e.g. PIO data-ready then completion) are raised without the host's INTRQ-clear
+    // in between, irq_pending stays level-high and the controller MISSES the 2nd event,
+    // hanging the BIOS's IRQ-driven IDENTIFY wait (0x803cb4b8). irq_out below forces a
+    // fresh 0->1 per event: whenever irq_event pulses while irq_out is already high, it
+    // is dropped for exactly one clk so the next assert is a clean rising edge.
+    assign intrq = irq_out & ~r_devctl[1];       // nIEN = device control bit1
 
     // load the ATAPI device signature into the task-file
     task set_signature;
@@ -135,10 +144,25 @@ module atapi #(
     always @(posedge clk) begin
         if (rst || ide_rst) begin
             state <= S_IDLE; pkt_idx <= 0; ridx <= 0; resp_len <= 0;
-            irq_pending <= 1'b0; r_feat <= 0; r_devctl <= 0;
+            irq_pending <= 1'b0; irq_event <= 1'b0; irq_out <= 1'b0;
+            r_feat <= 0; r_devctl <= 0;
             datain_disc <= 1'b0; datain_ident <= 1'b0;
             set_signature;
         end else begin
+            irq_event <= 1'b0;                           // default; set by the 13 event sites
+
+            // Edge-guaranteed INTRQ. irq_out tracks irq_pending, except a fresh event
+            // (irq_event) raised while irq_out is ALREADY high forces one low clk first
+            // so psx irq.vhd sees a clean 0->1 for every event (data-ready, completion,
+            // ...). The host's INTRQ-clear (reg7 read/command write -> irq_pending=0)
+            // still deasserts it normally.
+            if (!irq_pending)
+                irq_out <= 1'b0;                         // host cleared -> deassert
+            else if (irq_event && irq_out)
+                irq_out <= 1'b0;                         // re-arm collision -> 1-clk gap
+            else
+                irq_out <= 1'b1;                         // assert / hold
+
             if (sel && we) begin
                 case (addr)
                     4'd0: if (state == S_PKT) begin           // packet bytes (16-bit)
@@ -153,7 +177,7 @@ module atapi #(
                                           r_status  <= ST_DRDY | ST_DSC;
                                           r_ireason <= IR_CD | IR_IO;
                                           r_error   <= 8'h00;
-                                          irq_pending <= 1'b1;
+                                          irq_pending <= 1'b1; irq_event <= 1'b1;
                                           state <= S_IDLE;
                                       end
                                       // Fixed data-in commands: select the resp_byte ROM + set the
@@ -163,27 +187,27 @@ module atapi #(
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h25: begin n = 7'd8;  resp_cmd <= 8'h25;        // READ CAPACITY
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h03: begin n = 7'd16; resp_cmd <= 8'h03;        // REQUEST SENSE (key 0 = ready)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00; // BIOS checks bc==0x10 @0x803cbc0c
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h43: begin n = 7'd12; resp_cmd <= 8'h43;        // READ TOC (bc==12 @0x803cbe04)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h5A: begin n = 7'd24; resp_cmd <= 8'h5A;        // MODE SENSE(10) (bc==0x18)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
                                           ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN; end
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h28, 8'hA8: begin       // READ(10) / READ(12) (disc data-in)
                                           // LBA in pkt[2..5] (big-endian); one 2048-byte sector per request.
                                           disc_base <= {pkt[5][$clog2(NSECT)-1:0], 11'd0};
@@ -192,7 +216,7 @@ module atapi #(
                                           ridx <= 0; datain_disc <= 1'b1; datain_ident <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ;
                                           r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAIN;
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN;
                                       end
                                       8'h55: begin              // MODE SELECT(10) (data-OUT) -- accept + discard
                                           // Off the live drive-check path (insurance/faithfulness). Request
@@ -204,13 +228,13 @@ module atapi #(
                                           r_status <= ST_DRDY | ST_DRQ;
                                           r_ireason <= 8'h00;   // C/D=0, I/O=0 -> data-OUT phase
                                           r_error <= 8'h00;
-                                          irq_pending <= 1'b1; state <= S_DATAOUT;
+                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAOUT;
                                       end
                                       default: begin            // unsupported -> CHECK CONDITION
                                           r_status  <= ST_DRDY | ST_ERR;
                                           r_error   <= 8'h50;   // sense key 5 (illegal request)
                                           r_ireason <= IR_CD | IR_IO;
-                                          irq_pending <= 1'b1;
+                                          irq_pending <= 1'b1; irq_event <= 1'b1;
                                           state <= S_IDLE;
                                       end
                                   endcase
@@ -221,7 +245,7 @@ module atapi #(
                                   r_status  <= ST_DRDY | ST_DSC;
                                   r_ireason <= IR_CD | IR_IO;
                                   r_error   <= 8'h00;
-                                  irq_pending <= 1'b1;
+                                  irq_pending <= 1'b1; irq_event <= 1'b1;
                                   state <= S_IDLE;
                               end else
                                   ridx <= ridx + 13'd2;
@@ -247,13 +271,13 @@ module atapi #(
                                 ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b1;
                                 r_status  <= ST_DRDY | ST_DRQ;
                                 r_ireason <= IR_IO; r_error <= 8'h00;
-                                irq_pending <= 1'b1; state <= S_DATAIN;
+                                irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN;
                             end
                             8'h08: begin set_signature; state <= S_IDLE; end  // DEVICE RESET
                             default: begin                       // unsupported command
                                 r_status <= ST_DRDY | ST_ERR;
                                 r_error  <= 8'h04;               // ABRT
-                                irq_pending <= 1'b1;
+                                irq_pending <= 1'b1; irq_event <= 1'b1;
                                 state    <= S_IDLE;
                             end
                         endcase
@@ -274,7 +298,7 @@ module atapi #(
                     if (ridx + 13'd2 >= resp_len) begin          // last word -> complete
                         r_status  <= ST_DRDY | ST_DSC;
                         r_ireason <= IR_CD | IR_IO;
-                        irq_pending <= 1'b1;
+                        irq_pending <= 1'b1; irq_event <= 1'b1;
                         state <= S_IDLE;
                     end else
                         ridx <= ridx + 13'd2;

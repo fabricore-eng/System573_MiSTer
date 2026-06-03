@@ -108,9 +108,13 @@ module tb_atapi;
         io_read(4'd7, v); chk(v, 16'h0050, "IDENT done status"); // DRDY|DSC, ERR clear
 
         // ---- INTRQ assert + clear-on-status-read ----
+        // INTRQ is a registered, edge-guaranteed output (atapi.v irq_out): it asserts a
+        // couple of clocks after the event that raises it, so settle before sampling.
         io_write(4'd7, 16'h00A0); send_packet(8'h00); // TUR -> completion asserts INTRQ
+        repeat (3) @(posedge clk);
         if (intrq !== 1'b1) begin $display("FAIL: intrq not asserted"); errors=errors+1; end
         io_read(4'd7, v);                              // status read clears it
+        repeat (3) @(posedge clk);
         if (intrq !== 1'b0) begin $display("FAIL: intrq not cleared"); errors=errors+1; end
 
         if (errors == 0) $display("RESULT: PASS (atapi)");
