@@ -20,7 +20,7 @@ mkdir -p "$(dirname "$OUT")"
 
 SSH=(ssh mister)
 ssh -o ConnectTimeout=5 -o BatchMode=yes mister true 2>/dev/null || {
-  KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
+  KEY="${MISTER_SSH_KEY:-~/.ssh/mister_id_ed25519}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}"); }
 
 echo "== requesting screenshot (best-effort) =="

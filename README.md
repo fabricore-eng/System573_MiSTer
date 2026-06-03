@@ -70,10 +70,10 @@ booting core now, not glue around a stub.
   Phase-3 frontier earlier but is no longer the blocker.
 - **Phase 4 (hardware) — boots on real hardware:** `rtl/emu.sv` is the real MiSTer
   top — a clone of the proven `psx/PSX.sv` with the 573 EXP1 deltas — and the design
-  builds a `.rbf` (Quartus 17.0 built natively on **slave1** (Dell OptiPlex 7050,
-  Ubuntu 26.04; `ssh slave1`) — the Mac's Colima/Quartus VM was deleted to free disk
-  and is fallback-only) that **boots the Konami BIOS past the color bars (an i-cache
-  crash now fixed) to the GX700 power-on self-test, parked at the CDR check**. Getting
+  builds a `.rbf` (Quartus Prime Lite 17.0.x on x86-64 Linux; the `raetro/quartus:17.0`
+  Docker image works — Quartus 17.0 is required for this Cyclone V part) that **boots
+  the Konami BIOS past the color bars (an i-cache crash now fixed) to the GX700
+  power-on self-test, parked at the CDR check**. Getting
   there fixed the Quartus-hostile RTL (`synthesis translate_off`
   guards, M10K NVRAM, constant-folded flash) **and** two build-config defects found
   by an adversarial review — a mis-pinned bitstream (no pin-location files →

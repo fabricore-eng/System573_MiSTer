@@ -1,9 +1,7 @@
 # System 573 core — execution plan to full game compatibility
 
-This is the master plan for finishing the core, written so I can work
-**autonomously** in the local session (with your MiSTer attached) and only stop
-when something genuinely needs you. Read §1–§4 once to set up; §5 onward is the
-ordered work.
+This is the ordered plan to drive the core to full game compatibility. Read §1–§4
+once to set up; §5 onward is the ordered work.
 
 Status anchor: the peripheral layer is **done and green** (19 modules, `make -C
 sim`). What remains is the PlayStation core integration and everything that rides
@@ -14,38 +12,35 @@ on it. See also [`PHASE1_PSX.md`](PHASE1_PSX.md) (PSX integration detail),
 Current state (2026-06-02): the CPU i-cache crash that produced the color bars is
 **fixed** (`psx_patches/` 0004/0005), the 18E (H8/3644) I/O-MCU self-test fix is
 **merged** (`rtl/s573_io.v`, PR #16), and the BIOS now boots to the GX700 power-on
-self-test on real hardware (next gate: the CDR / CD-ROM check). Builds run natively on
-**slave1** (`ssh slave1`); the Mac Colima VM was deleted (fallback-only).
+self-test on real hardware (next gate: the CDR / CD-ROM check). Builds run on x86-64
+Linux with Quartus Prime Lite 17.0.x (the `raetro/quartus:17.0` Docker image works).
 
 ---
 
-## 1. Operating model (how I work without waiting on you)
+## 1. Verification model
 
-I verify on a three-rung ladder, top rung preferred because it's the most
+Verification uses a three-rung ladder, top rung preferred because it's the most
 observable and scriptable:
 
 1. **Unit sim** (`make -C sim`, iverilog) — already the suite; stays green always.
 2. **Full-system sim** (NVC — the PSX core is VHDL-2008, which Verilator cannot
    consume) — the workhorse. PSX core + this fabric + the real BIOS/CD/security
-   dumps, booting for real. I have **total observability**:
-   - dump the GPU framebuffer to a **PNG I can open and look at**,
+   dumps, booting for real, with **total observability**:
+   - dump the GPU framebuffer to a **PNG** that can be opened and inspected,
    - trace the CPU (PC, BIOS milestones), peripheral accesses, IRQs,
    - assert on known good states ("BIOS POST reached", "CD boot sector read").
-3. **Hardware** (your MiSTer) — final confirmation. I can still self-verify here:
-   - **MiSTer screenshot** (standard scaler PNG) → I `scp` it back and **look at
-     it**, so I can confirm video without your eyes,
+3. **Hardware** (the MiSTer board) — final confirmation, also self-verifiable:
+   - **MiSTer screenshot** (standard scaler PNG) `scp`'d back and inspected, to
+     confirm video,
    - a **debug status block** the core exposes and an HPS-side script polls,
    - audio captured to a file where feasible.
 
-**Autonomy rules — I proceed on my own when** a phase's sim gate is green; I
-commit + push every step; I run hardware builds/loads/readbacks at the marked
-gates. **I pause for you only when:**
- - a required **dump is missing** (I'll name the exact file + path),
+Each phase's sim gate must be green before moving on; hardware builds/loads/readbacks
+run at the marked gates. **Steps that need maintainer input:**
+ - a required **dump is missing** (named in the build/sim output),
  - **Quartus or the MiSTer is unreachable** (build/load can't run),
  - a check is **irreducibly subjective** (e.g. "does the dance chart feel right"),
  - a decision would **change scope** (new dependency, a design fork).
-
-Everything else, I keep moving. If I finish a phase early, I start the next one.
 
 ---
 
@@ -56,17 +51,16 @@ Everything else, I keep moving. If I finish a phase early, I start the next one.
 | iverilog | unit sim | apt (session-start hook already installs it) |
 | **NVC** (VHDL-2008 sim; the PSX core is VHDL, so Verilator cannot consume it) | full-system sim | `brew install nvc` (apt on Ubuntu) |
 | zlib/libpng (or stb_image_write) | dump sim frames to PNG | apt / vendored header |
-| **Quartus Prime Lite 17.0.x** (matches `pll_q17`; Cyclone V) | build the `.rbf` for hardware | primary build box **slave1** (Dell OptiPlex 7050, Ubuntu 26.04, `ssh slave1`), native Quartus 17.0.x; the Mac Colima VM was deleted (fallback-only) |
+| **Quartus Prime Lite 17.0.x** (matches `pll_q17`; Cyclone V) | build the `.rbf` for hardware | any x86-64 Linux host with Quartus 17.0.x (the `raetro/quartus:17.0` Docker image works) |
 | ssh/scp | load core + read back from the MiSTer | present; needs the connection config |
 | chdman / bin-cue tools | read CD images | apt (`mame-tools`) or vendored |
 
 **MiSTer connection:** copy `local/mister.env.example` to `local/mister.env` and
-fill it in (IP, user, SD path, SSH key). I read that file to reach the board.
-`local/` is git-ignored.
+fill it in (IP, user, SD path, SSH key). The deploy scripts (`tools/mister_*.sh`)
+read that file to reach the board. `local/` is git-ignored.
 
-If Quartus is **not** available in the session, I still do all RTL + full-system
-sim autonomously and stage hardware builds for when it is (or a CI runner / your
-machine builds the `.rbf`). I'll say so explicitly rather than stall.
+If Quartus is unavailable, RTL + full-system sim development can proceed and the
+hardware build can be staged for a CI runner or any x86-64 Quartus host.
 
 ---
 
@@ -80,7 +74,7 @@ machine builds the `.rbf`). I'll say so explicitly rather than stall.
   if a gate isn't met (so phases self-gate).
 - On hardware: `tools/mister_load.sh` (scp the `.rbf`, trigger load),
   `tools/mister_shot.sh` (trigger a screenshot, pull the PNG), `tools/mister_dbg.sh`
-  (poll the debug status block). I build these in Phase 4.
+  (poll the debug status block). Built in Phase 4.
 
 ---
 
@@ -101,15 +95,15 @@ when:
 | Phase 9 | BEMANI titles: DIO board DS2401 + the game's MP3 data is on the CD | `dumps/<game>/dio_ds2401.bin` |
 
 Each maps to the MAME `ksys573` set for the chosen game (easiest single source).
-I check for a file's presence before the phase that needs it; if absent I pause
-and name it.
+Each phase checks for the file it needs before running; a missing dump is named in
+the build/sim output.
 
 ---
 
 ## 5. The phased plan
 
-Each phase: **Goal · Build · Verify (gate) · Hardware**. I drive each to its gate,
-commit, push, then continue.
+Each phase: **Goal · Build · Verify (gate) · Hardware**. Drive each to its gate,
+commit, then continue.
 
 ### Phase 1 — Vendor the PSX core + EXP1 adapter
 - **Build:** add `MiSTer-devel/PSX_MiSTer` as a submodule under `psx/`; write
@@ -133,15 +127,15 @@ commit, push, then continue.
 - **Build:** load `dumps/bios/573.bin` + a security cart; fix whatever the BIOS
   pokes (watchdog cadence, RTC, ASIC I/O, security handshake) until it POSTs.
 - **Verify:** trace shows POST reached; the **framebuffer PNG shows the 573 boot
-  screen** (I'll compare against MAME's output of the same BIOS). `check_boot.py`
+  screen** (compare against MAME's output of the same BIOS). `check_boot.py`
   gates on the POST marker.
 - **Gate:** PNG visibly matches the BIOS boot screen; security check passes.
 
 ### Phase 4 — BIOS POST on hardware
 - **Build:** `tools/mister_*` scripts; wire MiSTer screenshot + a debug status
   block into `emu.sv`; produce a `.rbf` (Quartus — see §9).
-- **Verify:** `mister_load.sh` loads it; `mister_shot.sh` pulls a PNG I open and
-  confirm shows the boot screen; `mister_dbg.sh` confirms the POST marker.
+- **Verify:** `mister_load.sh` loads it; `mister_shot.sh` pulls a PNG that confirms
+  the boot screen; `mister_dbg.sh` confirms the POST marker.
 - **Gate:** hardware screenshot matches the sim boot screen.
 
 ### Phase 5 — First game boots (target: a plain, non-DIO title)
@@ -152,7 +146,7 @@ commit, push, then continue.
   path end-to-end** (BIOS reads boot sectors → game code runs); map JAMMA inputs
   in `emu.sv` to MiSTer `joystick`/keyboard.
 - **Verify:** sim PNG shows the game's title/attract; CPU runs game code; inputs
-  register. Then hardware screenshot confirms; you (once) confirm it's playable.
+  register. Then hardware screenshot confirms; a maintainer confirms it's playable.
 - **Gate:** the game reaches attract/playable in sim and on hardware.
 
 ### Phase 6 — Security variants
@@ -176,7 +170,7 @@ commit, push, then continue.
 
 ### Phase 9 — The BEMANI / MP3 path (DDR & friends)  ← the hard one
 - **Problem:** these need **MP3 → PCM decode** (the MAS3507D), which is not a small
-  RTL job. I'll evaluate, in order: (a) **HPS-assisted decode** — stream the
+  RTL job. Options, in order: (a) **HPS-assisted decode** — stream the
   descrambled MP3 (already produced by `k573_mp3stream`) to the ARM, decode there,
   feed PCM back (MiSTer supports HPS audio helpers); (b) integrate an existing
   open MP3-decoder core if one fits the Cyclone V; (c) RTL decode (last resort).
@@ -184,7 +178,7 @@ commit, push, then continue.
   outputs and timing.
 - **Verify:** a DDR song plays in-sync audio in sim (PCM compare) and on hardware.
 - **Gate:** one BEMANI title plays a song with correct audio + steps. **This is the
-  most likely place I pause for a design decision (the decode approach).**
+  most likely place a design decision (the decode approach) needs maintainer input.**
 
 ### Phase 10 — Inputs, OSD, per-game config, analog/JVS
 - **Build:** MiSTer OSD menu (video options, dip switches, region), input mapping
@@ -197,12 +191,12 @@ commit, push, then continue.
   data, video modes, save formats. Maintain a `docs/COMPAT.md` matrix.
 - **Verify:** each title to attract → in-game → save, screenshot-checked; the
   matrix tracks pass/fail/known-issue. Real-time runs happen on hardware (sim is
-  too slow for a full sweep); I script screenshot checks and flag regressions.
+  too slow for a full sweep); scripted screenshot checks flag regressions.
 - **Done when:** the targeted library boots and plays with correct A/V + saves.
 
 ---
 
-## 6. Ordered files I will create / modify
+## 6. Ordered files created / modified
 
 Roughly the order they appear:
 
@@ -236,18 +230,17 @@ build .rbf (Quartus)  →  tools/mister_load.sh  →  run/boot
                       →  tools/mister_dbg.sh    →  check the debug markers
                       →  (audio capture where feasible)
 ```
-I drive this myself; I only surface a build to you when the screenshot/markers say
-something is wrong in a way I can't resolve, or when only your eyes/ears can judge.
+The screenshot/markers gate the loop; a build only needs maintainer review when they
+say something is wrong that can't be resolved from the trace, or when only eyes/ears
+can judge.
 
 ---
 
-## 8. Where I will still genuinely need you
+## 8. Where maintainer input is needed
 
-- **Dumps** — I can't obtain copyrighted BIOS/CD/security data; you place them per
-  `dumps/README.md`. (I proceed the instant they're present.)
-- **Quartus / the physical MiSTer** — if the session can't run Quartus or reach the
-  board, I do RTL + sim and stage the hardware step.
-- **The MP3 decode decision (Phase 9)** — I'll bring you a recommendation.
+- **Dumps** — copyrighted BIOS/CD/security data can't be obtained automatically; place
+  them per `dumps/README.md`. Work proceeds the instant they're present.
+- **Quartus / the physical MiSTer** — if a session can't run Quartus or reach the
+  board, RTL + sim proceed and the hardware step is staged.
+- **The MP3 decode decision (Phase 9)** — needs a design call (see Phase 9).
 - **Final subjective QA** — "does it play/feel/sound right" on a few titles.
-
-Everything else is mine to drive. If I get ahead, I keep going down this list.
