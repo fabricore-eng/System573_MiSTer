@@ -40,6 +40,9 @@ module system573_top #(
     input  wire [127:0] flash_mem_q,
     input  wire        flash_mem_ready,
 
+    // DEBUG passthrough: s573_flash trigger-state observers (HW bring-up).
+    output wire [23:0] flash_dbg,
+
     // M48T58 NVRAM image load (e.g. hyperbbc 876ea.22h), streamed in at reset.
     input  wire        nvram_we,
     input  wire [12:0] nvram_addr,
@@ -121,7 +124,8 @@ module system573_top #(
         .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout),
         .flash_ready(flash_ready),
         .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
-        .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready)
+        .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready),
+        .dbg_flash(flash_dbg)
     );
     // The EXP1 wait is asserted ONLY while a flash access is not ready (a missed
     // array read filling its line). For every non-flash EXP1 select and for flash

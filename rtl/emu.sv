@@ -1375,6 +1375,7 @@ wire        flash_mem_req;
 wire [26:0] flash_mem_addr;     // flat 16-bit word index into the 16 MB image
 wire [127:0] flash_mem_q;
 wire        flash_mem_ready;
+wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-up)
 
 // 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB streamed a byte at a time).
 wire        nvram_we   = nvram_download & ioctl_wr;
@@ -1441,16 +1442,19 @@ function [23:0] dbg_field;
    input [1:0] f;
    begin
       case (f)
-         // band0 REQ-vs-ACK (the crux): R=req_cnt, G=fill_cnt, B[7]=req_seen, B[6]=fill_seen.
-         //   req_cnt>0 & fill_cnt==0  -> s573_flash asked, ch4 never delivered (sdram ch4 bug/starvation)
-         //   req_cnt==0               -> s573_flash never asked (array_read trigger / SIM_BACKING path)
-         2'd0: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
-         // band1 last REQUESTED flash word index (R=[23:16] G=[15:8] B=[7:0]).
+         // band0 s573_flash TRIGGER STATE (round-3 crux -- WHY array_read never fires):
+         //   R[23:18]=bank  R[17]=winsel_seen R[16]=internal_seen
+         //   G[15]=winwe_seen G[14]=idread_seen G[13]=arrayrd_seen G[12]=taghit_seen G[11:10]=fstate_max G[9:8]=winaddr[9:8]
+         //   B[7:0]=winaddr[7:0]
+         //   Decode: winsel_seen=1 (flash window WAS read) but arrayrd_seen=0 => internal=0
+         //   (bank>=4) or idread stuck => never an array read. bank field shows the value.
+         2'd0: dbg_field = flash_dbg;
+         // band1 last REQUESTED flash word index (R=[23:16] G=[15:8] B=[7:0]); 0 if never requested.
          2'd1: dbg_field = dbg_req_last;
          // band2 BIOS-seen word at 0x1f0000xx + write-seen flag (53 50 80 = "PS" working).
          2'd2: dbg_field = {dbg_exp_q, dbg_wr_seen, 7'h0};
-         // band3 first ch4 word returned (R/G) + sdram size code (B). 3C AF xx = ch4 read OK.
-         2'd3: dbg_field = {dbg_first_q, sdram_sz[7:0]};
+         // band3 REQ-vs-ACK confirm: R=req_cnt G=fill_cnt B[7]=req_seen B[6]=fill_seen.
+         2'd3: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
       endcase
    end
 endfunction
@@ -1479,6 +1483,7 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .flash_mem_addr (flash_mem_addr),
    .flash_mem_q    (flash_mem_q),
    .flash_mem_ready(flash_mem_ready),
+   .flash_dbg      (flash_dbg),
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
    .nvram_din      (nvram_din),

@@ -69,7 +69,15 @@ module s573_flash #(
     output reg         flash_mem_req,    // pulse: request a 128-bit burst fill
     output reg  [26:0] flash_mem_addr,   // flat 16-bit word index (parent adds base)
     input  wire [127:0] flash_mem_q,     // the 16-byte burst (8 words) returned
-    input  wire        flash_mem_ready   // 1-cycle: flash_mem_q valid
+    input  wire        flash_mem_ready,  // 1-cycle: flash_mem_q valid
+
+    // DEBUG (HW bring-up): observe WHY the fill FSM does/doesn't trigger. Round-2
+    // bars proved flash_mem_req never pulses (req_cnt=0) -> the array_read trigger
+    // never fires. Expose the trigger inputs so the next bar-decode pins the cause:
+    //   [23:18] bank   [17] win_sel_seen  [16] internal_seen  [15] winwe_seen
+    //   [14] idread_seen [13] arrayread_seen [12] tag_hit_seen [11:10] fstate_max
+    //   [9:0] = low 10 bits of the last win_addr observed during a flash read
+    output wire [23:0] dbg_flash
 );
     wire internal = (bank < NUM_BANKS);
 
@@ -115,6 +123,7 @@ module s573_flash #(
         end
 
         assign flash_ready = 1'b1;          // always ready in behavioral mode
+        assign dbg_flash   = 24'd0;         // debug observers unused in behavioral mode
 
         // SDRAM fill port unused in behavioral mode (held at their reset values).
         always @(posedge clk) begin
@@ -163,6 +172,34 @@ module s573_flash #(
         // A pending array read that needs the backing store: selected internal
         // bank, a read access (not a write), not an ID read.
         wire array_read = win_sel && internal && !win_we && !id_read;
+
+        // DEBUG: sticky observers of the trigger inputs across the whole boot, so
+        // the bar-decode can pin WHY array_read never fires (req_cnt=0 in round 2).
+        reg        dbg_winsel_seen, dbg_internal_seen, dbg_winwe_seen;
+        reg        dbg_idread_seen, dbg_arrayrd_seen, dbg_taghit_seen;
+        reg [1:0]  dbg_fstate_max;
+        reg [9:0]  dbg_winaddr_last;
+        always @(posedge clk) begin
+            if (rst) begin
+                dbg_winsel_seen<=0; dbg_internal_seen<=0; dbg_winwe_seen<=0;
+                dbg_idread_seen<=0; dbg_arrayrd_seen<=0; dbg_taghit_seen<=0;
+                dbg_fstate_max<=0;  dbg_winaddr_last<=0;
+            end else begin
+                if (win_sel) begin
+                    dbg_winsel_seen   <= 1'b1;
+                    dbg_winaddr_last  <= win_addr[9:0];
+                    if (internal) dbg_internal_seen <= 1'b1;
+                    if (win_we)   dbg_winwe_seen    <= 1'b1;
+                    if (id_read)  dbg_idread_seen   <= 1'b1;
+                end
+                if (array_read) dbg_arrayrd_seen <= 1'b1;
+                if (array_read && tag_hit) dbg_taghit_seen <= 1'b1;
+                if (fstate > dbg_fstate_max) dbg_fstate_max <= fstate;
+            end
+        end
+        assign dbg_flash = {bank, dbg_winsel_seen, dbg_internal_seen, dbg_winwe_seen,
+                            dbg_idread_seen, dbg_arrayrd_seen, dbg_taghit_seen,
+                            dbg_fstate_max, dbg_winaddr_last};
 
         // Fill FSM: on a MISS, two 128-bit bursts populate the 16-word line.
         localparam F_IDLE=2'd0, F_REQ0=2'd1, F_REQ1=2'd2;
