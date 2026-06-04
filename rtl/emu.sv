@@ -1424,7 +1424,30 @@ reg  [15:0] dbg_io0c = 16'h0;          // last value read from 0x1f40000c (r_ext
 reg         dbg_bankctl_wr = 1'b0;     // BIOS ever wrote 0x1f500000 (bank select) -> pre-step ran
 reg  [15:0] dbg_bankctl_val = 16'h0;   // last value written to bankctl
 reg         dbg_io04_seen = 1'b0;      // BIOS ever read 0x1f400004
+// BOOT-STAGE / LIVENESS probe: the flash counters above are all 0 in 6bab8d6 even
+// though clk_1x runs -- so the BIOS is NOT reaching the flash pre-step. These show
+// WHERE the boot actually is (the CDR drive check is upstream of the flash pre-step):
+//   exp1_rcnt  - count of EXP1 reads (general BIOS I/O liveness; 0 => no I/O at all)
+//   last_page/last_alo - exp1_addr[23:16]/[15:8] of the last EXP1 access = where the
+//                BIOS is poking now (0x00 flash / 0x40 s573_io / 0x48 IDE-ATAPI / 0x50 bank)
+//   atapi_seen - an EXP1 access landed in the IDE/ATAPI page 0x48 (reached the drive check)
+//   idecmd_seen- a write to the IDE command reg 0x1f48000e (issued an ATA/ATAPI command)
+//   heart      - free-running clk_1x heartbeat (proves clk_1x runs / core not held in reset)
+reg  [15:0] dbg_exp1_rcnt = 16'h0;
+reg  [7:0]  dbg_last_page = 8'h0;
+reg  [7:0]  dbg_last_alo  = 8'h0;
+reg         dbg_atapi_seen = 1'b0;
+reg         dbg_idecmd_seen = 1'b0;
+reg  [15:0] dbg_heart = 16'h0;
 always @(posedge clk_1x) begin
+   dbg_heart <= dbg_heart + 16'd1;        // free-running: clk_1x alive iff this advances
+   if (exp1_re || exp1_we) begin
+      dbg_last_page <= exp1_addr[23:16];
+      dbg_last_alo  <= exp1_addr[15:8];
+      if (exp1_addr[23:16] == 8'h48) dbg_atapi_seen <= 1'b1;
+   end
+   if (exp1_re && dbg_exp1_rcnt != 16'hFFFF) dbg_exp1_rcnt <= dbg_exp1_rcnt + 16'd1;
+   if (exp1_we && (exp1_addr[23:16] == 8'h48) && (exp1_addr[7:0] == 8'h0e)) dbg_idecmd_seen <= 1'b1;
    if (flash_mem_ready) begin
       if (!dbg_first_seen) begin
          dbg_first_q    <= flash_mem_q[15:0];
@@ -1463,18 +1486,24 @@ function [23:0] dbg_field;
    input [1:0] f;
    begin
       case (f)
-         // ROUND 5 -- the flash READ PATH WORKS (round 4: bankctl_wr=1, winsel=1, req=fill=2).
-         // Now show the actual DATA to find why the BIOS sig-check still fails -> CDR BAD.
-         // band0 = first ch4 word returned: R=first_q[15:8] G=first_q[7:0] B[7]=first_seen.
-         //   line base of the sig line (word 0x10 = byte 0x20) = 0x3caf => R=3C G=AF = ch4 reads OK.
-         //   FF FF => ch4 returns 0xFFFF (SDRAM data wrong); 00 00 => empty/unfilled.
-         2'd0: dbg_field = {dbg_first_q, dbg_first_seen, 7'h0};
-         // band1 = BIOS-consumed flash word @0x1f0000xx: R/G=word, B[7]=winsel_seen.
-         //   53 50 = "PS" (byte 0x24) => the BIOS sees the right signature; sig-check should pass.
-         2'd1: dbg_field = {dbg_exp_q, flash_dbg[17], 7'h0};
-         // band2 = bank selected by the pre-step (0x1f500000 write): R/G=value, B[7]=bankctl_wr.
-         2'd2: dbg_field = {dbg_bankctl_val, dbg_bankctl_wr, 7'h0};
-         // band3 REQ-vs-ACK confirm: R=req_cnt G=fill_cnt B[7]=req_seen B[6]=fill_seen.
+         // BOOT-STAGE / LIVENESS readout (6bab8d6 flash bars were all 0 => boot never
+         // reaches the flash pre-step; these locate WHERE it actually is).
+         // band0 = EXP1 read LIVENESS: R=rcnt[15:8] G=rcnt[7:0] B[7]=(rcnt!=0).
+         //   non-black => the BIOS IS doing I/O (alive); pure black => no EXP1 reads at all.
+         2'd0: dbg_field = {dbg_exp1_rcnt, (dbg_exp1_rcnt != 16'h0), 7'h0};
+         // band1 = STAGE LATCHES (R, MSB->LSB) + heartbeat (G):
+         //   R[7]=io04_seen(read 0x1f400004 / 18E area) R[6]=atapi_seen(touched IDE page 0x48)
+         //   R[5]=idecmd_seen(wrote ATA cmd 0x1f48000e) R[4]=bankctl_wr(flash pre-step ran)
+         //   R[3]=winsel(read flash window) R[2]=req_seen(flash fill req) R[1]=first_seen(flash data)
+         //   G=heart[15:8] (advances across captures iff clk_1x runs).
+         2'd1: dbg_field = {dbg_io04_seen, dbg_atapi_seen, dbg_idecmd_seen, dbg_bankctl_wr,
+                            flash_dbg[17], dbg_req_seen, dbg_first_seen, 1'b0,
+                            dbg_heart[15:8], 8'h0};
+         // band2 = WHERE: R=last EXP1 page (exp1_addr[23:16]) G=last EXP1 addr[15:8].
+         //   0x00=flash 0x40=s573_io 0x48=IDE/ATAPI 0x50=bankctl -- the page the BIOS last poked
+         //   = where it is stuck/looping.
+         2'd2: dbg_field = {dbg_last_page, dbg_last_alo, 8'h0};
+         // band3 = FLASH req/fill (for when the boot finally reaches flash): R=req_cnt G=fill_cnt.
          2'd3: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
       endcase
    end
