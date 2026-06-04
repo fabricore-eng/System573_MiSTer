@@ -1463,16 +1463,17 @@ function [23:0] dbg_field;
    input [1:0] f;
    begin
       case (f)
-         // ROUND 4 -- WHY the BIOS never reads the flash window (winsel_seen=0 in round 3).
-         // band0 = value BIOS read at 0x1f400004 (r_status): R/G=word, DIP in low nibble of G,
-         //   B[7]=io04_seen. Expect G[3:0]=dip_sw=0x7 (status93=0 boot=Flash). B[7]=1 confirms read.
-         2'd0: dbg_field = {dbg_io04, dbg_io04_seen, 7'h0};
-         // band1 = bank-control WRITE (0x1f500000): R/G=value written, B[7]=bankctl_wr.
-         //   B[7]=1 => the flash pre-step RAN (wrote a bank). B[7]=0 => pre-step SKIPPED (gated off).
-         2'd1: dbg_field = {dbg_bankctl_val, dbg_bankctl_wr, 7'h0};
-         // band2 = value BIOS read at 0x1f40000c (r_extra): R/G=word, B[7]=winsel_seen
-         //   (flash window ever selected). B[7]=1 here would contradict round-3.
-         2'd2: dbg_field = {dbg_io0c, flash_dbg[17], 7'h0};
+         // ROUND 5 -- the flash READ PATH WORKS (round 4: bankctl_wr=1, winsel=1, req=fill=2).
+         // Now show the actual DATA to find why the BIOS sig-check still fails -> CDR BAD.
+         // band0 = first ch4 word returned: R=first_q[15:8] G=first_q[7:0] B[7]=first_seen.
+         //   line base of the sig line (word 0x10 = byte 0x20) = 0x3caf => R=3C G=AF = ch4 reads OK.
+         //   FF FF => ch4 returns 0xFFFF (SDRAM data wrong); 00 00 => empty/unfilled.
+         2'd0: dbg_field = {dbg_first_q, dbg_first_seen, 7'h0};
+         // band1 = BIOS-consumed flash word @0x1f0000xx: R/G=word, B[7]=winsel_seen.
+         //   53 50 = "PS" (byte 0x24) => the BIOS sees the right signature; sig-check should pass.
+         2'd1: dbg_field = {dbg_exp_q, flash_dbg[17], 7'h0};
+         // band2 = bank selected by the pre-step (0x1f500000 write): R/G=value, B[7]=bankctl_wr.
+         2'd2: dbg_field = {dbg_bankctl_val, dbg_bankctl_wr, 7'h0};
          // band3 REQ-vs-ACK confirm: R=req_cnt G=fill_cnt B[7]=req_seen B[6]=fill_seen.
          2'd3: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
       endcase
