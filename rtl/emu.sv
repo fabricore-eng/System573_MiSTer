@@ -1402,9 +1402,16 @@ wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
 reg  [15:0] dbg_first_q = 16'h0;
 reg         dbg_first_seen = 1'b0;
 reg  [15:0] dbg_exp_q = 16'h0;
-reg  [7:0]  dbg_fill_cnt = 8'h0;
+reg  [7:0]  dbg_fill_cnt = 8'h0;       // completed ch4 fills (flash_mem_ready pulses)
 reg         dbg_wr_seen = 1'b0;
 reg  [23:0] dbg_wr_last = 24'h0;       // last flash ramdownload_wraddr[23:0]
+// Round 2 instrumentation: the round-1 bars proved write-happened (wr_last=0xFFFFFF)
+// but fill_cnt=0 / first_seen=0 (ch4 NEVER delivered a burst). Now disambiguate
+// "s573_flash never REQUESTED a fill" from "ch4 never ACKED a request" by also
+// watching the REQUEST side (flash_mem_req) directly in this clean clk_1x domain.
+reg         dbg_req_seen = 1'b0;       // flash_mem_req ever pulsed (s573_flash asked)
+reg  [7:0]  dbg_req_cnt  = 8'h0;       // count of flash_mem_req pulses
+reg  [23:0] dbg_req_last = 24'h0;      // last requested flash word index (byte<<? -- word)
 always @(posedge clk_1x) begin
    if (flash_mem_ready) begin
       if (!dbg_first_seen) begin
@@ -1412,6 +1419,11 @@ always @(posedge clk_1x) begin
          dbg_first_seen <= 1'b1;
       end
       if (dbg_fill_cnt != 8'hFF) dbg_fill_cnt <= dbg_fill_cnt + 8'd1;
+   end
+   if (flash_mem_req) begin
+      dbg_req_seen <= 1'b1;
+      if (dbg_req_cnt != 8'hFF) dbg_req_cnt <= dbg_req_cnt + 8'd1;
+      dbg_req_last <= flash_mem_addr[23:0];
    end
    // EXP1 flash-window read: 0x1f000000 window decodes here as exp1_addr[23:0]
    // with the high nibble of the window; capture the low addresses (the signature
@@ -1429,10 +1441,16 @@ function [23:0] dbg_field;
    input [1:0] f;
    begin
       case (f)
-         2'd0: dbg_field = {dbg_first_q, dbg_first_seen, 7'h0};            // raw ch4 word + seen-flag
-         2'd1: dbg_field = {dbg_exp_q,   dbg_wr_seen,   7'h0};             // BIOS-seen word + write-seen
-         2'd2: dbg_field = {dbg_fill_cnt, sdram_sz[7:0], 8'h0};           // fill count + sdram size
-         2'd3: dbg_field = dbg_wr_last;                                    // last flash write addr
+         // band0 REQ-vs-ACK (the crux): R=req_cnt, G=fill_cnt, B[7]=req_seen, B[6]=fill_seen.
+         //   req_cnt>0 & fill_cnt==0  -> s573_flash asked, ch4 never delivered (sdram ch4 bug/starvation)
+         //   req_cnt==0               -> s573_flash never asked (array_read trigger / SIM_BACKING path)
+         2'd0: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
+         // band1 last REQUESTED flash word index (R=[23:16] G=[15:8] B=[7:0]).
+         2'd1: dbg_field = dbg_req_last;
+         // band2 BIOS-seen word at 0x1f0000xx + write-seen flag (53 50 80 = "PS" working).
+         2'd2: dbg_field = {dbg_exp_q, dbg_wr_seen, 7'h0};
+         // band3 first ch4 word returned (R/G) + sdram size code (B). 3C AF xx = ch4 read OK.
+         2'd3: dbg_field = {dbg_first_q, sdram_sz[7:0]};
       endcase
    end
 endfunction
