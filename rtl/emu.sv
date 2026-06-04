@@ -652,10 +652,17 @@ end
 
 localparam EXE_START = 16777216;
 localparam BIOS_START = 8388608;
-// 573 onboard flash: 16 MB at SDRAM byte 0x02000000 (RAM@0x0, BIOS@0x00800000,
-// EXE@0x01000000 -- all below 0x02000000). The line buffer indexes it by flat
-// 16-bit word; the SDRAM byte address is FLASH_START + (word << 1).
-localparam [26:0] FLASH_START = 27'h0200_0000;
+// 573 onboard flash: 16 MB in SDRAM. RELOCATED 0x02000000 -> 0x01000000 (2026-06-04):
+// the standard MiSTer SDRAM module is 32 MB, so 0x02000000 (32 MB) .. 0x03000000 (48 MB)
+// is OUT OF RANGE on real HW -- flash reads wrapped (bit-25 ignored by a single 32 MB chip)
+// to PSX RAM @0x0, so the BIOS flash-boot signature read at 0x1f000024 never saw "PS-X EXE",
+// the flash boot failed, and the BIOS fell through to the CD path -> "CDR BAD". The EXE
+// staging region (EXE_START=0x01000000, 16 MB) is UNUSED by the 573 (the .mra loads only
+// ioctl 0=bios / 2=flash / 3=nvram, never 1=exe; EXE-boot is gated on exe_download), and the
+// flash is exactly 16 MB, so it fits 0x01000000..0x02000000 -- in range on a 32 MB module,
+// no overlap with RAM (0..2 MB) or BIOS (0x00800000). Line buffer indexes by flat 16-bit
+// word; SDRAM byte address = FLASH_START + (word << 1).
+localparam [26:0] FLASH_START = 27'h0100_0000;
 
 reg [26:0] ramdownload_wraddr;
 reg [31:0] ramdownload_wrdata;
