@@ -1423,15 +1423,29 @@ always @(posedge clk_1x) begin
    end
 end
 
+// Map a 2-bit field index to its 24-bit debug color (shared by the OSD-selected
+// single-color path and the forced 4-bar path).
+function [23:0] dbg_field;
+   input [1:0] f;
+   begin
+      case (f)
+         2'd0: dbg_field = {dbg_first_q, dbg_first_seen, 7'h0};            // raw ch4 word + seen-flag
+         2'd1: dbg_field = {dbg_exp_q,   dbg_wr_seen,   7'h0};             // BIOS-seen word + write-seen
+         2'd2: dbg_field = {dbg_fill_cnt, sdram_sz[7:0], 8'h0};           // fill count + sdram size
+         2'd3: dbg_field = dbg_wr_last;                                    // last flash write addr
+      endcase
+   end
+endfunction
+
 reg [23:0] dbg_color;
-always @(*) begin
-   case (status[96:95])
-      2'd0: dbg_color = {dbg_first_q, dbg_first_seen, 7'h0};               // raw ch4 word + seen-flag
-      2'd1: dbg_color = {dbg_exp_q,   dbg_wr_seen,   7'h0};                // BIOS-seen word + write-seen
-      2'd2: dbg_color = {dbg_fill_cnt, sdram_sz[7:0], 8'h0};               // fill count + sdram size
-      2'd3: dbg_color = dbg_wr_last;                                       // last flash write addr
-   endcase
-end
+always @(*) dbg_color = dbg_field(status[96:95]);
+
+// FORCED 4-BAR PAINT (no OSD/PSX.CFG needed -- arcade .mra loads ignore PSX.CFG).
+// When DBG_FORCE_BARS=1 the whole active display is painted as 4 stacked
+// horizontal bands, top->bottom = field 0,1,2,3, so ONE screenshot decodes the
+// entire flash-path state. Set to 0 to disable the debug paint entirely.
+localparam DBG_FORCE_BARS = 1'b1;
+reg [23:0] dbg_bar;          // selected by v_pos band in the video block below
 
 system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
@@ -1800,9 +1814,16 @@ always_ff @(posedge CLK_VIDEO) if (CE_PIXEL) begin
 	video_aspect.vs <= vs;
 	video_aspect.vb <= vbl;
 	video_aspect.interlace <= video_interlace;
-	video_aspect.red <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[23:16] : r);
-	video_aspect.green <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[15:8]  : g);
-	video_aspect.blue <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[7:0]   : b);
+	// 4-bar forced debug paint: split the ~240-line active area into 4 bands of
+	// ~60 lines, top->bottom = field 0,1,2,3. v_pos counts active lines (reset at
+	// vblank). DBG_FORCE_BARS gates the whole instrument; status[94] keeps the old
+	// single-color OSD path when forcing is off.
+	dbg_bar <= dbg_field(v_pos < 12'd60  ? 2'd0 :
+	                     v_pos < 12'd120 ? 2'd1 :
+	                     v_pos < 12'd180 ? 2'd2 : 2'd3);
+	video_aspect.red   <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[23:16] : (status[94] ? dbg_color[23:16] : r));
+	video_aspect.green <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[15:8]  : (status[94] ? dbg_color[15:8]  : g));
+	video_aspect.blue  <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[7:0]   : (status[94] ? dbg_color[7:0]   : b));
 	{aspect_x, aspect_y} <= video_isPal ? aspect_ratio_lut_pal[v_total] : aspect_ratio_lut_ntsc[v_total];
 
 	VGA_DISABLE <= fast_forward;
