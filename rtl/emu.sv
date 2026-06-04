@@ -356,6 +356,8 @@ parameter CONF_STR = {
 	"F2,BIN,Load 573 Flash;",
 	"F3,BIN,Load 573 NVRAM;",
 	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
+	"O[94],573 Flash Debug,Off,On;",
+	"O[96:95],573 Dbg Field,ch4Q,expQ,cnt/sz,wrAddr;",
 	"-;",
 	"d6C,Cheats;",
 	"h6O[6],Cheats Enabled,Yes,No;",
@@ -1382,6 +1384,55 @@ wire [7:0]  nvram_din  = ioctl_dout[7:0];
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
 wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
 
+// -----------------------------------------------------------------------------
+// FLASH-PATH DEBUG READBACK  (status[94]=enable, status[96:95]=field select)
+// Distinguishes "flash never written to SDRAM (A)" from "ch4 read returns wrong
+// data (B)" by capturing, in the clk_1x domain, what each stage actually saw and
+// painting it onto the video as a SOLID 24-bit RGB color so a screenshot decodes
+// it. Captured fields (latched, sticky after reset deasserts):
+//   dbg_first_q   - flash_mem_q[15:0] on the FIRST ch4 burst returned (the raw
+//                   word SDRAM ch4 gave back for flash word 0x10). 0xFFFF here
+//                   while the write side is proven good == ch4 READ bug (B).
+//   dbg_exp_q     - exp1_dataRead latched on a flash-window read (0x1f0000xx):
+//                   the word the BIOS actually consumes (the "PS-X EXE" probe).
+//   dbg_fill_cnt  - saturating count of completed ch4 line fills; 0 == the fill
+//                   FSM never ran (BIOS never probed / flash_ready never dropped).
+//   dbg_wr_seen   - sticky: a flash-index ramdownload write was issued to ch3.
+//   sdram_sz[7:0] - HPS-reported SDRAM module size code (rules out the >32MB wrap).
+reg  [15:0] dbg_first_q = 16'h0;
+reg         dbg_first_seen = 1'b0;
+reg  [15:0] dbg_exp_q = 16'h0;
+reg  [7:0]  dbg_fill_cnt = 8'h0;
+reg         dbg_wr_seen = 1'b0;
+reg  [23:0] dbg_wr_last = 24'h0;       // last flash ramdownload_wraddr[23:0]
+always @(posedge clk_1x) begin
+   if (flash_mem_ready) begin
+      if (!dbg_first_seen) begin
+         dbg_first_q    <= flash_mem_q[15:0];
+         dbg_first_seen <= 1'b1;
+      end
+      if (dbg_fill_cnt != 8'hFF) dbg_fill_cnt <= dbg_fill_cnt + 8'd1;
+   end
+   // EXP1 flash-window read: 0x1f000000 window decodes here as exp1_addr[23:0]
+   // with the high nibble of the window; capture the low addresses (the signature
+   // region 0x00..0xff) so dbg_exp_q reflects the "PS-X EXE" probe words.
+   if (exp1_re && (exp1_addr[23:8] == 16'h0000)) dbg_exp_q <= exp1_dataRead;
+   if (flash_download & ramdownload_wr) begin
+      dbg_wr_seen <= 1'b1;
+      dbg_wr_last <= ramdownload_wraddr[23:0];
+   end
+end
+
+reg [23:0] dbg_color;
+always @(*) begin
+   case (status[96:95])
+      2'd0: dbg_color = {dbg_first_q, dbg_first_seen, 7'h0};               // raw ch4 word + seen-flag
+      2'd1: dbg_color = {dbg_exp_q,   dbg_wr_seen,   7'h0};                // BIOS-seen word + write-seen
+      2'd2: dbg_color = {dbg_fill_cnt, sdram_sz[7:0], 8'h0};               // fill count + sdram size
+      2'd3: dbg_color = dbg_wr_last;                                       // last flash write addr
+   endcase
+end
+
 system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
@@ -1749,9 +1800,9 @@ always_ff @(posedge CLK_VIDEO) if (CE_PIXEL) begin
 	video_aspect.vs <= vs;
 	video_aspect.vb <= vbl;
 	video_aspect.interlace <= video_interlace;
-	video_aspect.red <= (vbl || hbl) ? 8'd0 : r;
-	video_aspect.green <= (vbl || hbl) ? 8'd0 : g;
-	video_aspect.blue <= (vbl || hbl) ? 8'd0 : b;
+	video_aspect.red <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[23:16] : r);
+	video_aspect.green <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[15:8]  : g);
+	video_aspect.blue <= (vbl || hbl) ? 8'd0 : (status[94] ? dbg_color[7:0]   : b);
 	{aspect_x, aspect_y} <= video_isPal ? aspect_ratio_lut_pal[v_total] : aspect_ratio_lut_ntsc[v_total];
 
 	VGA_DISABLE <= fast_forward;
