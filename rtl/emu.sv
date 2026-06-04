@@ -1413,6 +1413,17 @@ reg  [23:0] dbg_wr_last = 24'h0;       // last flash ramdownload_wraddr[23:0]
 reg         dbg_req_seen = 1'b0;       // flash_mem_req ever pulsed (s573_flash asked)
 reg  [7:0]  dbg_req_cnt  = 8'h0;       // count of flash_mem_req pulses
 reg  [23:0] dbg_req_last = 24'h0;      // last requested flash word index (byte<<? -- word)
+// Round 4: round-3 proved winsel_seen=0 -- the BIOS NEVER reads the flash window
+// (sel_flash never asserts). So the flash PRE-STEP is being skipped (gated off) and
+// the BIOS goes straight to cd_init -> CDR BAD. The gate reads the DIP/config regs
+// (0x1f400004/6/c). Capture what the BIOS reads there + whether it ever WRITES the
+// bank-control reg (0x1f500000, the pre-step's first action). exp1_addr is the
+// 0x1f000000-page offset: page = exp1_addr[23:16]; 0x40=s573_io, 0x50=bankctl, 0x00-3f=flash.
+reg  [15:0] dbg_io04 = 16'h0;          // last value read from 0x1f400004 (r_status: DIP in [3:0])
+reg  [15:0] dbg_io0c = 16'h0;          // last value read from 0x1f40000c (r_extra)
+reg         dbg_bankctl_wr = 1'b0;     // BIOS ever wrote 0x1f500000 (bank select) -> pre-step ran
+reg  [15:0] dbg_bankctl_val = 16'h0;   // last value written to bankctl
+reg         dbg_io04_seen = 1'b0;      // BIOS ever read 0x1f400004
 always @(posedge clk_1x) begin
    if (flash_mem_ready) begin
       if (!dbg_first_seen) begin
@@ -1430,6 +1441,16 @@ always @(posedge clk_1x) begin
    // with the high nibble of the window; capture the low addresses (the signature
    // region 0x00..0xff) so dbg_exp_q reflects the "PS-X EXE" probe words.
    if (exp1_re && (exp1_addr[23:8] == 16'h0000)) dbg_exp_q <= exp1_dataRead;
+   // s573_io DIP/config reads (page 0x40): the flash-pre-step gate inputs.
+   if (exp1_re && (exp1_addr[23:16] == 8'h40)) begin
+      if (exp1_addr[7:0] == 8'h04) begin dbg_io04 <= exp1_dataRead; dbg_io04_seen <= 1'b1; end
+      if (exp1_addr[7:0] == 8'h0c)        dbg_io0c <= exp1_dataRead;
+   end
+   // bank-control write (page 0x50 = 0x1f500000): the pre-step's first flash action.
+   if (exp1_we && (exp1_addr[23:16] == 8'h50)) begin
+      dbg_bankctl_wr  <= 1'b1;
+      dbg_bankctl_val <= exp1_dataWrite;
+   end
    if (flash_download & ramdownload_wr) begin
       dbg_wr_seen <= 1'b1;
       dbg_wr_last <= ramdownload_wraddr[23:0];
@@ -1442,17 +1463,16 @@ function [23:0] dbg_field;
    input [1:0] f;
    begin
       case (f)
-         // band0 s573_flash TRIGGER STATE (round-3 crux -- WHY array_read never fires):
-         //   R[23:18]=bank  R[17]=winsel_seen R[16]=internal_seen
-         //   G[15]=winwe_seen G[14]=idread_seen G[13]=arrayrd_seen G[12]=taghit_seen G[11:10]=fstate_max G[9:8]=winaddr[9:8]
-         //   B[7:0]=winaddr[7:0]
-         //   Decode: winsel_seen=1 (flash window WAS read) but arrayrd_seen=0 => internal=0
-         //   (bank>=4) or idread stuck => never an array read. bank field shows the value.
-         2'd0: dbg_field = flash_dbg;
-         // band1 last REQUESTED flash word index (R=[23:16] G=[15:8] B=[7:0]); 0 if never requested.
-         2'd1: dbg_field = dbg_req_last;
-         // band2 BIOS-seen word at 0x1f0000xx + write-seen flag (53 50 80 = "PS" working).
-         2'd2: dbg_field = {dbg_exp_q, dbg_wr_seen, 7'h0};
+         // ROUND 4 -- WHY the BIOS never reads the flash window (winsel_seen=0 in round 3).
+         // band0 = value BIOS read at 0x1f400004 (r_status): R/G=word, DIP in low nibble of G,
+         //   B[7]=io04_seen. Expect G[3:0]=dip_sw=0x7 (status93=0 boot=Flash). B[7]=1 confirms read.
+         2'd0: dbg_field = {dbg_io04, dbg_io04_seen, 7'h0};
+         // band1 = bank-control WRITE (0x1f500000): R/G=value written, B[7]=bankctl_wr.
+         //   B[7]=1 => the flash pre-step RAN (wrote a bank). B[7]=0 => pre-step SKIPPED (gated off).
+         2'd1: dbg_field = {dbg_bankctl_val, dbg_bankctl_wr, 7'h0};
+         // band2 = value BIOS read at 0x1f40000c (r_extra): R/G=word, B[7]=winsel_seen
+         //   (flash window ever selected). B[7]=1 here would contradict round-3.
+         2'd2: dbg_field = {dbg_io0c, flash_dbg[17], 7'h0};
          // band3 REQ-vs-ACK confirm: R=req_cnt G=fill_cnt B[7]=req_seen B[6]=fill_seen.
          2'd3: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
       endcase

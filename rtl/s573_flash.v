@@ -175,27 +175,26 @@ module s573_flash #(
 
         // DEBUG: sticky observers of the trigger inputs across the whole boot, so
         // the bar-decode can pin WHY array_read never fires (req_cnt=0 in round 2).
-        reg        dbg_winsel_seen, dbg_internal_seen, dbg_winwe_seen;
-        reg        dbg_idread_seen, dbg_arrayrd_seen, dbg_taghit_seen;
-        reg [1:0]  dbg_fstate_max;
-        reg [9:0]  dbg_winaddr_last;
+        // NOTE: these are deliberately NOT cleared on `rst` -- the CDR-BAD failure is
+        // a WATCHDOG REBOOT LOOP that pulses the core reset every iteration; a
+        // reset-cleared observer would only ever show "since the last watchdog reset"
+        // and could read 0 even if the flash WAS read in the prior POST. Sticky from
+        // power-on (init value) gives the true "ever happened" across the whole run.
+        reg        dbg_winsel_seen = 0, dbg_internal_seen = 0, dbg_winwe_seen = 0;
+        reg        dbg_idread_seen = 0, dbg_arrayrd_seen = 0, dbg_taghit_seen = 0;
+        reg [1:0]  dbg_fstate_max = 0;
+        reg [9:0]  dbg_winaddr_last = 0;
         always @(posedge clk) begin
-            if (rst) begin
-                dbg_winsel_seen<=0; dbg_internal_seen<=0; dbg_winwe_seen<=0;
-                dbg_idread_seen<=0; dbg_arrayrd_seen<=0; dbg_taghit_seen<=0;
-                dbg_fstate_max<=0;  dbg_winaddr_last<=0;
-            end else begin
-                if (win_sel) begin
-                    dbg_winsel_seen   <= 1'b1;
-                    dbg_winaddr_last  <= win_addr[9:0];
-                    if (internal) dbg_internal_seen <= 1'b1;
-                    if (win_we)   dbg_winwe_seen    <= 1'b1;
-                    if (id_read)  dbg_idread_seen   <= 1'b1;
-                end
-                if (array_read) dbg_arrayrd_seen <= 1'b1;
-                if (array_read && tag_hit) dbg_taghit_seen <= 1'b1;
-                if (fstate > dbg_fstate_max) dbg_fstate_max <= fstate;
+            if (win_sel) begin
+                dbg_winsel_seen   <= 1'b1;
+                dbg_winaddr_last  <= win_addr[9:0];
+                if (internal) dbg_internal_seen <= 1'b1;
+                if (win_we)   dbg_winwe_seen    <= 1'b1;
+                if (id_read)  dbg_idread_seen   <= 1'b1;
             end
+            if (array_read) dbg_arrayrd_seen <= 1'b1;
+            if (array_read && tag_hit) dbg_taghit_seen <= 1'b1;
+            if (fstate > dbg_fstate_max) dbg_fstate_max <= fstate;
         end
         assign dbg_flash = {bank, dbg_winsel_seen, dbg_internal_seen, dbg_winwe_seen,
                             dbg_idread_seen, dbg_arrayrd_seen, dbg_taghit_seen,
