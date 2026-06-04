@@ -1,0 +1,39 @@
+diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
+--- a/rtl/memorymux.vhd
++++ b/rtl/memorymux.vhd
+@@ -1001,16 +1001,26 @@
+             when others => null;
+          end case;                 
+       elsif (ext_select_ex1_saved = '1') then
+-         -- System 573 EXP1 is a 16-bit, halfword-native slave: place each halfword by
+-         -- byteStep. 16-bit accesses use step "00"; 32-bit accesses "00" then "10".
+-         -- Unlike the SPU template we intentionally ignore addressData_buf(0): the 573
+-         -- decodes exp1_addr[N:1] and only ever issues aligned halfword/word accesses.
+-         -- 8-bit / width=0 EXP1 accesses are assumed unused (ex1_memctrl(12)=1 in normal
+-         -- 573 operation); this is an UNGUARDED assumption here -- the Phase-2 NVC
+-         -- harness adds a monitor that fails on any width=0 EXP1 access (see
+-         -- docs/PHASE1_PSX.md).
++         -- System 573 EXP1 is a 16-bit, halfword-native slave (exp1_addr[N:1] decodes
++         -- the word; the slave returns the 16-bit halfword containing the addressed
++         -- byte). The CPU's byte/halfword load-align (cpu.vhd LOADTYPE_BYTE/SWORD)
++         -- selects the result lane by the FULL byte address bits [1:0]/[1], so the
++         -- returned halfword MUST be placed in the [31:16] lane for an upper-halfword
++         -- byte address (addr[1]=1) and [15:0] for a lower one (addr[1]=0). The 700A
++         -- BIOS flash boot READS THE "PS-X EXE" SIGNATURE BYTE-BY-BYTE with `lb`
++         -- (memcmp @0x803c2ae4: lb 0x1f000024,25,26,27,...). The old code always wrote
++         -- [15:0] and ignored addressData_buf -- so `lb 0x1f000026` (addr[1]=1, CPU
++         -- extracts byte [23:16]) read 0x00 instead of '-' -> the signature memcmp
++         -- mismatched at byte 2 -> flash boot returned -1 -> CD fallback -> CDR BAD.
++         -- (32-bit word access still streams "00" then "10": addr[1]=0 then the issuer
++         -- advances to addr[1]=1, so both lanes fill correctly.)
+          case (ext_byteStep) is
+-            when "00"   => ext_data_new(15 downto  0) <= bus_exp1_dataRead;
++            when "00"   =>
++               if (addressData_buf(1) = '1') then
++                  ext_data_new(31 downto 16) <= bus_exp1_dataRead;
++               else
++                  ext_data_new(15 downto  0) <= bus_exp1_dataRead;
++               end if;
+             when "10"   => ext_data_new(31 downto 16) <= bus_exp1_dataRead;
+             when others => null;
+          end case;
