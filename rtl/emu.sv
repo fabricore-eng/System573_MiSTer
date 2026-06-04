@@ -1490,6 +1490,50 @@ always @(*) dbg_color = dbg_field(status[96:95]);
 localparam DBG_FORCE_BARS = 1'b1;
 reg [23:0] dbg_bar;          // selected by v_pos band in the video block below
 
+// ---------------------------------------------------------------------------
+// FREE-RUNNING DEBUG VIDEO (only synthesized when DBG_FORCE_BARS=1).
+// The GPU-clocked bar paint below goes BLACK once the game disables/reprograms
+// the display after launch (the PSX GPU stops pulsing ce_pix / collapses the
+// active window), making the boot-progress bars unreadable exactly when we need
+// them. This block generates an INDEPENDENT ~320x240@60Hz raster on the
+// always-on clk_vid (pll2 is reconfigured only on NTSC/PAL or fast-forward --
+// neither of which an NTSC game triggers, so clk_vid is rock stable) and drives
+// CE_PIXEL + the gamma input mux directly. Result: the 4 debug bands are ALWAYS
+// visible regardless of what the game does to the GPU. dbg_field() (the existing
+// bar decode) is reused unchanged. clk_vid ~= 53.7 MHz; /8 => ~6.71 MHz pixel CE,
+// 428x262 total => ~59.9 Hz; active window 320x240 marks DE for the scaler.
+localparam [10:0] DBG_H_TOTAL  = 11'd428, DBG_H_SYNC = 11'd32,
+                  DBG_H_BSTART = 11'd60,  DBG_H_BEND = 11'd380;   // 320 active px
+localparam [10:0] DBG_V_TOTAL  = 11'd262, DBG_V_SYNC = 11'd3,
+                  DBG_V_BSTART = 11'd16,  DBG_V_BEND = 11'd256;   // 240 active lines
+reg  [2:0]  dbg_cediv = 3'd0;
+reg         dbg_ce    = 1'b0;
+reg  [10:0] dbg_hcnt  = 11'd0, dbg_vcnt = 11'd0;
+reg  [23:0] dbg_rgb   = 24'h0;
+reg         dbg_hs_r  = 1'b0, dbg_vs_r = 1'b0, dbg_hb_r = 1'b1, dbg_vb_r = 1'b1;
+wire [1:0]  dbg_band  = (dbg_vcnt < DBG_V_BSTART + 11'd60)  ? 2'd0 :
+                        (dbg_vcnt < DBG_V_BSTART + 11'd120) ? 2'd1 :
+                        (dbg_vcnt < DBG_V_BSTART + 11'd180) ? 2'd2 : 2'd3;
+always @(posedge clk_vid) begin
+   dbg_ce    <= 1'b0;
+   dbg_cediv <= dbg_cediv + 3'd1;
+   if (dbg_cediv == 3'd7) begin
+      dbg_cediv <= 3'd0;
+      dbg_ce    <= 1'b1;
+      if (dbg_hcnt == DBG_H_TOTAL - 11'd1) begin
+         dbg_hcnt <= 11'd0;
+         dbg_vcnt <= (dbg_vcnt == DBG_V_TOTAL - 11'd1) ? 11'd0 : dbg_vcnt + 11'd1;
+      end else
+         dbg_hcnt <= dbg_hcnt + 11'd1;
+      // sync/blank/pixel for the CURRENT (pre-increment) raster position
+      dbg_hs_r <= (dbg_hcnt < DBG_H_SYNC);
+      dbg_vs_r <= (dbg_vcnt < DBG_V_SYNC);
+      dbg_hb_r <= ~((dbg_hcnt >= DBG_H_BSTART) && (dbg_hcnt < DBG_H_BEND));
+      dbg_vb_r <= ~((dbg_vcnt >= DBG_V_BSTART) && (dbg_vcnt < DBG_V_BEND));
+      dbg_rgb  <= dbg_field(dbg_band);
+   end
+end
+
 system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
@@ -1763,14 +1807,14 @@ typedef struct {
 vid_info video_aspect;
 vid_info video_gamma;
 
-assign CE_PIXEL = ce_pix;
+assign CE_PIXEL = DBG_FORCE_BARS ? dbg_ce : ce_pix;
 assign VGA_R    = video_gamma.red;
 assign VGA_G    = video_gamma.green;
 assign VGA_B    = video_gamma.blue;
 assign VGA_VS   = video_gamma.vs;
 assign VGA_HS   = video_gamma.hs;
 assign VGA_DE   = ~(video_gamma.vb | video_gamma.hb);
-assign VGA_F1   =  status[14] ? 1'b0 : video_aspect.interlace;
+assign VGA_F1   =  DBG_FORCE_BARS ? 1'b0 : (status[14] ? 1'b0 : video_aspect.interlace);
 assign VGA_SL = 0;
 logic [11:0] aspect_x, aspect_y;
 
@@ -1781,8 +1825,8 @@ video_freak video_freak
 	.VGA_DE_IN(VGA_DE),
 	.VGA_DE(),
 
-	.ARX((!ar) ? ((status[54:53] == 1) ? 3 : (status[54:53] == 2) ? 5 : (status[54:53] == 3) ? 16 : status[11] ? 12'd2 : aspect_x) : (ar - 1'd1)),
-	.ARY((!ar) ? ((status[54:53] == 1) ? 2 : (status[54:53] == 2) ? 3 : (status[54:53] == 3) ?  9 : status[11] ? 12'd1 : aspect_y) : 12'd0),
+	.ARX(DBG_FORCE_BARS ? 12'd4 : ((!ar) ? ((status[54:53] == 1) ? 3 : (status[54:53] == 2) ? 5 : (status[54:53] == 3) ? 16 : status[11] ? 12'd2 : aspect_x) : (ar - 1'd1))),
+	.ARY(DBG_FORCE_BARS ? 12'd3 : ((!ar) ? ((status[54:53] == 1) ? 2 : (status[54:53] == 2) ? 3 : (status[54:53] == 3) ?  9 : status[11] ? 12'd1 : aspect_y) : 12'd0)),
 	.CROP_SIZE(0),
 	.CROP_OFF(0),
 	.SCALE(status[35:34])
@@ -1920,11 +1964,11 @@ gamma_corr gamma(
 	.gamma_wr_addr(gamma_bus[17:8]),
 	.gamma_value(gamma_bus[7:0]),
 
-	.HSync(video_aspect.hs),
-	.VSync(video_aspect.vs),
-	.HBlank(video_aspect.hb),
-	.VBlank(video_aspect.vb),
-	.RGB_in({video_aspect.red,video_aspect.green,video_aspect.blue}),
+	.HSync (DBG_FORCE_BARS ? dbg_hs_r : video_aspect.hs),
+	.VSync (DBG_FORCE_BARS ? dbg_vs_r : video_aspect.vs),
+	.HBlank(DBG_FORCE_BARS ? dbg_hb_r : video_aspect.hb),
+	.VBlank(DBG_FORCE_BARS ? dbg_vb_r : video_aspect.vb),
+	.RGB_in(DBG_FORCE_BARS ? dbg_rgb : {video_aspect.red,video_aspect.green,video_aspect.blue}),
 
 	.HSync_out(video_gamma.hs),
 	.VSync_out(video_gamma.vs),
