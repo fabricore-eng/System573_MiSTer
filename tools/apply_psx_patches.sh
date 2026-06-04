@@ -25,7 +25,8 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           "$ROOT/psx_patches/0004-s573-cpu-icache-redirect-fix.patch" \
           "$ROOT/psx_patches/0005-s573-cpu-bios-uncached.patch" \
           "$ROOT/psx_patches/0006-s573-exp1-flash-wait.patch" \
-          "$ROOT/psx_patches/0007-sdram-ch4-flash.patch" )
+          "$ROOT/psx_patches/0007-sdram-ch4-flash.patch" \
+          "$ROOT/psx_patches/0008-s573-disable-cheats-engine.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

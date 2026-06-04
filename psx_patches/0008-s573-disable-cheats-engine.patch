@@ -1,0 +1,78 @@
+diff --git a/rtl/psx_top.vhd b/rtl/psx_top.vhd
+index f9544b8..d310b0c 100644
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -1139,33 +1139,46 @@ begin
+       SS_idle              => SS_idle_pad
+    );
+    
+-   icheats : entity work.cheats
+-   port map
+-   (
+-      clk1x          => clk1x,
+-      ce             => ce,
+-      reset          => reset_intern,
+-
+-      dmaOn          => dmaOn,
+-
+-      cheat_clear    => cheat_clear,
+-      cheats_enabled => cheats_enabled,
+-      cheat_on       => cheat_on,
+-      cheat_in       => cheat_in,
+-      cheats_active  => cheats_active,
+-
+-      vsync          => IRQ_VBlank,
+-
+-      --bus_ena_in     => mem_bus_ena,
+-
+-      BusAddr        => Cheats_BusAddr,
+-      BusRnW         => Cheats_BusRnW,
+-      BusByteEnable  => Cheats_BusByteEnable,
+-      BusWriteData   => Cheats_BusWriteData,
+-      Bus_ena        => Cheats_Bus_ena,
+-      BusReadData    => Cheats_BusReadData,
+-      BusDone        => Cheats_BusDone
+-   );
++   -- System 573: the upstream PSX "cheats" engine is a MiSTer convenience feature,
++   -- not real System 573 hardware. The 573 core is ALM/LAB-bound, so we disable the
++   -- cheats engine to recover ~139 ALMs for essential 573 logic. The icheats
++   -- instantiation is removed and its bus-master outputs are tied to safe idle
++   -- constants so the memory arbiter never sees a cheats request and the
++   -- work.cheats entity optimizes away entirely. (cheats_enabled / Cheats_BusReadData
++   -- / Cheats_BusDone are inputs to cheats and are simply left unread.)
++   -- icheats : entity work.cheats  -- disabled for System 573 (frees ~139 ALMs)
++   -- port map
++   -- (
++   --    clk1x          => clk1x,
++   --    ce             => ce,
++   --    reset          => reset_intern,
++   --
++   --    dmaOn          => dmaOn,
++   --
++   --    cheat_clear    => cheat_clear,
++   --    cheats_enabled => cheats_enabled,
++   --    cheat_on       => cheat_on,
++   --    cheat_in       => cheat_in,
++   --    cheats_active  => cheats_active,
++   --
++   --    vsync          => IRQ_VBlank,
++   --
++   --    --bus_ena_in     => mem_bus_ena,
++   --
++   --    BusAddr        => Cheats_BusAddr,
++   --    BusRnW         => Cheats_BusRnW,
++   --    BusByteEnable  => Cheats_BusByteEnable,
++   --    BusWriteData   => Cheats_BusWriteData,
++   --    Bus_ena        => Cheats_Bus_ena,
++   --    BusReadData    => Cheats_BusReadData,
++   --    BusDone        => Cheats_BusDone
++   -- );
++   cheats_active        <= '0';
++   Cheats_BusAddr       <= (others => '0');
++   Cheats_BusRnW        <= '0';
++   Cheats_BusByteEnable <= (others => '0');
++   Cheats_BusWriteData  <= (others => '0');
++   Cheats_Bus_ena       <= '0';
+ 
+    isio : entity work.sio
+    port map
