@@ -35,7 +35,13 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # 0010 plumbs the CPU load width (reqsize_buf) out of memorymux -> psx_top ->
           # psx_mister as exp1_reqsize, so the EXP1 SLAVE (system573_top.v) can byte-align
           # its 16-bit halfword-native read return without touching the fragile ext_data_new mux.
-          "$ROOT/psx_patches/0010-s573-exp1-reqsize.patch" )
+          "$ROOT/psx_patches/0010-s573-exp1-reqsize.patch" \
+          # 0011 removes the dormant consumer-PSX CD-ROM controller (cd_top + cd_xa helpers)
+          # from psx_top -- the 573 drives its own ATAPI optical drive via rtl/atapi.v over EXP1
+          # and never uses cd_top (confirmed dormant by 4 BIOS scans). Its outputs are tied to
+          # safe idle constants (SS_Idle_cd/Pause_idle_cd held '1' so savestate/pause complete;
+          # region_out passed straight through). Frees ~2.9k ALMs on the ALM/LAB-bound 573 die.
+          "$ROOT/psx_patches/0011-s573-remove-cd-top.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
