@@ -26,8 +26,11 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           "$ROOT/psx_patches/0005-s573-cpu-bios-uncached.patch" \
           "$ROOT/psx_patches/0006-s573-exp1-flash-wait.patch" \
           "$ROOT/psx_patches/0007-sdram-ch4-flash.patch" \
-          "$ROOT/psx_patches/0008-s573-disable-cheats-engine.patch" \
-          "$ROOT/psx_patches/0009-s573-exp1-byte-read-lane.patch" )
+          "$ROOT/psx_patches/0008-s573-disable-cheats-engine.patch" )
+          # DIAGNOSTIC (temporary): 0009-s573-exp1-byte-read-lane.patch removed to
+          # isolate whether the byte-lane fix is what stalls the boot before any EXP1
+          # I/O (boot-stage probe showed exp1_rcnt=0). Restore it once localized:
+          #   "$ROOT/psx_patches/0009-s573-exp1-byte-read-lane.patch"
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
