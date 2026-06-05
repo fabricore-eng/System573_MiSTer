@@ -48,15 +48,19 @@ module tb_s573_nvram_loader;
 
     always #5 clk = ~clk;
 
-    // One WIDE ioctl word. The loader turns this into two m48t58 byte writes (even
-    // then odd) over the following two clocks; emu holds the stream via ioctl_wait
-    // for the 2nd write, so we leave >=2 idle clocks before the next word.
+    // One WIDE ioctl word, driven the way the REAL hps_io + emu ioctl_wait do it:
+    // hps presents the word with ioctl_wr=1 and HOLDS it high while emu asserts
+    // ioctl_wait for the loader's 2nd (odd) write, only advancing once the loader
+    // has consumed both bytes. Holding ioctl_wr high across the wait is the case
+    // that would expose a double-even-write if the loader's nv_hi priority were
+    // wrong -- so the test must drive it this way, not with idle gaps.
     task nv_word(input [12:0] a, input [15:0] w);
         begin
             @(negedge clk); ioctl_addr = a; ioctl_dout = w; ioctl_wr = 1;
-            @(negedge clk); ioctl_wr = 0;
-            @(negedge clk);   // even byte drains
-            @(negedge clk);   // odd byte drains
+            @(posedge clk);   // even byte write commits; loader raises nv_hi
+            @(posedge clk);   // odd byte write commits (ioctl_wr STILL high, held by wait)
+            @(negedge clk); ioctl_wr = 0;   // emu drops ioctl_wait -> hps advances
+            @(negedge clk);                 // settle before next word
         end
     endtask
 
