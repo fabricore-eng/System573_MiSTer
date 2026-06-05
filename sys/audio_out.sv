@@ -198,27 +198,16 @@ always @(posedge clk, posedge reset) begin
 end
 
 wire [15:0] acl, acr;
-IIR_filter #(.use_params(0)) IIR_filter
-(
-	.clk(clk),
-	.reset(reset),
-
-	.ce(flt_ce & a_en1),
-	.sample_ce(sample_ce),
-
-	.cx(cx),
-	.cx0(cx0),
-	.cx1(cx1),
-	.cx2(cx2),
-	.cy0(cy0),
-	.cy1(cy1),
-	.cy2(cy2),
-
-	.input_l({~is_signed ^ cl[15], cl[14:0]}),
-	.input_r({~is_signed ^ cr[15], cr[14:0]}),
-	.output_l(acl),
-	.output_r(acr)
-);
+// IIR_filter dropped (573 resource recovery #6, order 1): frees 8 DSP + ~430 ALM (~43 LABs
+// off the 100% LAB wall) to LOOSEN the near-full-fit placement. Our slow 2.5-3h routes are
+// timing-driven routing fighting the tight 98%-ALM/100%-LAB placement (NOT interconnect
+// congestion -- interconnect sits at ~50%/76%), so freeing LABs gives the router placement
+// flexibility. Passthrough preserves the SAME input sign-format conversion the filter applied;
+// the downstream DC_blocker + aud_mix_top are unchanged. The OSD "Audio Filter" option becomes
+// a no-op -- 573 audio is SPU + MP3, unfiltered output is fine (no accuracy impact). Identical
+// change to the one dvd validated on the MPEG2 core.
+assign acl = {~is_signed ^ cl[15], cl[14:0]};
+assign acr = {~is_signed ^ cr[15], cr[14:0]};
 
 wire [15:0] adl;
 DC_blocker dcb_l
