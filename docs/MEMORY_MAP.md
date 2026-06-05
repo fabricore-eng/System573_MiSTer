@@ -74,9 +74,12 @@ accesses require the PS1 `EXP1` config register `0x1f801008 = 0x24173f47` and us
 ## Bank switch / security control (`0x1f500000`, write)
 | Bits | Meaning                                            |
 |------|----------------------------------------------------|
-| 0–5  | Bank: 0–3 internal flash, 16–31 PCMCIA1, 32–47 PCMCIA2 |
+| 4–5  | **Internal onboard-flash bank index (0–3)** — the 16 MB flash is 4×4 MB chips selected here. The 700A BIOS `set_bank_hi` (0x803ca188) writes `(idx&3)<<4`, i.e. ctl = 0x00/0x10/0x20/0x30 for banks 0/1/2/3. (Corrected 2026-06-05: the old "0–5 = 0–3 internal / 16–31 PCMCIA1 / 32–47 PCMCIA2" flat numbering CONTRADICTS the BIOS — the body-copy loader 0x803c2210 walks `set_bank_hi(2/1/0)`. `rtl/s573_flash.v` decodes this field as `bank[5:4]`.) |
+| 0–3  | Low bank-select nibble (BIOS `set_bank_lo` 0x803ca108); = 0 for onboard-flash access. |
 | 6    | Security cart IO0 direction (0 = input)             |
 | 7    | CPLD signal (unknown)                              |
+
+> PCMCIA card **presence** is reported via the read register `0x1f400006[11:10]` (driven absent in `emu.sv`), NOT via this bank field.
 
 ## Security cartridge latch (`0x1f6a0000`, write)
 | Bits | Meaning                                  |
