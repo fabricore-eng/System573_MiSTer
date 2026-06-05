@@ -1518,7 +1518,7 @@ always @(*) dbg_color = dbg_field(status[96:95]);
 // When DBG_FORCE_BARS=1 the whole active display is painted as 4 stacked
 // horizontal bands, top->bottom = field 0,1,2,3, so ONE screenshot decodes the
 // entire flash-path state. Set to 0 to disable the debug paint entirely.
-localparam DBG_FORCE_BARS = 1'b1;
+localparam DBG_FORCE_BARS = 1'b0;
 reg [23:0] dbg_bar;          // selected by v_pos band in the video block below
 
 // ---------------------------------------------------------------------------
