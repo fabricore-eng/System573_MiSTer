@@ -22,6 +22,11 @@ module system573_top #(
 
     // EXP1 master (from the PS1 core / CPU)
     input  wire [23:0] exp1_addr,
+    // CPU load width (psx_patches/0010: memorymux reqsize_buf). 00=lb/lbu, 01=lh/lhu,
+    // 10=lw. The PSX external-bus byte/halfword load-align is UNCONDITIONAL [7:0]/[15:0]
+    // (cpu.vhd) with no addr-rotate, so a byte read needs the addressed byte already in
+    // exp1_rdata[7:0]. This slave is halfword-native, so we rotate by addr[0] for lb/lbu.
+    input  wire [1:0]  exp1_reqsize,
     input  wire [15:0] exp1_wdata,
     input  wire        exp1_we,
     input  wire        exp1_re,
@@ -219,18 +224,38 @@ module system573_top #(
         else                     rdata_mux = 16'h0000;
     end
 
+    // EXP1 byte-lane alignment (psx_patches/0010 plumbs exp1_reqsize here).
+    // This fabric is a 16-bit, HALFWORD-NATIVE slave: rdata_mux holds the halfword
+    // for exp1_addr[N:1]. The PSX CPU's EXTERNAL byte/halfword load-align is an
+    // UNCONDITIONAL [7:0]/[15:0] extraction (cpu.vhd ~2537/2549) -- unlike RAM it
+    // does NOT re-rotate by addr[1:0], and memorymux hands the EXP1 read straight to
+    // ext_data_new with no external rotate. So for a byte load (lb/lbu) the addressed
+    // byte must already sit in [7:0]: select the high byte for an odd address and
+    // replicate it into [7:0]. (The 700A BIOS reads the flash signature + CRC
+    // BYTE-BY-BYTE; without this, odd-byte reads return the wrong byte -> sig/CRC
+    // fail.) For lh/lhu/lw (reqsize != 00) pass the true halfword through unchanged so
+    // ext_data_new[15:0] is correct and a word read's 2nd beat fills [31:16] normally.
+    reg [15:0] exp1_rdata_aligned;
+    always @(*) begin
+        if (exp1_reqsize == 2'b00)                 // lb / lbu
+            exp1_rdata_aligned = exp1_addr[0] ? {rdata_mux[15:8], rdata_mux[15:8]}
+                                              : {rdata_mux[7:0],  rdata_mux[7:0]};
+        else                                       // lh / lhu / lw
+            exp1_rdata_aligned = rdata_mux;
+    end
+
     // Registered EXP1 read data. The PlayStation memory controller's external-bus
     // FSM (PSX_MiSTer memorymux.vhd) asserts the read strobe during EXT_READ_NEXT
     // and samples the returned data one cycle later, in EXT_READ, *after* the
     // strobe has deasserted. It therefore expects a REGISTERED slave, exactly like
     // the PSX core's own EXP2/SPU/CD slaves -- a combinational read would collapse
     // to 0 the moment exp1_re drops and the FSM would capture garbage (POST hang).
-    // We latch the mux while exp1_re is asserted and HOLD it afterwards, rather
-    // than clearing to 0 like exp2.vhd: this fabric is driven free-running on the
-    // PSX clk1x with no clock-enable, so a clear-default would lose the value
-    // during the PSX core's ce gaps before the FSM's EXT_READ capture edge.
+    // We latch the (byte-aligned) mux while exp1_re is asserted and HOLD it
+    // afterwards, rather than clearing to 0 like exp2.vhd: this fabric is driven
+    // free-running on the PSX clk1x with no clock-enable, so a clear-default would
+    // lose the value during the PSX core's ce gaps before the FSM's EXT_READ capture.
     always @(posedge clk) begin
         if (rst)          exp1_rdata <= 16'h0000;
-        else if (exp1_re) exp1_rdata <= rdata_mux;
+        else if (exp1_re) exp1_rdata <= exp1_rdata_aligned;
     end
 endmodule

@@ -10,6 +10,7 @@
 module tb_drivecheck;
     reg clk = 0, rst = 1;
     reg [23:0] exp1_addr = 0;
+    reg [1:0]  exp1_reqsize = 2'b01;   // lh pass-through (these checks read full halfwords)
     reg [15:0] exp1_wdata = 0;
     reg        exp1_we = 0, exp1_re = 0;
     wire [15:0] exp1_rdata;
@@ -22,7 +23,7 @@ module tb_drivecheck;
 
     system573_top #(.CLK_FREQ_HZ(1_000_000), .WDOG_TIMEOUT(100000)) dut (
         .clk(clk), .rst(rst),
-        .exp1_addr(exp1_addr), .exp1_wdata(exp1_wdata),
+        .exp1_addr(exp1_addr), .exp1_reqsize(exp1_reqsize), .exp1_wdata(exp1_wdata),
         .exp1_we(exp1_we), .exp1_re(exp1_re), .exp1_rdata(exp1_rdata),
         .dip_sw(dip_sw), .p1_ctrl(8'h00), .p2_ctrl(8'h00),
         .coin_sw(2'b00), .service_btn(1'b0), .test_btn(1'b0),
@@ -48,7 +49,7 @@ module tb_drivecheck;
     endtask
     task exp1_read(input [23:0] a, output [15:0] d);
         begin
-            @(negedge clk); exp1_addr = a; exp1_re = 0; exp1_we = 0;
+            @(negedge clk); exp1_addr = a; exp1_reqsize = 2'b01; exp1_re = 0; exp1_we = 0;
             @(posedge clk);
             @(negedge clk); exp1_re = 1;
             @(posedge clk);

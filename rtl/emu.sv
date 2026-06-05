@@ -1133,6 +1133,7 @@ psx
    .biosregion(biosregion),
    // System 573: widened EXP1 master (psx_patches/0001) routed to system573_top
    .exp1_addr(exp1_addr),
+   .exp1_reqsize(exp1_reqsize),   // psx_patches/0010: CPU load width -> EXP1 slave byte-align
    .exp1_dataWrite(exp1_dataWrite),
    .exp1_we(exp1_we),
    .exp1_re(exp1_re),
@@ -1363,6 +1364,7 @@ psx
 // can't reset the boot before we've seen it. (Refine inputs/outputs + JAMMA bit
 // mapping once the boot screen is confirmed -- see docs/PHASE4_HARDWARE.md.)
 wire [23:0] exp1_addr;
+wire [1:0]  exp1_reqsize;       // 573 CPU load width (00=lb/lbu,01=lh/lhu,10=lw) -> EXP1 slave byte-align
 wire [15:0] exp1_dataWrite;
 wire        exp1_we;
 wire        exp1_re;
@@ -1568,6 +1570,7 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .clk            (clk_1x),
    .rst            (reset),
    .exp1_addr      (exp1_addr),
+   .exp1_reqsize   (exp1_reqsize),
    .exp1_wdata     (exp1_dataWrite),
    .exp1_we        (exp1_we),
    .exp1_re        (exp1_re),

@@ -26,12 +26,16 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           "$ROOT/psx_patches/0005-s573-cpu-bios-uncached.patch" \
           "$ROOT/psx_patches/0006-s573-exp1-flash-wait.patch" \
           "$ROOT/psx_patches/0007-sdram-ch4-flash.patch" \
-          "$ROOT/psx_patches/0008-s573-disable-cheats-engine.patch" )
+          "$ROOT/psx_patches/0008-s573-disable-cheats-engine.patch" \
           # 0009 (ext_data_new byte-lane fix) REMOVED: it deterministically stalls the boot
           # pre-EXP1 (fit-marginality on the 97%-ALM die, STA-clean). Per workflow w20walw69 the
           # byte-lane fix moves OFF the psx ext_data_new mux into the EXP1 slave (system573_top.v);
           # the sig is handled meanwhile by the sigpass BIOS (dumps/hyperbbc/573_sigpass.bin).
           #   "$ROOT/psx_patches/0009-s573-exp1-byte-read-lane.patch"
+          # 0010 plumbs the CPU load width (reqsize_buf) out of memorymux -> psx_top ->
+          # psx_mister as exp1_reqsize, so the EXP1 SLAVE (system573_top.v) can byte-align
+          # its 16-bit halfword-native read return without touching the fragile ext_data_new mux.
+          "$ROOT/psx_patches/0010-s573-exp1-reqsize.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
