@@ -23,8 +23,10 @@ module s573_io (
 
     // ---- inputs from the rest of the board / MiSTer host ----
     input  wire [3:0]  dip_sw,         // DIP switches
-    input  wire [7:0]  p1_ctrl,        // JAMMA player 1 (active high here)
-    input  wire [7:0]  p2_ctrl,        // JAMMA player 2
+    input  wire [7:0]  p1_ctrl,        // JAMMA player 1 -- ACTIVE-LOW (pressed=0); inverted in
+                                       // emu.sv (~joy) to mirror MAME IN2. (Stale "active high"
+                                       // comment removed -- the inversion happens upstream.)
+    input  wire [7:0]  p2_ctrl,        // JAMMA player 2 (active-low, see p1_ctrl)
     input  wire [1:0]  coin_sw,        // coin switches
     input  wire        service_btn,
     input  wire        test_btn,
@@ -93,8 +95,18 @@ module s573_io (
           pcmcia_present,         // [11:10]
           coin_sw,                // [9:8]
           sec_drdy, sec_irdy,     // [7:6]
-          2'b00,                  // [5:4] JVSDRDY/JVSIRDY (unused here)
-          1'b0,                   // [3]   JVS port sense
+          2'b00,                  // [5:4] JVS rx-ready(.4)/tx-write-ready(.5) = 0: keeps the
+                                  //       JVS send+recv timing out like MAME (received_packet()
+                                  //       =0 / IPT_UNKNOWN). Do NOT drive .5=1 -- a "send OK"
+                                  //       makes the game block on a JVS reply that never comes.
+          1'b1,                   // [3]   JVS port sense = 1 (no JVS I/O board attached; MAME
+                                  //       jvs_sense_r = !address_set_line = 1). The game's I/O
+                                  //       detect (flash 0x8017153c) require-1 ENTERs on this; its
+                                  //       JVS send then times out -> returns -3 (negative) -> the
+                                  //       boot gate treats it as "I/O board absent" and CONTINUES
+                                  //       (gameplay inputs come from JAMMA reg 0x1f400008, below).
+                                  //       Was 1'b0, which dead-ended detect OFF the graceful-skip
+                                  //       path -> hyperbbc hung on its red "NG" self-test screen.
           sec_io0,                // [2]
           adc_sars,               // [1]
           adc_do };               // [0]

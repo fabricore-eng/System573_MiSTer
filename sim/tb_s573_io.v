@@ -61,6 +61,32 @@ module tb_s573_io;
         end
     endtask
 
+    // Executable oracle for the hyperbbc JVS/H8 boot decision (no CPU): models ONLY the
+    // boot-relevant branch of the game's I/O detect (flash 0x8017153c). A regression that
+    // flips JVS sense back to 0 OR drives tx-write-ready to 1 FAILS here instead of silently
+    // re-hanging hyperbbc on hardware.
+    task detect_decision;
+        reg [15:0] m;
+        reg sense, rx_ready, tx_wr_ready;
+        begin
+            rd_reg(4'h6, m);
+            sense       = m[3];
+            rx_ready    = m[4];
+            tx_wr_ready = m[5];
+            if (sense !== 1'b1) begin
+                $display("FAIL: detect_decision -- jvs_sense=0 dead-ends detect OFF the graceful-skip path (hyperbbc hangs on NG)");
+                errors = errors + 1;
+            end else if (tx_wr_ready === 1'b1) begin
+                $display("FAIL: detect_decision -- tx-write-ready=1 lets JVS send 'succeed'; game then blocks on a JVS reply that never comes");
+                errors = errors + 1;
+            end else begin
+                if (rx_ready !== 1'b0)
+                    $display("NOTE: detect_decision -- rx_ready=1 unexpected (would enter RX path)");
+                $display("INFO: detect_decision -- sense=1, tx/rx idle -> detect returns negative -> graceful skip -> hyperbbc BOOTS");
+            end
+        end
+    endtask
+
     reg [15:0] r;
     initial begin
         repeat (3) @(posedge clk); @(negedge clk); rst = 0;
@@ -88,7 +114,17 @@ module tb_s573_io;
         //            sars@1, do@0
         rd_reg(4'h6, r);
         chk(r, {3'b000, service_btn, pcmcia_present, coin_sw, sec_drdy, sec_irdy,
-                2'b00, 1'b0, sec_io0, adc_sars, adc_do}, "misc");
+                2'b00, 1'b1, sec_io0, adc_sars, adc_do}, "misc");
+        // --- hyperbbc JVS/H8 boot-handshake contract: the I/O detect reads these EXACT bits;
+        //     they must match MAME so detect returns NEGATIVE -> graceful "I/O board absent"
+        //     skip instead of the red "NG" hang. ---
+        chk({15'h0, r[3]}, 16'h0001, "jvs_sense=1");         // .06[3] sense MUST be 1
+        chk({15'h0, r[4]}, 16'h0000, "jvs_rx_ready=0");      // .06[4] rx-ready stays 0
+        chk({15'h0, r[5]}, 16'h0000, "jvs_tx_writeready=0"); // .06[5] tx-ready stays 0
+        rd_reg(4'h4, r);
+        chk({14'h0, r[5:4]}, 16'h0000, "jvs_tx_start_ready"); // .04[5:4]=0 (low of 0xC nibble)
+        chk({14'h0, r[7:6]}, 16'h0003, "h8_hi_classifier");   // .04[7:6]=11 (hi of 0xC)
+        detect_decision;
 
         // 0x0c extra: test button at bit 10
         rd_reg(4'hc, r); chk(r, {5'b0, test_btn, 10'b0}, "extra");
