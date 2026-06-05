@@ -131,7 +131,9 @@ module tb_s573_flash_sdram;
         if (last_stall == 0) begin $display("FAIL: refetch 0x40 should MISS (line evicted)"); errors=errors+1; end
 
         // 5) different bank changes the flat address (bank in tag high bits).
-        set_ctl(16'h0001);                 // bank 1
+        //    Internal bank index is ctl[5:4] (BIOS set_bank_hi), so bank 1 = ctl
+        //    0x10 and the flat word = {bank[5:4]=1, win_addr}.
+        set_ctl(16'h0010);                 // bank 1 (ctl[5:4]=1)
         fw = {2'd1, 21'h40};               // flat word for bank1, offset 0x40
         flash_read(21'h40, v); chk(v, backing(fw), "bank1 word 0x40");
         set_ctl(16'h0000);                 // back to bank 0

@@ -128,15 +128,23 @@ module tb_system573_top;
 
         // 3b) Bank-switched flash: per-bank isolation, programmed through the
         //     NOR command sequences across the fabric (word 8 = byte 0x10).
-        exp1_write(24'h500000, 16'h0000);   // bank 0
+        //     Internal onboard-flash bank index is control bits [5:4] (the BIOS
+        //     set_bank_hi writes idx<<4), so bank 1 = bankctl 0x10, not 0x01.
+        exp1_write(24'h500000, 16'h0000);   // bank 0 (ctl[5:4]=0)
         flash_prog(24'h000010, 16'h1234);
-        exp1_write(24'h500000, 16'h0001);   // bank 1
+        exp1_write(24'h500000, 16'h0010);   // bank 1 (ctl[5:4]=1)
         flash_prog(24'h000010, 16'h5678);
         exp1_write(24'h500000, 16'h0000);   // back to bank 0
         exp1_read(24'h000010, r);
         if (r !== 16'h1234) begin
             $display("FAIL: flash bank0 readback %04h expected 1234", r); errors = errors + 1;
         end
+        exp1_write(24'h500000, 16'h0010);   // bank 1 again -> its own value
+        exp1_read(24'h000010, r);
+        if (r !== 16'h5678) begin
+            $display("FAIL: flash bank1 readback %04h expected 5678", r); errors = errors + 1;
+        end
+        exp1_write(24'h500000, 16'h0000);   // leave on bank 0 for the next steps
 
         // 3b-2) Multi-beat 32-bit stepped read: program two adjacent flash words
         //       (byte 0x10 and 0x12), then read them as one 32-bit word the way the
