@@ -729,6 +729,13 @@ always @(posedge clk_1x) begin
          end
       end
       if(sdramCh3_done) ioctl_wait <= 0;
+   end else if (nvram_download) begin
+      // s573_nvram_loader needs 2 cycles per WIDE word (even byte then odd byte).
+      // Hold hps_io for the 2nd write: raise ioctl_wait on the even-write cycle
+      // (nv_hi=0, ioctl_wr=1), drop it on the odd-write cycle (nv_hi=1) so the
+      // stream resumes. Same registered back-pressure pattern as the bios path.
+      if (nvram_nv_hi)   ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
    end else begin
       ioctl_wait <= 0;
 	end
@@ -1379,10 +1386,29 @@ wire [127:0] flash_mem_q;
 wire        flash_mem_ready;
 wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-up)
 
-// 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB streamed a byte at a time).
-wire        nvram_we   = nvram_download & ioctl_wr;
-wire [12:0] nvram_addr = ioctl_addr[12:0];
-wire [7:0]  nvram_din  = ioctl_dout[7:0];
+// 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB). hps_io is WIDE(1): every
+// ioctl_wr delivers a 16-bit word (ioctl_dout[7:0]=file[2k], [15:8]=file[2k+1])
+// and ioctl_addr steps by 2. s573_nvram_loader unpacks each word into TWO byte
+// writes (even then odd) so the odd ram[] bytes are not dropped -- the prior
+// single low-byte write half-zeroed the image and hyperbbc's NVRAM signature
+// self-test (the red "N") failed. emu drives ioctl_wait from nv_hi (see the
+// download always block above) to hold the stream one cycle for the 2nd write,
+// matching the proven bios/exe/flash back-pressure path.
+wire        nvram_we;
+wire [12:0] nvram_addr;
+wire [7:0]  nvram_din;
+wire        nvram_nv_hi;
+s573_nvram_loader nvram_loader (
+   .clk        (clk_1x),
+   .load_en    (nvram_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[12:0]),
+   .ioctl_dout (ioctl_dout),
+   .nvram_we   (nvram_we),
+   .nvram_addr (nvram_addr),
+   .nvram_din  (nvram_din),
+   .nv_hi      (nvram_nv_hi)
+);
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
 wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
