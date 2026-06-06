@@ -145,18 +145,18 @@ module tb_system573_top;
 
         // 3b) Bank-switched flash: per-bank isolation, programmed through the
         //     NOR command sequences across the fabric (word 8 = byte 0x10).
-        //     Internal onboard-flash bank index is control bits [5:4] (the BIOS
-        //     set_bank_hi writes idx<<4), so bank 1 = bankctl 0x10, not 0x01.
-        exp1_write(24'h500000, 16'h0000);   // bank 0 (ctl[5:4]=0)
+        //     Internal onboard-flash bank index is the raw control value ctl[1:0]
+        //     (MAME: onboard banks are control 0-3), so bank 1 = bankctl 0x01.
+        exp1_write(24'h500000, 16'h0000);   // bank 0 (ctl 0x00)
         flash_prog(24'h000010, 16'h1234);
-        exp1_write(24'h500000, 16'h0010);   // bank 1 (ctl[5:4]=1)
+        exp1_write(24'h500000, 16'h0001);   // bank 1 (ctl 0x01)
         flash_prog(24'h000010, 16'h5678);
         exp1_write(24'h500000, 16'h0000);   // back to bank 0
         exp1_read(24'h000010, r);
         if (r !== 16'h1234) begin
             $display("FAIL: flash bank0 readback %04h expected 1234", r); errors = errors + 1;
         end
-        exp1_write(24'h500000, 16'h0010);   // bank 1 again -> its own value
+        exp1_write(24'h500000, 16'h0001);   // bank 1 again -> its own value
         exp1_read(24'h000010, r);
         if (r !== 16'h5678) begin
             $display("FAIL: flash bank1 readback %04h expected 5678", r); errors = errors + 1;

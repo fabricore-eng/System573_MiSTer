@@ -74,8 +74,7 @@ accesses require the PS1 `EXP1` config register `0x1f801008 = 0x24173f47` and us
 ## Bank switch / security control (`0x1f500000`, write)
 | Bits | Meaning                                            |
 |------|----------------------------------------------------|
-| 4–5  | **Internal onboard-flash bank index (0–3)** — the 16 MB flash is 4×4 MB chips selected here. The 700A BIOS `set_bank_hi` (0x803ca188) writes `(idx&3)<<4`, i.e. ctl = 0x00/0x10/0x20/0x30 for banks 0/1/2/3. (Corrected 2026-06-05: the old "0–5 = 0–3 internal / 16–31 PCMCIA1 / 32–47 PCMCIA2" flat numbering CONTRADICTS the BIOS — the body-copy loader 0x803c2210 walks `set_bank_hi(2/1/0)`. `rtl/s573_flash.v` decodes this field as `bank[5:4]`.) |
-| 0–3  | Low bank-select nibble (BIOS `set_bank_lo` 0x803ca108); = 0 for onboard-flash access. |
+| 0–5  | **Bank number** (the RAW value, no shift): 0–3 = the four internal onboard-flash 4 MB banks (16 MB total: 31m/31l/31j/31h at image offsets 0/4/8/12 MB), 16–31 = PCMCIA slot 1, 32–47 = PCMCIA slot 2. **Authoritative: MAME `konami/ksys573.cpp` `m_flashbank->set_bank(m_control & 0x3f)`** over a 4 MB-stride flashbank map; our `tools/pack_hyperbbc.py` lays bank N at N×0x400000, matching. `rtl/s573_flash.v` decodes onboard = `bank < 4`, index = `bank[1:0]`. (Corrected 2026-06-06: the prior `bank[5:4]` / `(idx<<4)→0x00/0x10/0x20/0x30` claim, committed in da83148, was a REGRESSION — it read banks 1/2/3 as absent 0xFFFF, stalling the PROGRAM ROM CHECK. Settled by the RTL-witness audit + MAME source; `0x10`/`0x20` actually select PCMCIA, not onboard banks 1/2.) |
 | 6    | Security cart IO0 direction (0 = input)             |
 | 7    | CPLD signal (unknown)                              |
 

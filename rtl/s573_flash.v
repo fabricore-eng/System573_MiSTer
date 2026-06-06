@@ -4,23 +4,22 @@
 // The 573 sees a single 4 MB window at 0x1f000000 into a much larger backing
 // store, selected by the bank field of the control register at 0x1f500000:
 //
-//   bits 0-3 : bank low field  (set_bank_lo, BIOS 0x803ca108: ctl[3:0])
-//   bits 4-5 : internal onboard-flash bank index 0-3 (set_bank_hi, BIOS
-//              0x803ca188: ctl[5:4] = idx<<4 -> raw bank 0x00/0x10/0x20/0x30)
-//   bit  6   : security-cart IO0 direction (0 = input; set_bit6, BIOS 0x803ca20c)
+//   bits 0-5 : bank number  (0-3 = internal onboard flash, 16-31 = PCMCIA slot 1,
+//              32-47 = PCMCIA slot 2) -- the RAW value, no shift
+//   bit  6   : security-cart IO0 direction (0 = input)
 //   bit  7   : CPLD signal
 //
-// AUTHORITATIVE SOURCE = the 700A BIOS. `set_bank` (RAM 0x803ca188) selects an
-// internal onboard-flash bank by writing the index into control bits [5:4]:
-// `andi v0,0xffcf` (clear [5:4]) ; `andi a0,3` ; `sll a0,4` ; OR -> ctl[5:0] =
-// 0x00/0x10/0x20/0x30 for index 0/1/2/3. The body-copy loader (0x803c2210)
-// iterates set_bank(2),(1),(0) to walk the four banks. So the internal bank is
-// `bank[5:4]`, NOT a flat `bank[1:0]` -- only index 0 worked before this fix.
-// (The old MEMORY_MAP "16-31/32-47 PCMCIA" flat numbering conflicts with the
-// BIOS and is wrong for this encoding.) PCMCIA presence is reported separately
-// via 0x1f400006[11:10] (s573_io), never by a flash-window read in this boot,
-// so the onboard banks decode internal while any non-onboard selector (any value
-// with bank[3:0] != 0) still reads all-ones (absent).
+// AUTHORITATIVE SOURCE = MAME konami/ksys573.cpp (mame0288, which boots our exact
+// dumps): `m_flashbank->set_bank( m_control & 0x3f );`  (no shift) over a 4 MB-
+// stride flashbank map: bank 0 -> 29f016a.31m, 1 -> 31l, 2 -> 31j, 3 -> 31h (the
+// four onboard 4 MB banks at image offsets 0/4/8/12 MB); banks 16-31 -> pccard1,
+// 32-47 -> pccard2. So the BIOS selects onboard bank N by writing the RAW value N
+// (0/1/2/3): the internal-bank index is `bank[1:0]` with `bank < 4`, NOT `bank[5:4]`.
+// Our own tools/pack_hyperbbc.py lays bank N at image offset N*0x400000, matching.
+// (Commit da83148's `bank[5:4]` decode was a REGRESSION: control values 0x01/0x02/
+// 0x03 fell through to "absent" -> banks 1/2/3 read 0xFFFF, leaving 12 MB of
+// program/gfx/sample data unreadable -> the PROGRAM ROM CHECK self-test stalled.
+// Confirmed by the RTL-witness audit + MAME source, 2026-06-06.)
 //
 // This module latches that control register (exposing the bank and the two
 // security/CPLD bits to the rest of the board) and maps the 4 MB window onto a
@@ -34,8 +33,8 @@
 //     SDRAM ports are unused). This is the path the unit tests exercise.
 //
 //   SIM_BACKING=0 (Quartus/HW):  the 16 MB onboard flash lives in SDRAM. A flat
-//     word address `{bank[5:4], win_addr[20:0]}` (23 bits = 8 M words = 16 MB)
-//     indexes it -- bank[5:4] is the BIOS internal-bank index (see header above).
+//     word address `{bank[1:0], win_addr[20:0]}` (23 bits = 8 M words = 16 MB)
+//     indexes it -- bank[1:0] is the BIOS internal-bank index (see header above).
 //     A 16-word (32-byte) line buffer holds the most-recently filled
 //     burst; tag = flash_word[22:5]. A HIT returns combinational `win_dout` with
 //     `flash_ready=1` (no stall); a MISS drops `flash_ready=0` and kicks one
@@ -93,13 +92,13 @@ module s573_flash #(
     //   [9:0] = low 10 bits of the last win_addr observed during a flash read
     output wire [23:0] dbg_flash
 );
-    // Internal onboard flash is selected by the BIOS via control bits [5:4]
-    // (set_bank_hi writes idx<<4 -> raw bank 0x00/0x10/0x20/0x30). The four clean
-    // onboard-bank selector values all have bank[3:0]==0; any other value is a
-    // non-onboard/PCMCIA selector and reads all-ones (absent). NUM_BANKS is fixed
-    // at 4 by this 2-bit [5:4] index, so this gate is independent of it.
-    wire internal = (bank[3:0] == 4'b0000);
-    wire [1:0] bank_idx = bank[5:4];   // internal onboard-flash bank index 0-3
+    // Internal onboard flash is selected by the BIOS writing the RAW bank number
+    // (0/1/2/3) to the control register (MAME: set_bank(control & 0x3f); onboard
+    // banks are values < 4, PCMCIA is 16-31/32-47). So onboard = bank < 4 and the
+    // bank index is bank[1:0]; any value >= 4 is a non-onboard/PCMCIA selector and
+    // reads all-ones (absent).
+    wire internal = (bank[5:2] == 4'b0000);   // bank < 4 -> onboard flash
+    wire [1:0] bank_idx = bank[1:0];          // internal onboard-flash bank index 0-3
 
     always @(posedge clk) begin
         if (rst) begin
@@ -124,7 +123,7 @@ module s573_flash #(
             flash_nor #(.WORDS(WIN_WORDS), .SECTOR_WORDS(SECTOR_WORDS),
                         .BACKING_EXTERNAL(0)) chip (
                 .clk(clk), .rst(rst),
-                // select internal bank by ctl[5:4] (BIOS set_bank_hi index)
+                // select internal bank by the raw control value (BIOS bank index)
                 .ce(win_sel && internal && (bank_idx == gi)),
                 .we(win_we),
                 .addr(win_addr[15:0]),
@@ -155,8 +154,8 @@ module s573_flash #(
         // ----- HW path: 16 MB SDRAM-backed flash with a 16-word line buffer -----
         //
         // Flat 16-bit WORD address into the 16 MB image:
-        //   flash_word = {bank[5:4], win_addr[20:0]}   (23 bits = 8 M words)
-        // bank[5:4] = the BIOS internal-bank index 0-3 (set_bank_hi). Line buffer
+        //   flash_word = {bank[1:0], win_addr[20:0]}   (23 bits = 8 M words)
+        // bank[1:0] = the BIOS internal-bank index 0-3. Line buffer
         // = 16 words (32 bytes): index = flash_word[3:0] (16 words), tag =
         // flash_word[22:4] (19 bits). One 128-bit SDRAM burst is 8 words, so two
         // bursts (line base, line base+8) fill the 16-word line.
