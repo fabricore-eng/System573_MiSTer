@@ -12,11 +12,15 @@ this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/mister-dev-h
    (those are invisible to the human's dashboard AND bypass the cap-2 build semaphore, so two cores
    can thrash `dell` into swap):
    ```
-   DELL_PROJECT=573 DELL_TARGET=Konami_System_573 DELL_REPO=~/System573_MiSTer \
+   DELL_PROJECT=573 DELL_TARGET=Konami_System_573 DELL_REPO=System573_MiSTer \
      ~/Dev/mister-dev-hub/tools/dell_build.sh feat-flash-load
    ```
    It runs detached, namespaces the log (`/tmp/dellbuild-573.log`) + container (`quartus-573`),
    claims a semaphore slot, applies the psx_patches, and logs to `/tmp/mister-dell-coord.log`.
+   **`DELL_REPO` is a BARE dir name** (the launcher does `cd "$HOME/$DELL_REPO"` *on dell*) — NOT
+   `~/System573_MiSTer`: a leading `~` expands on the Mac to a Mac-absolute path and the runner
+   then dies at `cd /home/human//Users/...` (no such dir). Bare name, or omit it (default
+   is `System573_MiSTer`). The `~/Dev/...dell_build.sh` part is fine — that `~` is the Mac launcher.
 
 2. **Verify with a NUMBER, never vision.** A "boots / works / renders / fixed" claim needs an
    objective measurement *first* — an image diff (`~/Dev/mister-dev-hub/tools/frame_diff.py`,
