@@ -41,7 +41,12 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # and never uses cd_top (confirmed dormant by 4 BIOS scans). Its outputs are tied to
           # safe idle constants (SS_Idle_cd/Pause_idle_cd held '1' so savestate/pause complete;
           # region_out passed straight through). Frees ~2.9k ALMs on the ALM/LAB-bound 573 die.
-          "$ROOT/psx_patches/0011-s573-remove-cd-top.patch" )
+          "$ROOT/psx_patches/0011-s573-remove-cd-top.patch" \
+          # 0012 is a DEBUG-ONLY probe: recolors textured pixels by their drawMode
+          # color-mode (4bpp=RED/8bpp=BLUE/15bit=YELLOW) so one screenshot reveals which
+          # texture mode the green-striped polys use. Gated by DBG_TEXMODE_MAP in
+          # gpu_pixelpipeline.vhd; set '0' (constant-folds away) before any production rbf.
+          "$ROOT/psx_patches/0012-s573-debug-texmode-flagcolor.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
