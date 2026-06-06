@@ -4,6 +4,7 @@
 module tb_system573_top;
     reg clk = 0, rst = 1;
     reg [23:0] exp1_addr = 0;
+    reg [1:0]  exp1_reqsize = 2'b01;   // default lh (pass-through); byte tests set 00
     reg [15:0] exp1_wdata = 0;
     reg        exp1_we = 0, exp1_re = 0;
     wire [15:0] exp1_rdata;
@@ -22,15 +23,20 @@ module tb_system573_top;
 
     system573_top #(.CLK_FREQ_HZ(1_000_000), .WDOG_TIMEOUT(20)) dut (
         .clk(clk), .rst(rst),
-        .exp1_addr(exp1_addr), .exp1_wdata(exp1_wdata),
+        .exp1_addr(exp1_addr), .exp1_reqsize(exp1_reqsize), .exp1_wdata(exp1_wdata),
         .exp1_we(exp1_we), .exp1_re(exp1_re), .exp1_rdata(exp1_rdata),
         .dip_sw(dip_sw), .p1_ctrl(p1_ctrl), .p2_ctrl(p2_ctrl),
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
         .pcmcia_present(pcmcia_present),
+        .cd_present(1'b1),   // this integration test exercises the ATAPI/CD path, so model a drive present
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
-        .cdrom_irq(cdrom_irq), .lamp_out(lamp_out)
+        .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
+        // SIM_BACKING defaults to 1: inline flash; flash_wait stays 0, SDRAM unused.
+        .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
+        .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
     );
 
     always #5 clk = ~clk;
@@ -60,13 +66,29 @@ module tb_system573_top;
     // sim (see docs/PHASE1_PSX.md).
     task exp1_read(input [23:0] a, output [15:0] d);
         begin
-            @(negedge clk); exp1_addr = a; exp1_re = 0; exp1_we = 0; // EXT_READ_WAIT: addr settles
+            @(negedge clk); exp1_addr = a; exp1_reqsize = 2'b01; exp1_re = 0; exp1_we = 0; // EXT_READ_WAIT: addr settles (lh pass-through)
             @(posedge clk);                 // synchronous slaves register their read here
             @(negedge clk); exp1_re = 1;     // EXT_READ_NEXT: assert read strobe
             @(posedge clk);                 // slave latches rdata_mux on this edge
             @(negedge clk); exp1_re = 0;     // strobe deasserts (entering EXT_READ)
             repeat (2) @(posedge clk);       // ce-gap: registered value must hold
             #1; d = exp1_rdata;              // FSM's EXT_READ sample: must still hold
+        end
+    endtask
+
+    // Byte read (lb/lbu, reqsize=00) -- exercises the EXP1 slave byte-lane rotate
+    // (psx_patches/0010). The addressed byte must land in exp1_rdata[7:0] regardless
+    // of address parity, since the PSX external byte load-align is unconditional [7:0].
+    task exp1_readb(input [23:0] a, output [7:0] d);
+        reg [15:0] full;
+        begin
+            @(negedge clk); exp1_addr = a; exp1_reqsize = 2'b00; exp1_re = 0; exp1_we = 0;
+            @(posedge clk);
+            @(negedge clk); exp1_re = 1;
+            @(posedge clk);
+            @(negedge clk); exp1_re = 0;
+            repeat (2) @(posedge clk);
+            #1; full = exp1_rdata; d = full[7:0];
         end
     endtask
 
@@ -123,15 +145,23 @@ module tb_system573_top;
 
         // 3b) Bank-switched flash: per-bank isolation, programmed through the
         //     NOR command sequences across the fabric (word 8 = byte 0x10).
-        exp1_write(24'h500000, 16'h0000);   // bank 0
+        //     Internal onboard-flash bank index is the raw control value ctl[1:0]
+        //     (MAME: onboard banks are control 0-3), so bank 1 = bankctl 0x01.
+        exp1_write(24'h500000, 16'h0000);   // bank 0 (ctl 0x00)
         flash_prog(24'h000010, 16'h1234);
-        exp1_write(24'h500000, 16'h0001);   // bank 1
+        exp1_write(24'h500000, 16'h0001);   // bank 1 (ctl 0x01)
         flash_prog(24'h000010, 16'h5678);
         exp1_write(24'h500000, 16'h0000);   // back to bank 0
         exp1_read(24'h000010, r);
         if (r !== 16'h1234) begin
             $display("FAIL: flash bank0 readback %04h expected 1234", r); errors = errors + 1;
         end
+        exp1_write(24'h500000, 16'h0001);   // bank 1 again -> its own value
+        exp1_read(24'h000010, r);
+        if (r !== 16'h5678) begin
+            $display("FAIL: flash bank1 readback %04h expected 5678", r); errors = errors + 1;
+        end
+        exp1_write(24'h500000, 16'h0000);   // leave on bank 0 for the next steps
 
         // 3b-2) Multi-beat 32-bit stepped read: program two adjacent flash words
         //       (byte 0x10 and 0x12), then read them as one 32-bit word the way the
@@ -146,6 +176,23 @@ module tb_system573_top;
                 $display("FAIL: 32-bit stepped read %08h expected ABCD1234", r32);
                 errors = errors + 1;
             end
+        end
+
+        // 3b-3) Byte-lane rotate (psx_patches/0010): the BIOS reads the flash signature
+        //       + CRC BYTE-BY-BYTE (lb/lbu, reqsize=00). The addressed byte must land in
+        //       exp1_rdata[7:0] for BOTH even (low) and odd (high) byte addresses, since
+        //       the PSX external byte load-align is an unconditional [7:0] extraction.
+        //       Flash bank 0: word8(byte 0x10)=0x1234, word9(byte 0x12)=0xABCD.
+        begin : bytelane
+            reg [7:0] b;
+            exp1_readb(24'h000010, b);            // even -> low byte of 0x1234 = 0x34
+            if (b !== 8'h34) begin $display("FAIL: lb 0x10 = %02h expected 34", b); errors = errors + 1; end
+            exp1_readb(24'h000011, b);            // odd  -> high byte of 0x1234 = 0x12
+            if (b !== 8'h12) begin $display("FAIL: lb 0x11 = %02h expected 12", b); errors = errors + 1; end
+            exp1_readb(24'h000012, b);            // even -> low byte of 0xABCD = 0xCD
+            if (b !== 8'hCD) begin $display("FAIL: lb 0x12 = %02h expected CD", b); errors = errors + 1; end
+            exp1_readb(24'h000013, b);            // odd  -> high byte of 0xABCD = 0xAB
+            if (b !== 8'hAB) begin $display("FAIL: lb 0x13 = %02h expected AB", b); errors = errors + 1; end
         end
 
         // 3c) ATAPI device signature through the IDE window.

@@ -34,7 +34,17 @@ module m48t58 #(
     input  wire [12:0] addr,    // byte address 0..8191
     input  wire [7:0]  din,
     input  wire        we,      // 1-cycle write strobe
-    output reg  [7:0]  dout      // async read data
+    output reg  [7:0]  dout,     // async read data
+    // NVRAM image load port (e.g. hyperbbc 876ea.22h via ioctl). Streams the 8 KB
+    // image into the lower NVRAM array. The load is rst-INDEPENDENT (handled in the
+    // dedicated ram[] write block below): emu.sv holds the core reset HIGH for the
+    // entire NVRAM ioctl download (reset_or includes nvram_download), so the load MUST
+    // land while rst is asserted -- gating it behind rst==0 silently dropped it and the
+    // game read a blank NVRAM. Lower priority than a (post-reset) bus write, which never
+    // coincides with the download.
+    input  wire        nvram_we,
+    input  wire [12:0] nvram_addr,
+    input  wire [7:0]  nvram_din
 );
     localparam [12:0] RTC_BASE = 13'd8184;
     localparam integer DIVMAX  = (CLK_FREQ_HZ > 1) ? CLK_FREQ_HZ - 1 : 0;
@@ -87,6 +97,22 @@ module m48t58 #(
     reg [7:0] ram_q;
     always @(posedge clk) ram_q <= ram[addr];
 
+    // ----- lower-NVRAM array write port (single write port -> M10K) -----
+    // A post-reset bus write takes priority over the ioctl image load. CRITICAL: the
+    // image load is rst-INDEPENDENT. emu.sv asserts the core reset for the ENTIRE NVRAM
+    // ioctl download stream (reset_or includes nvram_download), so the OLD code -- which
+    // gated this write inside the rst==0 branch -- silently DROPPED every load write: the
+    // M10K powered up to zeros, and hyperbbc's boot self-test read a blank NVRAM, failed
+    // its "GQ876..1998EAA" signature compare (M48T58 @ 0x1f620000), set status bit 0x40,
+    // and hung on the red "NG". Loading regardless of rst fixes it. (The flash/BIOS loads
+    // worked on HW because their ramdownload path is not gated by the core reset.)
+    always @(posedge clk) begin
+        if (!rst && we && !addr_is_rtc)
+            ram[addr] <= din;                   // bus write to lower NVRAM (post-reset)
+        else if (nvram_we && nvram_addr < RTC_BASE)
+            ram[nvram_addr] <= nvram_din;        // ioctl image load (any rst state)
+    end
+
     // Read mux (snapshot when READ freeze is active).
     always @(*) begin
         if (addr_is_rtc) begin
@@ -120,22 +146,20 @@ module m48t58 #(
             if (divcnt >= DIVMAX[31:0]) begin divcnt <= 32'd0;          tick <= 1'b1; end
             else                        begin divcnt <= divcnt + 32'd1; tick <= 1'b0; end
 
-            // Bus writes: clock registers / NVRAM.
-            if (we) begin
-                if (addr_is_rtc) begin
-                    case (rtc_idx)
-                        3'd0: ctrl   <= din;
-                        3'd1: tsec   <= din;
-                        3'd2: tmin   <= din;
-                        3'd3: thour  <= din;
-                        3'd4: tdow   <= din;
-                        3'd5: tdom   <= din;
-                        3'd6: tmonth <= din;
-                        3'd7: tyear  <= din;
-                    endcase
-                end else begin
-                    ram[addr] <= din;
-                end
+            // Bus writes to the CLOCK registers (RTC top 8 bytes). The lower-NVRAM
+            // array (ram[]) bus write + the ioctl image load live in the dedicated,
+            // rst-independent write block above.
+            if (we && addr_is_rtc) begin
+                case (rtc_idx)
+                    3'd0: ctrl   <= din;
+                    3'd1: tsec   <= din;
+                    3'd2: tmin   <= din;
+                    3'd3: thour  <= din;
+                    3'd4: tdow   <= din;
+                    3'd5: tdom   <= din;
+                    3'd6: tmonth <= din;
+                    3'd7: tyear  <= din;
+                endcase
             end
 
             // Advance the oscillator (paused in write freeze or when stopped).

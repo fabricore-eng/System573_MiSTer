@@ -200,11 +200,17 @@ wire [11:0] DisplayHeight;
 wire [ 9:0] DisplayOffsetX;
 wire [ 8:0] DisplayOffsetY;
 
-assign FB_BASE    = status[11] ? 32'h30000000 : {8'h30, frameindex, DisplayOffsetY, DisplayOffsetX, 1'b0};
-assign FB_EN      = (status[14] || video_fbmode);
+// TEMP DIAGNOSTIC (garble hunt): force the VRAMViewer ON without any OSD nav, so an
+// autonomous HW capture shows the RAW VRAM contents (textures/CLUTs/framebuffers as a
+// 1024x512 image). If VRAM data is itself garbled -> upload/DMA bug; if VRAM is clean
+// but the game renders glitched -> GPU sampling bug. Set back to 1'b0 to restore the game.
+localparam DBG_FORCE_VRAMVIEW = 1'b0;
+wire fvram = status[11] | DBG_FORCE_VRAMVIEW;
+assign FB_BASE    = fvram ? 32'h30000000 : {8'h30, frameindex, DisplayOffsetY, DisplayOffsetX, 1'b0};
+assign FB_EN      = (status[14] || video_fbmode || DBG_FORCE_VRAMVIEW);
 assign FB_FORMAT  = (status[10] || video_fb24) ? 5'b00101 : 5'b01100;
-assign FB_WIDTH   = status[11] ? 12'd1024 : DisplayWidth;
-assign FB_HEIGHT  = status[11] ? 12'd512  : DisplayHeight;
+assign FB_WIDTH   = fvram ? 12'd1024 : DisplayWidth;
+assign FB_HEIGHT  = fvram ? 12'd512  : DisplayHeight;
 assign FB_STRIDE  = 14'd2048;
 assign FB_FORCE_BLANK = 0;
 
@@ -337,7 +343,7 @@ always @(posedge clk_1x) begin : ffwd
 	fast_forward <= (FFrequest | ff_latch);
 end
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | cdDownloadReset;
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | cdDownloadReset;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -353,6 +359,11 @@ parameter CONF_STR = {
 	"H7S1,CUECHD,Load CD;",
 	"h7-,Reload core for CD;",
 	"F1,EXE,Load Exe;",
+	"F2,BIN,Load 573 Flash;",
+	"F3,BIN,Load 573 NVRAM;",
+	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
+	"O[94],573 Flash Debug,Off,On;",
+	"O[96:95],573 Dbg Field,ch4Q,expQ,cnt/sz,wrAddr;",
 	"-;",
 	"d6C,Cheats;",
 	"h6O[6],Cheats Enabled,Yes,No;",
@@ -448,7 +459,7 @@ parameter CONF_STR = {
 
 	"-   ;",
 	"R0,Reset;",
-	"J1,Triangle(NeGcon B),O(Gun Fire|NeGcon A),X(Gun B|NeGcon I),[](NeGcon II),Select,Start(Gun A),L1,R1,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
+	"J1,Button 1,Button 2,Button 3,Button 4,Coin,Start,Service,Test,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
 	"jn,X,A,B,Y,Select,Start,L,R;",
 	"I,",
 	"Load=DPAD Up|Save=Down|Slot=L+R,",
@@ -630,9 +641,12 @@ hps_ext hps_ext
 //////////////////////////  ROM DETECT  /////////////////////////////////
 
 reg bios_download, exe_download, cdinfo_download, code_download;
+reg flash_download, nvram_download;
 always @(posedge clk_1x) begin
 	bios_download    <= ioctl_download & (ioctl_index[5:0] == 0);
 	exe_download     <= ioctl_download & (ioctl_index == 1);
+	flash_download   <= ioctl_download & (ioctl_index == 2);   // 573 onboard flash (16 MB)
+	nvram_download   <= ioctl_download & (ioctl_index == 3);   // 573 M48T58 NVRAM (8 KB)
 	cdinfo_download  <= ioctl_download & (ioctl_index == 251);
 	code_download    <= ioctl_download & (ioctl_index == 255);
 end
@@ -646,6 +660,17 @@ end
 
 localparam EXE_START = 16777216;
 localparam BIOS_START = 8388608;
+// 573 onboard flash: 16 MB in SDRAM. RELOCATED 0x02000000 -> 0x01000000 (2026-06-04):
+// the standard MiSTer SDRAM module is 32 MB, so 0x02000000 (32 MB) .. 0x03000000 (48 MB)
+// is OUT OF RANGE on real HW -- flash reads wrapped (bit-25 ignored by a single 32 MB chip)
+// to PSX RAM @0x0, so the BIOS flash-boot signature read at 0x1f000024 never saw "PS-X EXE",
+// the flash boot failed, and the BIOS fell through to the CD path -> "CDR BAD". The EXE
+// staging region (EXE_START=0x01000000, 16 MB) is UNUSED by the 573 (the .mra loads only
+// ioctl 0=bios / 2=flash / 3=nvram, never 1=exe; EXE-boot is gated on exe_download), and the
+// flash is exactly 16 MB, so it fits 0x01000000..0x02000000 -- in range on a 32 MB module,
+// no overlap with RAM (0..2 MB) or BIOS (0x00800000). Line buffer indexes by flat 16-bit
+// word; SDRAM byte address = FLASH_START + (word << 1).
+localparam [26:0] FLASH_START = 27'h0100_0000;
 
 reg [26:0] ramdownload_wraddr;
 reg [31:0] ramdownload_wrdata;
@@ -694,12 +719,13 @@ reg [31:0] exe_stackpointer;
 
 always @(posedge clk_1x) begin
 	ramdownload_wr <= 0;
-	if(exe_download | bios_download | cdinfo_download) begin
+	if(exe_download | bios_download | cdinfo_download | flash_download) begin
       if (ioctl_wr) begin
          if(~ioctl_addr[1]) begin
             ramdownload_wrdata[15:0] <= ioctl_dout;
             if (bios_download)         ramdownload_wraddr  <= {4'd1, 2'b00, ioctl_index[7:6], ioctl_addr[18:0]};
             else if (exe_download)     ramdownload_wraddr  <= ioctl_addr[22:0] + EXE_START[26:0];
+            else if (flash_download)   ramdownload_wraddr  <= {3'd0, ioctl_addr[23:0]} + FLASH_START;
             else if (cdinfo_download)  ramdownload_wraddr  <= ioctl_addr[26:0];
          end else begin
             ramdownload_wrdata[31:16] <= ioctl_dout;
@@ -709,6 +735,13 @@ always @(posedge clk_1x) begin
          end
       end
       if(sdramCh3_done) ioctl_wait <= 0;
+   end else if (nvram_download) begin
+      // s573_nvram_loader needs 2 cycles per WIDE word (even byte then odd byte).
+      // Hold hps_io for the 2nd write: raise ioctl_wait on the even-write cycle
+      // (nv_hi=0, ioctl_wr=1), drop it on the odd-write cycle (nv_hi=1) so the
+      // stream resumes. Same registered back-pressure pattern as the bios path.
+      if (nvram_nv_hi)   ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
    end else begin
       ioctl_wait <= 0;
 	end
@@ -1113,10 +1146,12 @@ psx
    .biosregion(biosregion),
    // System 573: widened EXP1 master (psx_patches/0001) routed to system573_top
    .exp1_addr(exp1_addr),
+   .exp1_reqsize(exp1_reqsize),   // psx_patches/0010: CPU load width -> EXP1 slave byte-align
    .exp1_dataWrite(exp1_dataWrite),
    .exp1_we(exp1_we),
    .exp1_re(exp1_re),
    .exp1_dataRead(exp1_dataRead),
+   .exp1_wait(exp1_wait),
    .exp_irq10(exp_irq10),
    .ram_refresh(sdr_refresh),
    .ram_dataWrite(sdr_sdram_din),
@@ -1342,35 +1377,271 @@ psx
 // can't reset the boot before we've seen it. (Refine inputs/outputs + JAMMA bit
 // mapping once the boot screen is confirmed -- see docs/PHASE4_HARDWARE.md.)
 wire [23:0] exp1_addr;
+wire [1:0]  exp1_reqsize;       // 573 CPU load width (00=lb/lbu,01=lh/lhu,10=lw) -> EXP1 slave byte-align
 wire [15:0] exp1_dataWrite;
 wire        exp1_we;
 wire        exp1_re;
 wire [15:0] exp1_dataRead;
 wire        exp_irq10;
+wire        exp1_wait;          // 573 flash line-fill stall -> psx_mister EXP1 wait
 
-system573_top u_s573
+// 573 onboard-flash SDRAM line-fill bridge (system573_top <-> sdram ch4).
+wire        flash_mem_req;
+wire [26:0] flash_mem_addr;     // flat 16-bit word index into the 16 MB image
+wire [127:0] flash_mem_q;
+wire        flash_mem_ready;
+wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-up)
+
+// 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB). hps_io is WIDE(1): every
+// ioctl_wr delivers a 16-bit word (ioctl_dout[7:0]=file[2k], [15:8]=file[2k+1])
+// and ioctl_addr steps by 2. s573_nvram_loader unpacks each word into TWO byte
+// writes (even then odd) so the odd ram[] bytes are not dropped -- the prior
+// single low-byte write half-zeroed the image and hyperbbc's NVRAM signature
+// self-test (the red "N") failed. emu drives ioctl_wait from nv_hi (see the
+// download always block above) to hold the stream one cycle for the 2nd write,
+// matching the proven bios/exe/flash back-pressure path.
+wire        nvram_we;
+wire [12:0] nvram_addr;
+wire [7:0]  nvram_din;
+wire        nvram_nv_hi;
+s573_nvram_loader nvram_loader (
+   .clk        (clk_1x),
+   .load_en    (nvram_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[12:0]),
+   .ioctl_dout (ioctl_dout),
+   .nvram_we   (nvram_we),
+   .nvram_addr (nvram_addr),
+   .nvram_din  (nvram_din),
+   .nv_hi      (nvram_nv_hi)
+);
+// ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
+// word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
+wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
+
+// -----------------------------------------------------------------------------
+// FLASH-PATH DEBUG READBACK  (status[94]=enable, status[96:95]=field select)
+// Distinguishes "flash never written to SDRAM (A)" from "ch4 read returns wrong
+// data (B)" by capturing, in the clk_1x domain, what each stage actually saw and
+// painting it onto the video as a SOLID 24-bit RGB color so a screenshot decodes
+// it. Captured fields (latched, sticky after reset deasserts):
+//   dbg_first_q   - flash_mem_q[15:0] on the FIRST ch4 burst returned (the raw
+//                   word SDRAM ch4 gave back for flash word 0x10). 0xFFFF here
+//                   while the write side is proven good == ch4 READ bug (B).
+//   dbg_exp_q     - exp1_dataRead latched on a flash-window read (0x1f0000xx):
+//                   the word the BIOS actually consumes (the "PS-X EXE" probe).
+//   dbg_fill_cnt  - saturating count of completed ch4 line fills; 0 == the fill
+//                   FSM never ran (BIOS never probed / flash_ready never dropped).
+//   dbg_wr_seen   - sticky: a flash-index ramdownload write was issued to ch3.
+//   sdram_sz[7:0] - HPS-reported SDRAM module size code (rules out the >32MB wrap).
+reg  [15:0] dbg_first_q = 16'h0;
+reg         dbg_first_seen = 1'b0;
+reg  [15:0] dbg_exp_q = 16'h0;
+reg  [7:0]  dbg_fill_cnt = 8'h0;       // completed ch4 fills (flash_mem_ready pulses)
+reg         dbg_wr_seen = 1'b0;
+reg  [23:0] dbg_wr_last = 24'h0;       // last flash ramdownload_wraddr[23:0]
+// Round 2 instrumentation: the round-1 bars proved write-happened (wr_last=0xFFFFFF)
+// but fill_cnt=0 / first_seen=0 (ch4 NEVER delivered a burst). Now disambiguate
+// "s573_flash never REQUESTED a fill" from "ch4 never ACKED a request" by also
+// watching the REQUEST side (flash_mem_req) directly in this clean clk_1x domain.
+reg         dbg_req_seen = 1'b0;       // flash_mem_req ever pulsed (s573_flash asked)
+reg  [7:0]  dbg_req_cnt  = 8'h0;       // count of flash_mem_req pulses
+reg  [23:0] dbg_req_last = 24'h0;      // last requested flash word index (byte<<? -- word)
+// Round 4: round-3 proved winsel_seen=0 -- the BIOS NEVER reads the flash window
+// (sel_flash never asserts). So the flash PRE-STEP is being skipped (gated off) and
+// the BIOS goes straight to cd_init -> CDR BAD. The gate reads the DIP/config regs
+// (0x1f400004/6/c). Capture what the BIOS reads there + whether it ever WRITES the
+// bank-control reg (0x1f500000, the pre-step's first action). exp1_addr is the
+// 0x1f000000-page offset: page = exp1_addr[23:16]; 0x40=s573_io, 0x50=bankctl, 0x00-3f=flash.
+reg  [15:0] dbg_io04 = 16'h0;          // last value read from 0x1f400004 (r_status: DIP in [3:0])
+reg  [15:0] dbg_io0c = 16'h0;          // last value read from 0x1f40000c (r_extra)
+reg         dbg_bankctl_wr = 1'b0;     // BIOS ever wrote 0x1f500000 (bank select) -> pre-step ran
+reg  [15:0] dbg_bankctl_val = 16'h0;   // last value written to bankctl
+reg         dbg_io04_seen = 1'b0;      // BIOS ever read 0x1f400004
+// BOOT-STAGE / LIVENESS probe: the flash counters above are all 0 in 6bab8d6 even
+// though clk_1x runs -- so the BIOS is NOT reaching the flash pre-step. These show
+// WHERE the boot actually is (the CDR drive check is upstream of the flash pre-step):
+//   exp1_rcnt  - count of EXP1 reads (general BIOS I/O liveness; 0 => no I/O at all)
+//   last_page/last_alo - exp1_addr[23:16]/[15:8] of the last EXP1 access = where the
+//                BIOS is poking now (0x00 flash / 0x40 s573_io / 0x48 IDE-ATAPI / 0x50 bank)
+//   atapi_seen - an EXP1 access landed in the IDE/ATAPI page 0x48 (reached the drive check)
+//   idecmd_seen- a write to the IDE command reg 0x1f48000e (issued an ATA/ATAPI command)
+//   heart      - free-running clk_1x heartbeat (proves clk_1x runs / core not held in reset)
+reg  [15:0] dbg_exp1_rcnt = 16'h0;
+reg  [7:0]  dbg_last_page = 8'h0;
+reg  [7:0]  dbg_last_alo  = 8'h0;
+reg         dbg_atapi_seen = 1'b0;
+reg         dbg_idecmd_seen = 1'b0;
+reg  [15:0] dbg_heart = 16'h0;
+always @(posedge clk_1x) begin
+   dbg_heart <= dbg_heart + 16'd1;        // free-running: clk_1x alive iff this advances
+   if (exp1_re || exp1_we) begin
+      dbg_last_page <= exp1_addr[23:16];
+      dbg_last_alo  <= exp1_addr[15:8];
+      if (exp1_addr[23:16] == 8'h48) dbg_atapi_seen <= 1'b1;
+   end
+   if (exp1_re && dbg_exp1_rcnt != 16'hFFFF) dbg_exp1_rcnt <= dbg_exp1_rcnt + 16'd1;
+   if (exp1_we && (exp1_addr[23:16] == 8'h48) && (exp1_addr[7:0] == 8'h0e)) dbg_idecmd_seen <= 1'b1;
+   if (flash_mem_ready) begin
+      if (!dbg_first_seen) begin
+         dbg_first_q    <= flash_mem_q[15:0];
+         dbg_first_seen <= 1'b1;
+      end
+      if (dbg_fill_cnt != 8'hFF) dbg_fill_cnt <= dbg_fill_cnt + 8'd1;
+   end
+   if (flash_mem_req) begin
+      dbg_req_seen <= 1'b1;
+      if (dbg_req_cnt != 8'hFF) dbg_req_cnt <= dbg_req_cnt + 8'd1;
+      dbg_req_last <= flash_mem_addr[23:0];
+   end
+   // EXP1 flash-window read: 0x1f000000 window decodes here as exp1_addr[23:0]
+   // with the high nibble of the window; capture the low addresses (the signature
+   // region 0x00..0xff) so dbg_exp_q reflects the "PS-X EXE" probe words.
+   if (exp1_re && (exp1_addr[23:8] == 16'h0000)) dbg_exp_q <= exp1_dataRead;
+   // s573_io DIP/config reads (page 0x40): the flash-pre-step gate inputs.
+   if (exp1_re && (exp1_addr[23:16] == 8'h40)) begin
+      if (exp1_addr[7:0] == 8'h04) begin dbg_io04 <= exp1_dataRead; dbg_io04_seen <= 1'b1; end
+      if (exp1_addr[7:0] == 8'h0c)        dbg_io0c <= exp1_dataRead;
+   end
+   // bank-control write (page 0x50 = 0x1f500000): the pre-step's first flash action.
+   if (exp1_we && (exp1_addr[23:16] == 8'h50)) begin
+      dbg_bankctl_wr  <= 1'b1;
+      dbg_bankctl_val <= exp1_dataWrite;
+   end
+   if (flash_download & ramdownload_wr) begin
+      dbg_wr_seen <= 1'b1;
+      dbg_wr_last <= ramdownload_wraddr[23:0];
+   end
+end
+
+// Map a 2-bit field index to its 24-bit debug color (shared by the OSD-selected
+// single-color path and the forced 4-bar path).
+function [23:0] dbg_field;
+   input [1:0] f;
+   begin
+      case (f)
+         // BOOT-STAGE / LIVENESS readout (6bab8d6 flash bars were all 0 => boot never
+         // reaches the flash pre-step; these locate WHERE it actually is).
+         // band0 = EXP1 read LIVENESS: R=rcnt[15:8] G=rcnt[7:0] B[7]=(rcnt!=0).
+         //   non-black => the BIOS IS doing I/O (alive); pure black => no EXP1 reads at all.
+         2'd0: dbg_field = {dbg_exp1_rcnt, (dbg_exp1_rcnt != 16'h0), 7'h0};
+         // band1 = STAGE LATCHES (R, MSB->LSB) + heartbeat (G):
+         //   R[7]=io04_seen(read 0x1f400004 / 18E area) R[6]=atapi_seen(touched IDE page 0x48)
+         //   R[5]=idecmd_seen(wrote ATA cmd 0x1f48000e) R[4]=bankctl_wr(flash pre-step ran)
+         //   R[3]=winsel(read flash window) R[2]=req_seen(flash fill req) R[1]=first_seen(flash data)
+         //   G=heart[15:8] (advances across captures iff clk_1x runs).
+         2'd1: dbg_field = {dbg_io04_seen, dbg_atapi_seen, dbg_idecmd_seen, dbg_bankctl_wr,
+                            flash_dbg[17], dbg_req_seen, dbg_first_seen, 1'b0,
+                            dbg_heart[15:8], 8'h0};
+         // band2 = WHERE: R=last EXP1 page (exp1_addr[23:16]) G=last EXP1 addr[15:8].
+         //   0x00=flash 0x40=s573_io 0x48=IDE/ATAPI 0x50=bankctl -- the page the BIOS last poked
+         //   = where it is stuck/looping.
+         2'd2: dbg_field = {dbg_last_page, dbg_last_alo, 8'h0};
+         // band3 = FLASH req/fill (for when the boot finally reaches flash): R=req_cnt G=fill_cnt.
+         2'd3: dbg_field = {dbg_req_cnt, dbg_fill_cnt, dbg_req_seen, dbg_first_seen, 6'h0};
+      endcase
+   end
+endfunction
+
+reg [23:0] dbg_color;
+always @(*) dbg_color = dbg_field(status[96:95]);
+
+// FORCED 4-BAR PAINT (no OSD/PSX.CFG needed -- arcade .mra loads ignore PSX.CFG).
+// When DBG_FORCE_BARS=1 the whole active display is painted as 4 stacked
+// horizontal bands, top->bottom = field 0,1,2,3, so ONE screenshot decodes the
+// entire flash-path state. Set to 0 to disable the debug paint entirely.
+localparam DBG_FORCE_BARS = 1'b0;
+reg [23:0] dbg_bar;          // selected by v_pos band in the video block below
+
+// ---------------------------------------------------------------------------
+// FREE-RUNNING DEBUG VIDEO (only synthesized when DBG_FORCE_BARS=1).
+// The GPU-clocked bar paint below goes BLACK once the game disables/reprograms
+// the display after launch (the PSX GPU stops pulsing ce_pix / collapses the
+// active window), making the boot-progress bars unreadable exactly when we need
+// them. This block generates an INDEPENDENT ~320x240@60Hz raster on the
+// always-on clk_vid (pll2 is reconfigured only on NTSC/PAL or fast-forward --
+// neither of which an NTSC game triggers, so clk_vid is rock stable) and drives
+// CE_PIXEL + the gamma input mux directly. Result: the 4 debug bands are ALWAYS
+// visible regardless of what the game does to the GPU. dbg_field() (the existing
+// bar decode) is reused unchanged. clk_vid ~= 53.7 MHz; /8 => ~6.71 MHz pixel CE,
+// 428x262 total => ~59.9 Hz; active window 320x240 marks DE for the scaler.
+localparam [10:0] DBG_H_TOTAL  = 11'd428, DBG_H_SYNC = 11'd32,
+                  DBG_H_BSTART = 11'd60,  DBG_H_BEND = 11'd380;   // 320 active px
+localparam [10:0] DBG_V_TOTAL  = 11'd262, DBG_V_SYNC = 11'd3,
+                  DBG_V_BSTART = 11'd16,  DBG_V_BEND = 11'd256;   // 240 active lines
+reg  [2:0]  dbg_cediv = 3'd0;
+reg         dbg_ce    = 1'b0;
+reg  [10:0] dbg_hcnt  = 11'd0, dbg_vcnt = 11'd0;
+reg  [23:0] dbg_rgb   = 24'h0;
+reg         dbg_hs_r  = 1'b0, dbg_vs_r = 1'b0, dbg_hb_r = 1'b1, dbg_vb_r = 1'b1;
+wire [1:0]  dbg_band  = (dbg_vcnt < DBG_V_BSTART + 11'd60)  ? 2'd0 :
+                        (dbg_vcnt < DBG_V_BSTART + 11'd120) ? 2'd1 :
+                        (dbg_vcnt < DBG_V_BSTART + 11'd180) ? 2'd2 : 2'd3;
+always @(posedge clk_vid) begin
+   dbg_ce    <= 1'b0;
+   dbg_cediv <= dbg_cediv + 3'd1;
+   if (dbg_cediv == 3'd7) begin
+      dbg_cediv <= 3'd0;
+      dbg_ce    <= 1'b1;
+      if (dbg_hcnt == DBG_H_TOTAL - 11'd1) begin
+         dbg_hcnt <= 11'd0;
+         dbg_vcnt <= (dbg_vcnt == DBG_V_TOTAL - 11'd1) ? 11'd0 : dbg_vcnt + 11'd1;
+      end else
+         dbg_hcnt <= dbg_hcnt + 11'd1;
+      // sync/blank/pixel for the CURRENT (pre-increment) raster position
+      dbg_hs_r <= (dbg_hcnt < DBG_H_SYNC);
+      dbg_vs_r <= (dbg_vcnt < DBG_V_SYNC);
+      dbg_hb_r <= ~((dbg_hcnt >= DBG_H_BSTART) && (dbg_hcnt < DBG_H_BEND));
+      dbg_vb_r <= ~((dbg_vcnt >= DBG_V_BSTART) && (dbg_vcnt < DBG_V_BEND));
+      dbg_rgb  <= dbg_field(dbg_band);
+   end
+end
+
+system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
    .rst            (reset),
    .exp1_addr      (exp1_addr),
+   .exp1_reqsize   (exp1_reqsize),
    .exp1_wdata     (exp1_dataWrite),
    .exp1_we        (exp1_we),
    .exp1_re        (exp1_re),
    .exp1_rdata     (exp1_dataRead),
+   .flash_wait     (exp1_wait),
+   .flash_mem_req  (flash_mem_req),
+   .flash_mem_addr (flash_mem_addr),
+   .flash_mem_q    (flash_mem_q),
+   .flash_mem_ready(flash_mem_ready),
+   .flash_dbg      (flash_dbg),
+   .nvram_we       (nvram_we),
+   .nvram_addr     (nvram_addr),
+   .nvram_din      (nvram_din),
    // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
    // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and
    // parked on its color-bar test screen. Now idle = not-pressed, so the BIOS boots
    // normally; COIN/SERVICE/TEST are mapped to joy bits (assign physical buttons in
-   // the MiSTer OSD "Define buttons"). joy[0..7]=R,L,D,U,B1,B2,B3,B4 already matches
-   // the 573 P1 JAMMA bit order (docs/MEMORY_MAP.md, 0x1f400008).
-   .dip_sw         (4'hF),                 // DIP switches, active-low (idle = off)
-   .p1_ctrl        (~joy[7:0]),            // JAMMA P1, active-low
-   .p2_ctrl        (~joy2[7:0]),           // JAMMA P2, active-low
-   .coin_sw        (~{joy2[9], joy[9]}),   // P2/P1 coin, active-low
+   // the MiSTer OSD "Define buttons"). JAMMA bit order per docs/MEMORY_MAP.md 0x1f400008:
+   // r_jamma[15:8] (P1) = {START,B3,B2,B1,DOWN,UP,RIGHT,LEFT} (active-low) -- so remap the
+   // MiSTer joy bits (0=R,1=L,2=D,3=U,4=B1,5=B2,6=B3,8=Select,9=Start) into THAT order
+   // (audit IO-003: the old ~joy[7:0] had L/R + U/D transposed and START missing). COIN=Select.
+   .dip_sw         ({status[93], 3'b111}), // DIP SW4 (bit3) from OSD "573 Boot Device": 0=Flash ROM (default,
+                                           // boots onboard flash, no CD needed), 1=CD-ROM. 0x1f400004 bit3,
+                                           // MAME ksys573 DIP SW:4. SW1-3 left off (active-low).
+   .p1_ctrl        (~{joy[9],  joy[6],  joy[5],  joy[4],  joy[2],  joy[3],  joy[0],  joy[1] }),
+                                           // P1 JAMMA: START,B3,B2,B1,DOWN,UP,RIGHT,LEFT (active-low)
+   .p2_ctrl        (~{joy2[9], joy2[6], joy2[5], joy2[4], joy2[2], joy2[3], joy2[0], joy2[1]}),
+   .coin_sw        (~{joy2[8], joy[8]}),   // P2/P1 coin = Select (active-low); Start is JAMMA START
    .service_btn    (~joy[10]),             // service button, active-low
    .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
    .pcmcia_present (2'b00),
+   .cd_present     (1'b1),                 // CD drive present (empty). A real 573 -- even for flash/no_cdrom
+                                           // games -- has a CR-589 on the IDE bus, and the GX700 POST "DRIVE
+                                           // CHECK" probes it unconditionally (independent of the boot-device
+                                           // DIP). With cd_present=0 the bus floats to 0xFFFF, STATUS reads
+                                           // BSY-stuck and the check times out -> CDR BAD -> HARDWARE ERROR.
+                                           // Presenting the drive lets atapi.v answer the 0xEB14 signature +
+                                           // IDENTIFY PACKET DEVICE (0xA1) so CDR reads OK with the UNMODIFIED BIOS.
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),
@@ -1477,13 +1748,19 @@ sdram sdram
 	.ch2_be   (sdram_be),
 	.ch2_ready(sdram_writeack),
 
-	.ch3_addr ((exe_download | bios_download) ? ramdownload_wraddr : cheats_addr),
-	.ch3_din  ((exe_download | bios_download) ? ramdownload_wrdata : cheats_dout),
+	.ch3_addr ((exe_download | bios_download | flash_download) ? ramdownload_wraddr : cheats_addr),
+	.ch3_din  ((exe_download | bios_download | flash_download) ? ramdownload_wrdata : cheats_dout),
 	.ch3_dout (cheats_din),
-	.ch3_req  ((exe_download | bios_download) ? ramdownload_wr     : cheats_ena),
+	.ch3_req  ((exe_download | bios_download | flash_download) ? ramdownload_wr     : cheats_ena),
 	.ch3_rnw  (cheats_rnw),
-	.ch3_be   ((exe_download | bios_download) ? 4'b1111            : cheats_be),
+	.ch3_be   ((exe_download | bios_download | flash_download) ? 4'b1111            : cheats_be),
 	.ch3_ready(sdramCh3_done),
+
+	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).
+	.ch4_addr (flash_ch4_addr),
+	.ch4_dout (flash_mem_q),
+	.ch4_req  (flash_mem_req),
+	.ch4_ready(flash_mem_ready),
 
 	.dmafifo_adr  (sdram_dmafifo_adr),
 	.dmafifo_data (sdram_dmafifo_data),
@@ -1597,14 +1874,14 @@ typedef struct {
 vid_info video_aspect;
 vid_info video_gamma;
 
-assign CE_PIXEL = ce_pix;
+assign CE_PIXEL = DBG_FORCE_BARS ? dbg_ce : ce_pix;
 assign VGA_R    = video_gamma.red;
 assign VGA_G    = video_gamma.green;
 assign VGA_B    = video_gamma.blue;
 assign VGA_VS   = video_gamma.vs;
 assign VGA_HS   = video_gamma.hs;
 assign VGA_DE   = ~(video_gamma.vb | video_gamma.hb);
-assign VGA_F1   =  status[14] ? 1'b0 : video_aspect.interlace;
+assign VGA_F1   =  DBG_FORCE_BARS ? 1'b0 : (status[14] ? 1'b0 : video_aspect.interlace);
 assign VGA_SL = 0;
 logic [11:0] aspect_x, aspect_y;
 
@@ -1615,8 +1892,8 @@ video_freak video_freak
 	.VGA_DE_IN(VGA_DE),
 	.VGA_DE(),
 
-	.ARX((!ar) ? ((status[54:53] == 1) ? 3 : (status[54:53] == 2) ? 5 : (status[54:53] == 3) ? 16 : status[11] ? 12'd2 : aspect_x) : (ar - 1'd1)),
-	.ARY((!ar) ? ((status[54:53] == 1) ? 2 : (status[54:53] == 2) ? 3 : (status[54:53] == 3) ?  9 : status[11] ? 12'd1 : aspect_y) : 12'd0),
+	.ARX(DBG_FORCE_BARS ? 12'd4 : ((!ar) ? ((status[54:53] == 1) ? 3 : (status[54:53] == 2) ? 5 : (status[54:53] == 3) ? 16 : status[11] ? 12'd2 : aspect_x) : (ar - 1'd1))),
+	.ARY(DBG_FORCE_BARS ? 12'd3 : ((!ar) ? ((status[54:53] == 1) ? 2 : (status[54:53] == 2) ? 3 : (status[54:53] == 3) ?  9 : status[11] ? 12'd1 : aspect_y) : 12'd0)),
 	.CROP_SIZE(0),
 	.CROP_OFF(0),
 	.SCALE(status[35:34])
@@ -1692,9 +1969,16 @@ always_ff @(posedge CLK_VIDEO) if (CE_PIXEL) begin
 	video_aspect.vs <= vs;
 	video_aspect.vb <= vbl;
 	video_aspect.interlace <= video_interlace;
-	video_aspect.red <= (vbl || hbl) ? 8'd0 : r;
-	video_aspect.green <= (vbl || hbl) ? 8'd0 : g;
-	video_aspect.blue <= (vbl || hbl) ? 8'd0 : b;
+	// 4-bar forced debug paint: split the ~240-line active area into 4 bands of
+	// ~60 lines, top->bottom = field 0,1,2,3. v_pos counts active lines (reset at
+	// vblank). DBG_FORCE_BARS gates the whole instrument; status[94] keeps the old
+	// single-color OSD path when forcing is off.
+	dbg_bar <= dbg_field(v_pos < 12'd60  ? 2'd0 :
+	                     v_pos < 12'd120 ? 2'd1 :
+	                     v_pos < 12'd180 ? 2'd2 : 2'd3);
+	video_aspect.red   <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[23:16] : (status[94] ? dbg_color[23:16] : r));
+	video_aspect.green <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[15:8]  : (status[94] ? dbg_color[15:8]  : g));
+	video_aspect.blue  <= (vbl || hbl) ? 8'd0 : (DBG_FORCE_BARS ? dbg_bar[7:0]   : (status[94] ? dbg_color[7:0]   : b));
 	{aspect_x, aspect_y} <= video_isPal ? aspect_ratio_lut_pal[v_total] : aspect_ratio_lut_ntsc[v_total];
 
 	VGA_DISABLE <= fast_forward;
@@ -1747,11 +2031,11 @@ gamma_corr gamma(
 	.gamma_wr_addr(gamma_bus[17:8]),
 	.gamma_value(gamma_bus[7:0]),
 
-	.HSync(video_aspect.hs),
-	.VSync(video_aspect.vs),
-	.HBlank(video_aspect.hb),
-	.VBlank(video_aspect.vb),
-	.RGB_in({video_aspect.red,video_aspect.green,video_aspect.blue}),
+	.HSync (DBG_FORCE_BARS ? dbg_hs_r : video_aspect.hs),
+	.VSync (DBG_FORCE_BARS ? dbg_vs_r : video_aspect.vs),
+	.HBlank(DBG_FORCE_BARS ? dbg_hb_r : video_aspect.hb),
+	.VBlank(DBG_FORCE_BARS ? dbg_vb_r : video_aspect.vb),
+	.RGB_in(DBG_FORCE_BARS ? dbg_rgb : {video_aspect.red,video_aspect.green,video_aspect.blue}),
 
 	.HSync_out(video_gamma.hs),
 	.VSync_out(video_gamma.vs),

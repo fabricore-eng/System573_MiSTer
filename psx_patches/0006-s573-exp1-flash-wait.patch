@@ -1,0 +1,116 @@
+diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
+--- a/rtl/memorymux.vhd
++++ b/rtl/memorymux.vhd
+@@ -60,8 +60,9 @@
+       bus_exp1_read        : out std_logic;
+       bus_exp1_write       : out std_logic;
+       bus_exp1_dataRead    : in  std_logic_vector(15 downto 0);
+-      
+-      bus_memc_addr        : out unsigned(5 downto 0); 
++      bus_exp1_wait        : in  std_logic;   -- System 573 flash line-fill stall
++
++      bus_memc_addr        : out unsigned(5 downto 0);
+       bus_memc_dataWrite   : out std_logic_vector(31 downto 0);
+       bus_memc_read        : out std_logic;
+       bus_memc_write       : out std_logic;
+@@ -1202,8 +1203,20 @@
+                   
+                -- read
+                when EXT_READ_NEXT =>
++                  -- System 573 flash wait handshake: while a flash array read is
++                  -- stalled on its SDRAM line fill, the 573 fabric holds
++                  -- bus_exp1_wait='1'. HOLD here -- the read strobe (asserted in
++                  -- EXT_READ_NEXT) and ext_bus_addr stay put, nothing else advances
++                  -- -- until it drops. Purely additive: when wait is low (the normal
++                  -- path, and ALWAYS for every non-flash EXP1 select / flash ID read
++                  -- / line HIT) the original body below runs unchanged, so the
++                  -- EXT_READ_NEXT -> EXT_READ capture timing is byte-for-byte
++                  -- identical to before.
++                  if (ext_select_ex1_saved = '1' and bus_exp1_wait = '1') then
++                     null;  -- stall: stay in EXT_READ_NEXT, hold the read strobe
++                  else
+                   ext_state <= EXT_READ;
+-                  
++
+                   if (ext_memctrl_width = '0' and ext_byteStep = "11") then
+                      ext_finished       <= '1';
+                   elsif (ext_memctrl_width = '0' and ext_byteStep = "01" and reqsize_buf = "01") then
+@@ -1213,7 +1226,7 @@
+                   elsif (ext_memctrl_width = '1' and (ext_byteStep = "10" or reqsize_buf /= "10")) then
+                      ext_finished       <= '1';
+                   end if;
+-                  
++
+                   newWait := 0;
+                   if (ext_memctrl_RecP = '1') then 
+                      newWait := newWait + to_integer(com0_delay);
+@@ -1222,7 +1235,8 @@
+                      newWait := newWait + to_integer(com2_delay) + 1;
+                   end if;
+                   ext_reccount <= newWait;
+-                  
++                  end if;
++
+                when EXT_READ =>
+                
+                   ext_data <= ext_data_new;
+diff --git a/rtl/psx_mister.vhd b/rtl/psx_mister.vhd
+--- a/rtl/psx_mister.vhd
++++ b/rtl/psx_mister.vhd
+@@ -74,6 +74,7 @@
+       exp1_we               : out std_logic;
+       exp1_re               : out std_logic;
+       exp1_dataRead         : in  std_logic_vector(15 downto 0);
++      exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
+       exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+@@ -377,6 +378,7 @@
+       exp1_we               => exp1_we,
+       exp1_re               => exp1_re,
+       exp1_dataRead         => exp1_dataRead,
++      exp1_wait             => exp1_wait,
+       exp_irq10             => exp_irq10,
+       ram_refresh           => ram_refresh,
+       ram_dataWrite         => ram_dataWrite,
+diff --git a/rtl/psx_top.vhd b/rtl/psx_top.vhd
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -78,6 +78,7 @@
+       exp1_we               : out std_logic;
+       exp1_re               : out std_logic;
+       exp1_dataRead         : in  std_logic_vector(15 downto 0);
++      exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
+       exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+@@ -331,8 +332,9 @@
+    signal bus_exp1_read          : std_logic;
+    signal bus_exp1_write         : std_logic;
+    signal bus_exp1_dataRead      : std_logic_vector(15 downto 0);
+-   
+-   signal bus_memc_addr          : unsigned(5 downto 0); 
++   signal bus_exp1_wait          : std_logic;
++
++   signal bus_memc_addr          : unsigned(5 downto 0);
+    signal bus_memc_dataWrite     : std_logic_vector(31 downto 0);
+    signal bus_memc_read          : std_logic;
+    signal bus_memc_write         : std_logic;
+@@ -1723,6 +1725,7 @@
+    exp1_we           <= bus_exp1_write;
+    exp1_re           <= bus_exp1_read;
+    bus_exp1_dataRead <= exp1_dataRead;
++   bus_exp1_wait     <= exp1_wait;   -- 573 flash line-fill stall -> memorymux
+ 
+    imemorymux : entity work.memorymux
+    port map
+@@ -1780,7 +1783,8 @@
+       bus_exp1_read        => bus_exp1_read,   
+       bus_exp1_write       => bus_exp1_write,
+       bus_exp1_dataRead    => bus_exp1_dataRead,
+-      
++      bus_exp1_wait        => bus_exp1_wait,
++
+       bus_memc_addr        => bus_memc_addr,     
+       bus_memc_dataWrite   => bus_memc_dataWrite,
+       bus_memc_read        => bus_memc_read,     

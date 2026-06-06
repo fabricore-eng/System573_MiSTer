@@ -23,8 +23,10 @@ module s573_io (
 
     // ---- inputs from the rest of the board / MiSTer host ----
     input  wire [3:0]  dip_sw,         // DIP switches
-    input  wire [7:0]  p1_ctrl,        // JAMMA player 1 (active high here)
-    input  wire [7:0]  p2_ctrl,        // JAMMA player 2
+    input  wire [7:0]  p1_ctrl,        // JAMMA player 1 -- ACTIVE-LOW (pressed=0); inverted in
+                                       // emu.sv (~joy) to mirror MAME IN2. (Stale "active high"
+                                       // comment removed -- the inversion happens upstream.)
+    input  wire [7:0]  p2_ctrl,        // JAMMA player 2 (active-low, see p1_ctrl)
     input  wire [1:0]  coin_sw,        // coin switches
     input  wire        service_btn,
     input  wire        test_btn,
@@ -93,8 +95,18 @@ module s573_io (
           pcmcia_present,         // [11:10]
           coin_sw,                // [9:8]
           sec_drdy, sec_irdy,     // [7:6]
-          2'b00,                  // [5:4] JVSDRDY/JVSIRDY (unused here)
-          1'b0,                   // [3]   JVS port sense
+          2'b00,                  // [5:4] JVS rx-ready(.4)/tx-write-ready(.5) = 0: keeps the
+                                  //       JVS send+recv timing out like MAME (received_packet()
+                                  //       =0 / IPT_UNKNOWN). Do NOT drive .5=1 -- a "send OK"
+                                  //       makes the game block on a JVS reply that never comes.
+          1'b1,                   // [3]   JVS port sense = 1 (no JVS I/O board attached; MAME
+                                  //       jvs_sense_r = !address_set_line = 1). The game's I/O
+                                  //       detect (flash 0x8017153c) require-1 ENTERs on this; its
+                                  //       JVS send then times out -> returns -3 (negative) -> the
+                                  //       boot gate treats it as "I/O board absent" and CONTINUES
+                                  //       (gameplay inputs come from JAMMA reg 0x1f400008, below).
+                                  //       Was 1'b0, which dead-ended detect OFF the graceful-skip
+                                  //       path -> hyperbbc hung on its red "NG" self-test screen.
           sec_io0,                // [2]
           adc_sars,               // [1]
           adc_do };               // [0]
@@ -102,16 +114,22 @@ module s573_io (
     // 0x08 JAMMA player controls (P1 high byte, P2 low byte)
     wire [15:0] r_jamma = { p1_ctrl, p2_ctrl };
 
-    // 0x0c / 0x0e extra buttons (test button at bit 10)
-    wire [15:0] r_extra = { 5'b00000, test_btn, 10'b0000000000 };
+    // 0x0c / 0x0e extra buttons. Bits: [11]=button6, [10]=test/RAM-layout, [9]=button5,
+    // [8]=button4 (all ACTIVE-LOW, idle high). Audit IO-001/002: button 4/5/6 were hardwired
+    // to 0 (read as permanently PRESSED) and 0x0e bit10 wrongly returned test_btn.
+    //   0x0c (IN3 low,  P1): bit10 = TEST button; buttons 4/5/6 idle high.
+    wire [15:0] r_extra_c = { 4'b0000, 1'b1, test_btn, 1'b1, 1'b1, 8'b00000000 };
+    //   0x0e (IN3 high, P2): bit10 = main-RAM-layout strap (0 = new 2x2MB, the layout this
+    //   core implements -> 700B BIOS picks 0x1f801060 = 0x4788); buttons 4/5/6 idle high.
+    wire [15:0] r_extra_e = { 4'b0000, 1'b1, 1'b0,      1'b1, 1'b1, 8'b00000000 };
 
     always @(*) begin
         case (off)
             4'h4:    dout = r_status;
             4'h6:    dout = r_misc;
             4'h8:    dout = r_jamma;
-            4'hc:    dout = r_extra;
-            4'he:    dout = r_extra;
+            4'hc:    dout = r_extra_c;
+            4'he:    dout = r_extra_e;
             default: dout = 16'h0000;
         endcase
     end

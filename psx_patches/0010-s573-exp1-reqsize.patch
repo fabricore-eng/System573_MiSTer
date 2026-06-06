@@ -1,0 +1,91 @@
+diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
+--- a/rtl/memorymux.vhd
++++ b/rtl/memorymux.vhd
+@@ -61,6 +61,7 @@
+       bus_exp1_write       : out std_logic;
+       bus_exp1_dataRead    : in  std_logic_vector(15 downto 0);
+       bus_exp1_wait        : in  std_logic;   -- System 573 flash line-fill stall
++      bus_exp1_reqsize     : out unsigned(1 downto 0);  -- 573: CPU load width (00=lb/lbu,01=lh/lhu,10=lw)
+ 
+       bus_memc_addr        : out unsigned(5 downto 0);
+       bus_memc_dataWrite   : out std_logic_vector(31 downto 0);
+@@ -959,6 +960,10 @@
+    -- write data. Normal 573 operation runs this bus 16-bit wide (ex1_memctrl bit
+    -- 12 = 1); the read-data assembly below assumes that.
+    bus_exp1_addr      <= ext_bus_addr;
++   -- System 573: export the latched CPU load width so the EXP1 SLAVE (system573_top.v)
++   -- can byte-align its 16-bit halfword-native read return. reqsize_buf is latched once
++   -- per transaction in IDLE (from mem_reqsize) and held stable through the EXT_* states.
++   bus_exp1_reqsize   <= reqsize_buf;
+    bus_exp1_write     <= '1' when (ext_write_ena = '1' and ext_select_ex1_saved = '1') else '0';
+    bus_exp1_read      <= '1' when (ext_state = EXT_READ_NEXT and ext_select_ex1_saved = '1') else '0';
+    bus_exp1_dataWrite <= ext_dataWrite;
+diff --git a/rtl/psx_top.vhd b/rtl/psx_top.vhd
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -79,6 +79,7 @@
+       exp1_re               : out std_logic;
+       exp1_dataRead         : in  std_logic_vector(15 downto 0);
+       exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
++      exp1_reqsize          : out unsigned(1 downto 0);  -- System 573 CPU load width -> EXP1 slave byte-align
+       exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+@@ -333,6 +334,7 @@
+    signal bus_exp1_write         : std_logic;
+    signal bus_exp1_dataRead      : std_logic_vector(15 downto 0);
+    signal bus_exp1_wait          : std_logic;
++   signal bus_exp1_reqsize       : unsigned(1 downto 0);
+ 
+    signal bus_memc_addr          : unsigned(5 downto 0);
+    signal bus_memc_dataWrite     : std_logic_vector(31 downto 0);
+@@ -1739,6 +1741,7 @@
+    exp1_re           <= bus_exp1_read;
+    bus_exp1_dataRead <= exp1_dataRead;
+    bus_exp1_wait     <= exp1_wait;   -- 573 flash line-fill stall -> memorymux
++   exp1_reqsize      <= bus_exp1_reqsize;   -- 573 CPU load width -> EXP1 slave byte-align
+ 
+    imemorymux : entity work.memorymux
+    port map
+@@ -1797,6 +1800,7 @@
+       bus_exp1_write       => bus_exp1_write,
+       bus_exp1_dataRead    => bus_exp1_dataRead,
+       bus_exp1_wait        => bus_exp1_wait,
++      bus_exp1_reqsize     => bus_exp1_reqsize,
+ 
+       bus_memc_addr        => bus_memc_addr,     
+       bus_memc_dataWrite   => bus_memc_dataWrite,
+diff --git a/rtl/psx_mister.vhd b/rtl/psx_mister.vhd
+--- a/rtl/psx_mister.vhd
++++ b/rtl/psx_mister.vhd
+@@ -75,6 +75,7 @@
+       exp1_re               : out std_logic;
+       exp1_dataRead         : in  std_logic_vector(15 downto 0);
+       exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
++      exp1_reqsize          : out std_logic_vector(1 downto 0);  -- System 573 CPU load width -> EXP1 slave byte-align
+       exp_irq10             : in  std_logic;
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+@@ -297,11 +298,14 @@
+ 
+    signal ddr3_ADDR : std_logic_vector(27 downto 0);
+    signal exp1_addr_u : unsigned(23 downto 0);
++   signal exp1_reqsize_u : unsigned(1 downto 0);
+    
+ begin 
+ 
+    -- System 573 EXP1 address: psx_top drives it as unsigned; expose as slv here.
+    exp1_addr <= std_logic_vector(exp1_addr_u);
++   -- System 573 EXP1 CPU load width: psx_top drives it as unsigned; expose as slv here.
++   exp1_reqsize <= std_logic_vector(exp1_reqsize_u);
+ 
+    -- vram is at 0x30000000
+    DDRAM_ADDR(28 downto 25) <= "0011";
+@@ -379,6 +383,7 @@
+       exp1_re               => exp1_re,
+       exp1_dataRead         => exp1_dataRead,
+       exp1_wait             => exp1_wait,
++      exp1_reqsize          => exp1_reqsize_u,
+       exp_irq10             => exp_irq10,
+       ram_refresh           => ram_refresh,
+       ram_dataWrite         => ram_dataWrite,

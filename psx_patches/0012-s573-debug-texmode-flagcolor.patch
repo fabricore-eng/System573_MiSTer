@@ -1,0 +1,52 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+index 15914c4..b64c9a0 100644
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -145,7 +145,19 @@ architecture arch of gpu_pixelpipeline is
+    signal pipeline_stall_1    : std_logic := '0';
+    
+    signal slowdown            : std_logic := '0';
+-   
++
++   -- 573 DEBUG (psx_patch 0012): texture color-MODE MAP probe. Recolors every drawn
++   -- textured pixel by its drawMode color-mode so ONE screenshot reveals which mode
++   -- each on-screen texture uses: 4bpp=RED, 8bpp=BLUE, 15bit-direct=YELLOW. Lets us
++   -- read, per-region, the color-mode of the green-striped polys vs the clean ones.
++   -- Set '0' for production: synth constant-folds the whole block to a no-op.
++   constant DBG_TEXMODE_MAP : std_logic := '0';   -- mode-map done (8bpp confirmed); off now
++   -- 573 DEBUG (0012b): force the 8bpp CLUT INDEX to 0 -> every 8bpp texel reads CLUT[0].
++   -- Splits the 8bpp garble: if the (previously green-striped) 8bpp regions go FLAT (a single
++   -- color) -> stripes came from the texel INDEX/data (texel-side); if they stay STRIPED ->
++   -- the CLUT load/lookup itself is wrong (CLUT-side). Set '0' for production.
++   constant DBG_8BPP_IDX0 : std_logic := '0';   -- ships OFF (production); set '1' only for the CLUT-vs-texel split probe
++
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+    signal reqVRAMSize         : unsigned(10 downto 0) := (others => '0');
+@@ -420,6 +432,7 @@ begin
+                       x"0" & texdata_raw(i)( 7 downto  4) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "01") else
+                       x"0" & texdata_raw(i)(11 downto  8) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "10") else
+                       x"0" & texdata_raw(i)(15 downto 12) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "11") else
++                      x"00" when (drawMode(7) = '1' and DBG_8BPP_IDX0 = '1') else  -- 573 DEBUG (0012b): force 8bpp index 0
+                       texdata_raw(i)( 7 downto 0) when (drawMode(7) = '1' and stage1_u(i)(0) = '0') else
+                       texdata_raw(i)(15 downto 8);
+ 
+@@ -858,6 +871,18 @@ begin
+                      stage5_cg(2 downto 0) <= "000";
+                      stage5_cb(2 downto 0) <= "000";
+                   end if;
++                  -- 573 DEBUG (0012): override textured pixel color by its color-mode
++                  -- (drawMode(8:7): "00"=4bpp, "01"=8bpp, "1x"=15bit-direct). LAST write
++                  -- in this branch, so it supersedes the normal texture color above.
++                  if (DBG_TEXMODE_MAP = '1') then
++                     if (drawMode(8) = '1') then          -- 15-bit direct
++                        stage5_cr <= x"F8"; stage5_cg <= x"F8"; stage5_cb <= x"00";  -- YELLOW
++                     elsif (drawMode(7) = '1') then       -- 8bpp CLUT
++                        stage5_cr <= x"00"; stage5_cg <= x"00"; stage5_cb <= x"F8";  -- BLUE
++                     else                                 -- 4bpp CLUT
++                        stage5_cr <= x"F8"; stage5_cg <= x"00"; stage5_cb <= x"00";  -- RED
++                     end if;
++                  end if;
+                else
+                   if (render24 = '1') then
+                      stage5_cr         <= stage4_cr;

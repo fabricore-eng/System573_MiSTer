@@ -27,7 +27,17 @@ module flash_nor #(
     parameter [15:0]  MFR_ID       = 16'h0004,   // Fujitsu
     parameter [15:0]  DEV_ID       = 16'h00AD,   // MBM29F016
     parameter [10:0]  ADDR1        = 11'h555,
-    parameter [10:0]  ADDR2        = 11'h2AA
+    parameter [10:0]  ADDR2        = 11'h2AA,
+    // BACKING_EXTERNAL=0 (default): the array lives in the local mem[] BRAM and is
+    //   read/programmed/erased here, exactly as before -- the iverilog unit tests
+    //   exercise this path unchanged.
+    // BACKING_EXTERNAL=1: the command/ID FSM is identical, but the ARRAY itself
+    //   lives outside this module (the s573_flash 16 MB SDRAM-backed line buffer).
+    //   In that mode array reads return `ext_rd_data` (the parent's word for the
+    //   current `addr`) and program/erase are dropped (real flash is read-only in
+    //   HW for now). The autoselect MFR/DEV ID path is unaffected so POST still
+    //   passes the flash-ID check.
+    parameter integer BACKING_EXTERNAL = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -35,7 +45,14 @@ module flash_nor #(
     input  wire        we,
     input  wire [15:0] addr,
     input  wire [15:0] din,
-    output reg  [15:0] dout
+    output reg  [15:0] dout,
+    // External-array read port (used only when BACKING_EXTERNAL=1):
+    // ext_rd_data is the backing word the parent has fetched for `addr`.
+    input  wire [15:0] ext_rd_data,
+    // High when the current read returns an autoselect MFR/DEV ID word (not the
+    // array). Lets an external-backing parent skip the SDRAM fill for ID reads so
+    // POST's flash-ID check never stalls. Combinational; harmless when unused.
+    output wire        id_read
 );
     localparam [2:0] ST_READ=3'd0, ST_UL1=3'd1, ST_UL2=3'd2, ST_AUTO=3'd3,
                      ST_PROG=3'd4, ST_ER1=3'd5, ST_ER2=3'd6, ST_ERCMD=3'd7;
@@ -114,15 +131,22 @@ module flash_nor #(
         end
     end
 
+    // Array read source: the local BRAM (default) or the parent-supplied word
+    // (BACKING_EXTERNAL=1). The command/ID FSM above is identical in both modes.
+    wire [15:0] array_word = (BACKING_EXTERNAL != 0) ? ext_rd_data : mem[addr[10:0]];
+
+    // An ID read is a read of MFR (addr 0x00) or DEV (0x01) while in autoselect.
+    assign id_read = (ce && state == ST_AUTO && (addr[7:0] == 8'h00 || addr[7:0] == 8'h01));
+
     always @(*) begin
         if (ce && state == ST_AUTO)
             case (addr[7:0])
                 8'h00:   dout = MFR_ID;
                 8'h01:   dout = DEV_ID;
-                default: dout = mem[addr[10:0]];
+                default: dout = array_word;
             endcase
         else if (ce)
-            dout = mem[addr[10:0]];
+            dout = array_word;
         else
             dout = 16'hFFFF;
     end

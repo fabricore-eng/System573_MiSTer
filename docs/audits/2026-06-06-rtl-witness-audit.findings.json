@@ -1,0 +1,162 @@
+[
+  {
+    "id": "IO-001",
+    "subsystem": "Konami 056879 I/O ASIC (0x1f400000-0e)",
+    "title": "0x1f40000c/0x1f40000e: P1/P2 buttons 4/5/6 hardwired to 0 read as permanently PRESSED (active-low idle must be 1)",
+    "our_rtl_ref": "rtl/s573_io.v:118 (wire r_extra = { 5'b00000, test_btn, 10'b0 }) and the read mux rtl/s573_io.v:125-126 returning r_extra for both off==4'hc and off==4'he",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "IO-002",
+    "subsystem": "Konami 056879 I/O ASIC (0x1f400000-0e)",
+    "title": "0x1f40000e bit 10 should be the RAM-layout-type probe; our RTL drives the TEST button there instead",
+    "our_rtl_ref": "rtl/s573_io.v:117-118 (r_extra puts test_btn at bit 10) returned for off==4'he at rtl/s573_io.v:126",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "IO-003",
+    "subsystem": "Konami 056879 I/O ASIC (0x1f400000-0e)",
+    "title": "0x1f400008 JAMMA: P1/P2 direction+button bit ORDER does not match the witness (L/R and U/D and START positions wrong)",
+    "our_rtl_ref": "rtl/s573_io.v:115 (r_jamma = {p1_ctrl, p2_ctrl}) fed by emu.sv:1623-1624 (.p1_ctrl(~joy[7:0]), .p2_ctrl(~joy2[7:0])) with the MiSTer joy order from emu.sv:850-853 (joy0=Right,1=Left,2=Down,3=Up)",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "FLASH-001",
+    "subsystem": "Flash + bank-switch (0x1f500000 control register / 4 MB window at 0x1f000000)",
+    "title": "Internal-flash bank index decoded from ctl[5:4] (with internal=ctl[3:0]==0) instead of the low bits of the bank value (banks 0,1,2,3) -- banks 1/2/3 are unreadable",
+    "our_rtl_ref": "rtl/s573_flash.v:101-102 (wire internal = (bank[3:0]==4'b0000); wire [1:0] bank_idx = bank[5:4];), L128 (.ce(win_sel && internal && (bank_idx==gi))), L163 (wire [22:0] flash_word = {bank_idx, win_addr[20:0]}); the latch at L107-111 stores ctl_din[5:0] into bank correctly. Also locked in by sim/tb_s573_flash.v:89-92 and docs/MEMORY_MAP.md:77.",
+    "severity": "high",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "high"
+  },
+  {
+    "id": "EXP1-01",
+    "subsystem": "EXP1 access + byte-lane widening (psx_patches 0001/0006/0009/0010)",
+    "title": "ASIC register 5 at 0x1f40000a (JVS MCU data word, full 16-bit) is not decoded -- read returns 0x0000",
+    "our_rtl_ref": "rtl/s573_io.v:120-129 (read mux `case(off)` handles 0x4/0x6/0x8/0xc/0xe, `default: dout = 16'h0000`; offset 0xa falls through to default)",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "EXP1-02",
+    "subsystem": "EXP1 access + byte-lane widening (psx_patches 0001/0006/0009/0010)",
+    "title": "0x1f40000e bit 10 returns test_btn instead of the 'RAM layout' input (0x0c and 0x0e share the same r_extra word)",
+    "our_rtl_ref": "rtl/s573_io.v:118 (`r_extra = { 5'b00000, test_btn, 10'b0 }`, test_btn at bit 10) and rtl/s573_io.v:124-125 (BOTH `4'hc` and `4'he` return r_extra)",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "NVRAM-01",
+    "subsystem": "M48T58 NVRAM/RTC + WIDE loader (0x1f620000-0x1f623ffe)",
+    "title": "Battery-low flag (DAY register bit6, 0x1f623ffa) is not modeled",
+    "our_rtl_ref": "rtl/m48t58.v:57,140,160 - tdom is a plain BCD register; bit6 is never driven and reads back whatever was written/reset (reset tdom<=8'h01 => bit6=0). No read-only LOW_BATTERY bit.",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "NVRAM-02",
+    "subsystem": "M48T58 NVRAM/RTC + WIDE loader (0x1f620000-0x1f623ffe)",
+    "title": "WEEKDAY/CENTURY semantics (0x1f623ff8 bits 4-6) collapsed into raw day-of-week register",
+    "our_rtl_ref": "rtl/m48t58.v:57,124,158,176 - rtc_idx==4 maps to tdow, a plain register incremented as a 1..7 BCD day-of-week. Bit4 (century), bit5 (century-enable), bit6 (frequency test) are not modeled; the comment header (line 12) mentions only 'bit4 century'.",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "ATAPI-01",
+    "subsystem": "ATAPI/IDE drive (0x1f480000-0e, 0x1f4c000c, 0x1f560000, IRQ10/DMA5)",
+    "title": "IDE reset register (0x1f560000) data-bit polarity is ignored: any write asserts reset, including the release write",
+    "our_rtl_ref": "rtl/system573_top.v:157 (.ide_rst(sel_idereset & exp1_we)) and rtl/s573_bus.v:40 (sel_idereset = access & page==0x56); consumed at rtl/atapi.v:145 (if (rst || ide_rst) ... set_signature)",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "ATAPI-02",
+    "subsystem": "ATAPI/IDE drive (0x1f480000-0e, 0x1f4c000c, 0x1f560000, IRQ10/DMA5)",
+    "title": "CS1 page (0x1f4c0000) is decoded wholesale to register index 8; alt-status/device-control is only architecturally at byte 0x0c",
+    "our_rtl_ref": "rtl/system573_top.v:155 (wire [3:0] atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1]); sel_ide1 = page==0x4c in rtl/s573_bus.v:37",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "SECCART-01",
+    "subsystem": "Security cartridge + X76F041/X76F100/ZS01/DS2401 (0x1f6a0000 / 0x1f400004)",
+    "title": "DS2401 serial line returned on wrong input bit (I0/bit8 instead of I6/bit14 of 0x1f400004)",
+    "our_rtl_ref": "rtl/s573_seccart.v:60 (assign sec_in = {7'b0, ds_line};) -> rtl/s573_io.v:87 (r_status = { sec_in, 4'b1100, dip_sw }, sec_in occupies bits[15:8], so sec_in[0]=ds_line lands on bit 8 = I0)",
+    "severity": "med",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "med"
+  },
+  {
+    "id": "WDOG-02",
+    "subsystem": "Watchdog 058232 + system control (0x1f5c0000 watchdog clear / 0x1f600000 EXT-OUT / 0x1f560000 IDE reset)",
+    "title": "wdog_reset output is left unconnected in emu.sv, so the watchdog bite has NO effect on real hardware (the timeout in WDOG-01 cannot actually reset the core)",
+    "our_rtl_ref": "rtl/emu.sv:1644 (.wdog_reset()  -- dangling) and the rationale comment at rtl/emu.sv:1370-1372 ('wdog_reset is NOT wired into the core reset, so a mistimed watchdog can't reset the boot before we've seen it'); the watchdog module still fires reset_out internally at rtl/watchdog.v:34 and rtl/system573_top.v:105",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "WDOG-03",
+    "subsystem": "Watchdog 058232 + system control (0x1f5c0000 watchdog clear / 0x1f600000 EXT-OUT / 0x1f560000 IDE reset)",
+    "title": "0x1f600000 EXT-OUT (SYS573_EXT_OUT) is address-decoded but never implemented: writes are dropped and reads return 0x0000",
+    "our_rtl_ref": "rtl/s573_bus.v:42 (sel_digout decode = page 0x60) is generated but NOT consumed anywhere in rtl/system573_top.v (grep: sel_digout has no consumer); the read mux at rtl/system573_top.v:218-225 has no sel_digout branch, so any read of 0x1f600000 falls through to the default 16'h0000",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "WDOG-04",
+    "subsystem": "Watchdog 058232 + system control (0x1f5c0000 watchdog clear / 0x1f600000 EXT-OUT / 0x1f560000 IDE reset)",
+    "title": "IDE reset (0x1f560000) ignores write-data bit 0: it issues a full ATAPI reset on EVERY write, including the deassert 'write 1', instead of honoring the active-low bit-0 protocol",
+    "our_rtl_ref": "rtl/system573_top.v:157 (.ide_rst(sel_idereset & exp1_we)) -- the reset is asserted on any write to page 0x56 with no test of exp1_wdata[0]; consumed at rtl/atapi.v:145 (if (rst || ide_rst) ... set_signature) as a one-shot synchronous re-init",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "DIO-01",
+    "subsystem": "Digital I/O board FPGA + MP3 (k573dio, 0x1f640000)",
+    "title": "0xf6 CPLD status register: ID bits (14/15) inverted vs real hardware (returns 0xB000, HW configured value is 0x7000)",
+    "our_rtl_ref": "rtl/k573dio.v:157 (dout = 16'hB000 for off==8'hf6); comment line 26/157 cite MAME 0x8000|0x2000|0x1000",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  },
+  {
+    "id": "DIO-02",
+    "subsystem": "Digital I/O board FPGA + MP3 (k573dio, 0x1f640000)",
+    "title": "0xaa MP3 feed status (WRDY / data-request / frame-sync) returns 0x0000 -- never asserts WRDY",
+    "our_rtl_ref": "rtl/k573dio.v:146-159 read mux (no case for 8'haa) -> falls to default: dout = 16'h0000; write side line 136 default also drops 0xaa",
+    "severity": "low",
+    "real": true,
+    "needs_hardware": false,
+    "corrected_severity": "low"
+  }
+]

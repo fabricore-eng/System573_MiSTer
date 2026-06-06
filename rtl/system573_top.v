@@ -12,17 +12,46 @@
 module system573_top #(
     parameter integer CLK_FREQ_HZ      = 33_868_800,
     parameter [47:0]  CART_SERIAL      = 48'h0000_0000_0001,
-    parameter integer WDOG_TIMEOUT     = 32'd1_000_000
+    parameter integer WDOG_TIMEOUT     = 32'd1_000_000,
+    // SIM_BACKING=1 (default, iverilog): inline flash_nor BRAM (flash_wait=0).
+    // 0 (Quartus/HW, set from emu.sv): 16 MB SDRAM-backed flash line buffer.
+    parameter integer FLASH_SIM_BACKING = 1
 )(
     input  wire        clk,
     input  wire        rst,
 
     // EXP1 master (from the PS1 core / CPU)
     input  wire [23:0] exp1_addr,
+    // CPU load width (psx_patches/0010: memorymux reqsize_buf). 00=lb/lbu, 01=lh/lhu,
+    // 10=lw. The PSX external-bus byte/halfword load-align is UNCONDITIONAL [7:0]/[15:0]
+    // (cpu.vhd) with no addr-rotate, so a byte read needs the addressed byte already in
+    // exp1_rdata[7:0]. This slave is halfword-native, so we rotate by addr[0] for lb/lbu.
+    input  wire [1:0]  exp1_reqsize,
     input  wire [15:0] exp1_wdata,
     input  wire        exp1_we,
     input  wire        exp1_re,
     output reg  [15:0] exp1_rdata,
+
+    // EXP1 read wait handshake (-> psx memorymux bus_exp1_wait, psx_patches/0006).
+    // High while a flash array read is stalled on its SDRAM line fill; the PSX
+    // external-bus FSM holds in its read-strobe state until this drops. Always 0
+    // for every non-flash EXP1 access and for flash ID reads / HITs.
+    output wire        flash_wait,
+
+    // SDRAM flash line-fill port (used only when FLASH_SIM_BACKING=0; driven by
+    // emu.sv's SDRAM read client into the 16 MB onboard-flash image).
+    output wire        flash_mem_req,
+    output wire [26:0] flash_mem_addr,
+    input  wire [127:0] flash_mem_q,
+    input  wire        flash_mem_ready,
+
+    // DEBUG passthrough: s573_flash trigger-state observers (HW bring-up).
+    output wire [23:0] flash_dbg,
+
+    // M48T58 NVRAM image load (e.g. hyperbbc 876ea.22h), streamed in at reset.
+    input  wire        nvram_we,
+    input  wire [12:0] nvram_addr,
+    input  wire [7:0]  nvram_din,
 
     // Board inputs (JAMMA / coins / DIP) from the MiSTer host
     input  wire [3:0]  dip_sw,
@@ -32,6 +61,7 @@ module system573_top #(
     input  wire        service_btn,
     input  wire        test_btn,
     input  wire [1:0]  pcmcia_present,
+    input  wire        cd_present,      // 1 = ATAPI CD drive attached; 0 = no_cdrom flash config (MAME konami573 no_cdrom)
     input  wire [7:0]  adc_ch0,
     input  wire [7:0]  adc_ch1,
     input  wire [7:0]  adc_ch2,
@@ -88,13 +118,25 @@ module system573_top #(
     wire [15:0] flash_dout;
     wire [5:0]  flash_bank;
     wire        sec_io0_dir, flash_cpld;
-    s573_flash u_flash (
+    wire        flash_ready;
+    // exp1_addr[21:1] = the full 21-bit (2 M-word = 4 MB) window offset. The old
+    // [16:1] slice exposed only 128 KB of each 4 MB bank (a real bug).
+    s573_flash #(.SIM_BACKING(FLASH_SIM_BACKING)) u_flash (
         .clk(clk), .rst(rst),
         .ctl_we(sel_bankctl & exp1_we), .ctl_din(exp1_wdata),
         .bank(flash_bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(flash_cpld),
-        .win_sel(sel_flash), .win_addr(exp1_addr[16:1]),
-        .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout)
+        .win_sel(sel_flash), .win_addr(exp1_addr[21:1]),
+        .win_we(sel_flash & exp1_we), .win_din(exp1_wdata), .win_dout(flash_dout),
+        .flash_ready(flash_ready),
+        .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
+        .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready),
+        .dbg_flash(flash_dbg)
     );
+    // The EXP1 wait is asserted ONLY while a flash access is not ready (a missed
+    // array read filling its line). For every non-flash EXP1 select and for flash
+    // ID reads / line-buffer HITs flash_ready=1, so flash_wait=0 -- a stuck-high
+    // wait would hang the whole 573 bus.
+    assign flash_wait = sel_flash & ~flash_ready;
 
     // --- security cartridge (EEPROM + board DS2401) via the D0-D7 latch ---
     wire        sec_io0, sec_drdy, sec_irdy;
@@ -108,14 +150,25 @@ module system573_top #(
 
     // --- ATAPI CD-ROM (IDE bank 0 = command block, bank 1 = control block) ---
     wire [15:0] atapi_dout;
+    wire        atapi_intrq;
     wire        atapi_sel = sel_ide0 | sel_ide1;
     wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
     atapi u_atapi (
         .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
-        .din(exp1_wdata), .dout(atapi_dout), .intrq(cdrom_irq)
+        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq)
     );
+    // cd_present gates the IDE read mux + INTRQ. CORRECTION (HW-verified 2026-06-03):
+    // a real 573 -- even for no_cdrom flash games (gchgchmp/hyperbbc) -- carries a CR-589
+    // CD-ROM on the IDE bus, and the GX700 POST "DRIVE CHECK" probes it UNCONDITIONALLY
+    // (it is NOT gated by the boot-device DIP). With cd_present=0 the bus floats to 0xFFFF,
+    // so STATUS reads BSY-stuck (0xFF), the BIOS's BSY-clear wait times out, and CDR reads
+    // BAD -> "HARDWARE ERROR... RESET". emu.sv therefore drives cd_present=1 to present an
+    // empty drive; atapi.v answers the 0xEB14 signature + IDENTIFY PACKET DEVICE (0xA1) so
+    // the UNMODIFIED Konami BIOS passes CDR. (The earlier "0xFFFF makes the BIOS skip CDR"
+    // claim was wrong: the BIOS does not skip it -- it fails it.)
+    assign cdrom_irq = cd_present ? atapi_intrq : 1'b0;
 
     // --- BEMANI Digital I/O board ---
     wire [15:0] digio_dout;
@@ -136,7 +189,8 @@ module system573_top #(
         .addr(rtc_off[12:0]),
         .din(exp1_wdata[7:0]),
         .we(sel_rtc & exp1_we),
-        .dout(rtc_dout)
+        .dout(rtc_dout),
+        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din)
     );
 
     // --- Konami ASIC I/O ---
@@ -165,9 +219,29 @@ module system573_top #(
         if (sel_asic)            rdata_mux = asic_dout;
         else if (sel_rtc)        rdata_mux = {8'h00, rtc_dout};
         else if (sel_flash)      rdata_mux = flash_dout;
-        else if (sel_ide0 | sel_ide1) rdata_mux = atapi_dout;
+        else if (sel_ide0 | sel_ide1) rdata_mux = cd_present ? atapi_dout : 16'hFFFF;
         else if (sel_digio)      rdata_mux = digio_dout;
         else                     rdata_mux = 16'h0000;
+    end
+
+    // EXP1 byte-lane alignment (psx_patches/0010 plumbs exp1_reqsize here).
+    // This fabric is a 16-bit, HALFWORD-NATIVE slave: rdata_mux holds the halfword
+    // for exp1_addr[N:1]. The PSX CPU's EXTERNAL byte/halfword load-align is an
+    // UNCONDITIONAL [7:0]/[15:0] extraction (cpu.vhd ~2537/2549) -- unlike RAM it
+    // does NOT re-rotate by addr[1:0], and memorymux hands the EXP1 read straight to
+    // ext_data_new with no external rotate. So for a byte load (lb/lbu) the addressed
+    // byte must already sit in [7:0]: select the high byte for an odd address and
+    // replicate it into [7:0]. (The 700A BIOS reads the flash signature + CRC
+    // BYTE-BY-BYTE; without this, odd-byte reads return the wrong byte -> sig/CRC
+    // fail.) For lh/lhu/lw (reqsize != 00) pass the true halfword through unchanged so
+    // ext_data_new[15:0] is correct and a word read's 2nd beat fills [31:16] normally.
+    reg [15:0] exp1_rdata_aligned;
+    always @(*) begin
+        if (exp1_reqsize == 2'b00)                 // lb / lbu
+            exp1_rdata_aligned = exp1_addr[0] ? {rdata_mux[15:8], rdata_mux[15:8]}
+                                              : {rdata_mux[7:0],  rdata_mux[7:0]};
+        else                                       // lh / lhu / lw
+            exp1_rdata_aligned = rdata_mux;
     end
 
     // Registered EXP1 read data. The PlayStation memory controller's external-bus
@@ -176,12 +250,12 @@ module system573_top #(
     // strobe has deasserted. It therefore expects a REGISTERED slave, exactly like
     // the PSX core's own EXP2/SPU/CD slaves -- a combinational read would collapse
     // to 0 the moment exp1_re drops and the FSM would capture garbage (POST hang).
-    // We latch the mux while exp1_re is asserted and HOLD it afterwards, rather
-    // than clearing to 0 like exp2.vhd: this fabric is driven free-running on the
-    // PSX clk1x with no clock-enable, so a clear-default would lose the value
-    // during the PSX core's ce gaps before the FSM's EXT_READ capture edge.
+    // We latch the (byte-aligned) mux while exp1_re is asserted and HOLD it
+    // afterwards, rather than clearing to 0 like exp2.vhd: this fabric is driven
+    // free-running on the PSX clk1x with no clock-enable, so a clear-default would
+    // lose the value during the PSX core's ce gaps before the FSM's EXT_READ capture.
     always @(posedge clk) begin
         if (rst)          exp1_rdata <= 16'h0000;
-        else if (exp1_re) exp1_rdata <= rdata_mux;
+        else if (exp1_re) exp1_rdata <= exp1_rdata_aligned;
     end
 endmodule

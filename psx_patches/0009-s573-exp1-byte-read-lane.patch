@@ -1,0 +1,26 @@
+diff --git a/rtl/memorymux.vhd b/rtl/memorymux.vhd
+index 29381e4..cbd712d 100644
+--- a/rtl/memorymux.vhd
++++ b/rtl/memorymux.vhd
+@@ -1010,7 +1010,21 @@ begin
+          -- harness adds a monitor that fails on any width=0 EXP1 access (see
+          -- docs/PHASE1_PSX.md).
+          case (ext_byteStep) is
++            -- S573 byte-lane fix (REPLICATION form). EXP1 is a 16-bit halfword-native slave,
++            -- but the 700A BIOS flash boot validates the "PS-X EXE" signature BYTE-BY-BYTE
++            -- with `lb` (memcmp 0x803c2ae4: lb 0x1f000024,25,26,27,...). The CPU byte/halfword
++            -- load-align selects the result lane by the byte address bits: an upper-halfword
++            -- byte addr (addr[1]=1, e.g. lb 0x1f000026) is extracted from ext_data[23:16]. The
++            -- old "[15:0] only" assign left [31:16] as stale RAM -> `lb 0x..26` read 0x00 ->
++            -- signature mismatch at byte 2 -> CD fallback -> CDR BAD. Replicate the returned
++            -- halfword into BOTH lanes so the CPU reads it correctly regardless of addr[1]; a
++            -- 32-bit word read still streams "00" then "10", so the high lane is overwritten
++            -- with the real high halfword. (This REPLACES an earlier addressData_buf(1)-
++            -- conditional form that DETERMINISTICALLY stalled the boot before ANY EXP1 access
++            -- across 3/3 builds; replication avoids reading addressData_buf in this shared
++            -- ext_data_new datapath.)
+             when "00"   => ext_data_new(15 downto  0) <= bus_exp1_dataRead;
++                           ext_data_new(31 downto 16) <= bus_exp1_dataRead;
+             when "10"   => ext_data_new(31 downto 16) <= bus_exp1_dataRead;
+             when others => null;
+          end case;

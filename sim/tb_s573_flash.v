@@ -10,15 +10,23 @@ module tb_s573_flash;
     wire [5:0] bank;
     wire       sec_io0_dir, cpld_sig;
     reg        win_sel = 0, win_we = 0;
-    reg [15:0] win_addr = 0, win_din = 0;
+    reg [20:0] win_addr = 0;
+    reg [15:0] win_din = 0;
     wire [15:0] win_dout;
+    wire        flash_ready;
+    wire        flash_mem_req;
+    wire [26:0] flash_mem_addr;
     integer errors = 0;
 
-    s573_flash #(.WIN_WORDS(2048), .SECTOR_WORDS(512), .NUM_BANKS(4)) dut (
+    // SIM_BACKING=1 (default): inline flash_nor chips; the SDRAM ports are unused.
+    s573_flash #(.WIN_WORDS(2048), .SECTOR_WORDS(512), .NUM_BANKS(4),
+                 .SIM_BACKING(1)) dut (
         .clk(clk), .rst(rst), .ctl_we(ctl_we), .ctl_din(ctl_din),
         .bank(bank), .sec_io0_dir(sec_io0_dir), .cpld_sig(cpld_sig),
         .win_sel(win_sel), .win_addr(win_addr), .win_we(win_we),
-        .win_din(win_din), .win_dout(win_dout)
+        .win_din(win_din), .win_dout(win_dout), .flash_ready(flash_ready),
+        .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
+        .flash_mem_q(128'd0), .flash_mem_ready(1'b0)
     );
 
     always #5 clk = ~clk;
@@ -57,19 +65,31 @@ module tb_s573_flash;
         win_read(16'd5, v); chk(v, 16'hFFFF, "raw write ignored");
 
         // ---- per-bank isolation (each bank is an independent flash chip) ----
-        set_ctl(16'h0000); flash_prog(16'd5, 16'hAAAA);   // bank 0, addr 5
-        set_ctl(16'h0001); flash_prog(16'd5, 16'h5555);   // bank 1, addr 5
+        // The BIOS selects internal onboard-flash banks 0-3 by writing the RAW
+        // bank number to the control register (MAME: set_bank(control & 0x3f);
+        // onboard = control 0x00/0x01/0x02/0x03), so the bank index is ctl[1:0].
+        set_ctl(16'h0000); flash_prog(16'd5, 16'hAAAA);   // bank 0 (ctl 0x00), addr 5
+        set_ctl(16'h0001); flash_prog(16'd5, 16'h5555);   // bank 1 (ctl 0x01), addr 5
+        set_ctl(16'h0002); flash_prog(16'd5, 16'h0F0F);   // bank 2 (ctl 0x02), addr 5
+        set_ctl(16'h0003); flash_prog(16'd5, 16'hF0F0);   // bank 3 (ctl 0x03), addr 5
         set_ctl(16'h0000); win_read(16'd5, v); chk(v, 16'hAAAA, "bank0[5]");
         set_ctl(16'h0001); win_read(16'd5, v); chk(v, 16'h5555, "bank1[5]");
+        set_ctl(16'h0002); win_read(16'd5, v); chk(v, 16'h0F0F, "bank2[5]");
+        set_ctl(16'h0003); win_read(16'd5, v); chk(v, 16'hF0F0, "bank3[5]");
 
         // ---- different offset within a bank ----
         set_ctl(16'h0000); flash_prog(16'd200, 16'h1234);
         win_read(16'd200, v); chk(v, 16'h1234, "bank0[200]");
         win_read(16'd5,   v); chk(v, 16'hAAAA, "bank0[5] intact");
 
-        // ---- absent PCMCIA bank reads all-ones ----
-        set_ctl(16'h0010);                 // bank 16 = PCMCIA1 (not backed)
-        win_read(16'd5, v); chk(v, 16'hFFFF, "pcmcia read");
+        // ---- absent PCMCIA / non-onboard selector reads all-ones ----
+        // The four onboard banks are control values 0-3 (bank < 4). Any value
+        // >= 4 is a non-onboard selector (PCMCIA 16-31 / 32-47) and is unbacked
+        // here, so it reads all-ones.
+        set_ctl(16'h0010);                 // bank 16 -> PCMCIA slot 1, not backed
+        win_read(16'd5, v); chk(v, 16'hFFFF, "non-onboard read 0x10");
+        set_ctl(16'h0020);                 // bank 32 -> PCMCIA slot 2, not backed
+        win_read(16'd5, v); chk(v, 16'hFFFF, "non-onboard read 0x20");
 
         if (errors == 0) $display("RESULT: PASS (s573_flash)");
         else             $display("RESULT: FAIL (s573_flash, %0d errors)", errors);

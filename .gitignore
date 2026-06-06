@@ -71,3 +71,10 @@ PLLJ_PLLSPE_INFO.txt
 c5_pin_model_dump.txt
 s573_check/
 s573_check.qsf
+
+# Claude session runtime lock (not project state)
+.claude/scheduled_tasks.lock
+# MiSTer deploy/test artifacts pulled back from the board (regenerable; not core source)
+cfg/
+nvram/
+snap/
