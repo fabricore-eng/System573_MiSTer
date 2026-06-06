@@ -73,3 +73,4 @@ s573_check.qsf
 # MiSTer deploy/test artifacts pulled back from the board (regenerable; not core source)
 cfg/
 nvram/
+snap/

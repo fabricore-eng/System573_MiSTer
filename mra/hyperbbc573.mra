@@ -1,0 +1,25 @@
+<misterromdescription>
+	<name>hyperbbc573 (System 573, flash)</name>
+	<setname>hyperbbc573</setname>
+	<rbf>Konami_System_573</rbf>
+	<players>2</players>
+
+	<!-- ROM assembly (unchanged from the working boot config) -->
+	<rom index="0" zip="hyperbbc573.zip"><part name="bios.bin" crc="11812ef8"/></rom>
+	<rom index="2" zip="hyperbbc573.zip"><part name="flash.bin" crc="638e1e54"/></rom>
+	<rom index="3" zip="hyperbbc573.zip"><part name="nvram.bin" crc="8e11d196"/></rom>
+
+	<!-- Button names + default mapping. Names are in the core's J1 joystick-button
+	     order (emu.sv CONF_STR J1: Triangle,O,X,Square,Select,Start,L1,R1,...), relabelled
+	     to the System 573 JAMMA functions our s573_io actually reads:
+	       joy[4..7] = JAMMA P1 buttons 1-4   (Hyper Bishi Bashi uses 3 buttons/player)
+	       joy[8]    = unused (Select)
+	       joy[9]    = COIN     (emu.sv: coin_sw = ~{joy2[9],joy[9]})
+	       joy[10]   = SERVICE  (emu.sv: service_btn = ~joy[10])
+	       joy[11]   = TEST     (emu.sv: test_btn = ~joy[11]; leave idle to boot the game)
+	     default= assigns a sensible physical gamepad button to each. INSERT COIN = Start.
+	     (Tunable on-board via OSD "Define buttons"; may want a tweak after a play test.) -->
+	<buttons count="3"
+	         names="Button 1,Button 2,Button 3,Button 4,-,Coin,Service,Test"
+	         default="Y,B,A,X,-,Start,Select,R"/>
+</misterromdescription>
