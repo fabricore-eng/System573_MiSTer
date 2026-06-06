@@ -204,7 +204,7 @@ wire [ 8:0] DisplayOffsetY;
 // autonomous HW capture shows the RAW VRAM contents (textures/CLUTs/framebuffers as a
 // 1024x512 image). If VRAM data is itself garbled -> upload/DMA bug; if VRAM is clean
 // but the game renders glitched -> GPU sampling bug. Set back to 1'b0 to restore the game.
-localparam DBG_FORCE_VRAMVIEW = 1'b1;
+localparam DBG_FORCE_VRAMVIEW = 1'b0;
 wire fvram = status[11] | DBG_FORCE_VRAMVIEW;
 assign FB_BASE    = fvram ? 32'h30000000 : {8'h30, frameindex, DisplayOffsetY, DisplayOffsetX, 1'b0};
 assign FB_EN      = (status[14] || video_fbmode || DBG_FORCE_VRAMVIEW);
