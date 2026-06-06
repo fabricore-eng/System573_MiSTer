@@ -165,6 +165,8 @@ module s573_flash #(
         reg [15:0] line [0:15];
         reg [18:0] line_tag;          // flash_word[22:4]
         reg        line_valid;
+        reg [1:0]  fstate;            // fill-FSM state (declared here so the debug
+                                      // block below can read it; assigned in the FSM)
 
         wire [18:0] req_tag = flash_word[22:4];
         wire [3:0]  req_idx = flash_word[3:0];
@@ -223,7 +225,7 @@ module s573_flash #(
 
         // Fill FSM: on a MISS, two 128-bit bursts populate the 16-word line.
         localparam F_IDLE=2'd0, F_REQ0=2'd1, F_REQ1=2'd2;
-        reg [1:0]  fstate;
+        // (fstate reg declared above with the line-buffer storage)
         reg [18:0] fill_tag;     // tag being filled
         integer    k;
         always @(posedge clk) begin
