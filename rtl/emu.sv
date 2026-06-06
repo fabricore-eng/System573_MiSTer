@@ -200,11 +200,17 @@ wire [11:0] DisplayHeight;
 wire [ 9:0] DisplayOffsetX;
 wire [ 8:0] DisplayOffsetY;
 
-assign FB_BASE    = status[11] ? 32'h30000000 : {8'h30, frameindex, DisplayOffsetY, DisplayOffsetX, 1'b0};
-assign FB_EN      = (status[14] || video_fbmode);
+// TEMP DIAGNOSTIC (garble hunt): force the VRAMViewer ON without any OSD nav, so an
+// autonomous HW capture shows the RAW VRAM contents (textures/CLUTs/framebuffers as a
+// 1024x512 image). If VRAM data is itself garbled -> upload/DMA bug; if VRAM is clean
+// but the game renders glitched -> GPU sampling bug. Set back to 1'b0 to restore the game.
+localparam DBG_FORCE_VRAMVIEW = 1'b1;
+wire fvram = status[11] | DBG_FORCE_VRAMVIEW;
+assign FB_BASE    = fvram ? 32'h30000000 : {8'h30, frameindex, DisplayOffsetY, DisplayOffsetX, 1'b0};
+assign FB_EN      = (status[14] || video_fbmode || DBG_FORCE_VRAMVIEW);
 assign FB_FORMAT  = (status[10] || video_fb24) ? 5'b00101 : 5'b01100;
-assign FB_WIDTH   = status[11] ? 12'd1024 : DisplayWidth;
-assign FB_HEIGHT  = status[11] ? 12'd512  : DisplayHeight;
+assign FB_WIDTH   = fvram ? 12'd1024 : DisplayWidth;
+assign FB_HEIGHT  = fvram ? 12'd512  : DisplayHeight;
 assign FB_STRIDE  = 14'd2048;
 assign FB_FORCE_BLANK = 0;
 
