@@ -459,7 +459,7 @@ parameter CONF_STR = {
 
 	"-   ;",
 	"R0,Reset;",
-	"J1,Triangle(NeGcon B),O(Gun Fire|NeGcon A),X(Gun B|NeGcon I),[](NeGcon II),Select,Start(Gun A),L1,R1,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
+	"J1,Button 1,Button 2,Button 3,Button 4,Coin,Start,Service,Test,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
 	"jn,X,A,B,Y,Select,Start,L,R;",
 	"I,",
 	"Load=DPAD Up|Save=Down|Slot=L+R,",
@@ -1621,14 +1621,17 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and
    // parked on its color-bar test screen. Now idle = not-pressed, so the BIOS boots
    // normally; COIN/SERVICE/TEST are mapped to joy bits (assign physical buttons in
-   // the MiSTer OSD "Define buttons"). joy[0..7]=R,L,D,U,B1,B2,B3,B4 already matches
-   // the 573 P1 JAMMA bit order (docs/MEMORY_MAP.md, 0x1f400008).
+   // the MiSTer OSD "Define buttons"). JAMMA bit order per docs/MEMORY_MAP.md 0x1f400008:
+   // r_jamma[15:8] (P1) = {START,B3,B2,B1,DOWN,UP,RIGHT,LEFT} (active-low) -- so remap the
+   // MiSTer joy bits (0=R,1=L,2=D,3=U,4=B1,5=B2,6=B3,8=Select,9=Start) into THAT order
+   // (audit IO-003: the old ~joy[7:0] had L/R + U/D transposed and START missing). COIN=Select.
    .dip_sw         ({status[93], 3'b111}), // DIP SW4 (bit3) from OSD "573 Boot Device": 0=Flash ROM (default,
                                            // boots onboard flash, no CD needed), 1=CD-ROM. 0x1f400004 bit3,
                                            // MAME ksys573 DIP SW:4. SW1-3 left off (active-low).
-   .p1_ctrl        (~joy[7:0]),            // JAMMA P1, active-low
-   .p2_ctrl        (~joy2[7:0]),           // JAMMA P2, active-low
-   .coin_sw        (~{joy2[9], joy[9]}),   // P2/P1 coin, active-low
+   .p1_ctrl        (~{joy[9],  joy[6],  joy[5],  joy[4],  joy[2],  joy[3],  joy[0],  joy[1] }),
+                                           // P1 JAMMA: START,B3,B2,B1,DOWN,UP,RIGHT,LEFT (active-low)
+   .p2_ctrl        (~{joy2[9], joy2[6], joy2[5], joy2[4], joy2[2], joy2[3], joy2[0], joy2[1]}),
+   .coin_sw        (~{joy2[8], joy[8]}),   // P2/P1 coin = Select (active-low); Start is JAMMA START
    .service_btn    (~joy[10]),             // service button, active-low
    .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
    .pcmcia_present (2'b00),

@@ -126,8 +126,10 @@ module tb_s573_io;
         chk({14'h0, r[7:6]}, 16'h0003, "h8_hi_classifier");   // .04[7:6]=11 (hi of 0xC)
         detect_decision;
 
-        // 0x0c extra: test button at bit 10
-        rd_reg(4'hc, r); chk(r, {5'b0, test_btn, 10'b0}, "extra");
+        // 0x0c extra (P1): test@bit10; buttons 4/5/6 idle HIGH (active-low, not pressed)
+        rd_reg(4'hc, r); chk(r, {4'b0, 1'b1, test_btn, 2'b11, 8'b0}, "extra 0x0c");
+        // 0x0e extra (P2): bit10 = RAM-layout strap (0=new); buttons 4/5/6 idle HIGH
+        rd_reg(4'he, r); chk(r, {4'b0, 1'b1, 1'b0,      2'b11, 8'b0}, "extra 0x0e");
 
         if (errors == 0) $display("RESULT: PASS (s573_io)");
         else             $display("RESULT: FAIL (s573_io, %0d errors)", errors);

@@ -114,16 +114,22 @@ module s573_io (
     // 0x08 JAMMA player controls (P1 high byte, P2 low byte)
     wire [15:0] r_jamma = { p1_ctrl, p2_ctrl };
 
-    // 0x0c / 0x0e extra buttons (test button at bit 10)
-    wire [15:0] r_extra = { 5'b00000, test_btn, 10'b0000000000 };
+    // 0x0c / 0x0e extra buttons. Bits: [11]=button6, [10]=test/RAM-layout, [9]=button5,
+    // [8]=button4 (all ACTIVE-LOW, idle high). Audit IO-001/002: button 4/5/6 were hardwired
+    // to 0 (read as permanently PRESSED) and 0x0e bit10 wrongly returned test_btn.
+    //   0x0c (IN3 low,  P1): bit10 = TEST button; buttons 4/5/6 idle high.
+    wire [15:0] r_extra_c = { 4'b0000, 1'b1, test_btn, 1'b1, 1'b1, 8'b00000000 };
+    //   0x0e (IN3 high, P2): bit10 = main-RAM-layout strap (0 = new 2x2MB, the layout this
+    //   core implements -> 700B BIOS picks 0x1f801060 = 0x4788); buttons 4/5/6 idle high.
+    wire [15:0] r_extra_e = { 4'b0000, 1'b1, 1'b0,      1'b1, 1'b1, 8'b00000000 };
 
     always @(*) begin
         case (off)
             4'h4:    dout = r_status;
             4'h6:    dout = r_misc;
             4'h8:    dout = r_jamma;
-            4'hc:    dout = r_extra;
-            4'he:    dout = r_extra;
+            4'hc:    dout = r_extra_c;
+            4'he:    dout = r_extra_e;
             default: dout = 16'h0000;
         endcase
     end
