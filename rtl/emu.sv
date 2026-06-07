@@ -1516,17 +1516,21 @@ s573_seccart_loader #(.AW(3)) secser_loader (
 // Infer the cart type from the loaded EEPROM size (highest byte index written).
 // Latched after the EEPROM download deasserts so the threshold sees the final
 // max_addr. Size tiers (top byte index):
-//   ZS01      (.u1 = 4116 B, gtrfrk5m)         -> max_addr = 4115  -> type 2
-//   X76F041   (.u1 = 548 B,  pnchmn2)          -> max_addr =  547  -> type 1
-//   X76F100   (.u1 = 112 B,  hyperbbc-class)   -> max_addr <=  111  -> type 0
-// Thresholds: >=560 (well above 548) -> ZS01; else >=112 -> X76F041; else X76F100.
+//   ZS01      (.u1 = 4116 B, gtrfrk5m)            -> max_addr = 4115     -> type 2
+//   X76F041   (.u1 = 548 B,  pnchmn2)             -> max_addr =  547     -> type 1
+//   X76F100   (.u1 = 132 B,  hyperbbc/hypbbc2p)   -> max_addr <=  131    -> type 0
+// The full MAME X76F100 .u1 is 132 B (4 response-to-reset + 8 write-pw + 8 read-pw +
+// 112 data), NOT 112 -- the old ">=112 -> X76F041" threshold mis-latched a 132-B
+// X76F100 as X76F041 (instantiating the wrong chip model). Split tiers at 256, which
+// is safely between the 132-B X76F100 and the 548-B X76F041.
+//   Thresholds: >=560 -> ZS01; else >=256 -> X76F041; else X76F100.
 reg [1:0] sec_cart_type = 2'd0;
 reg       seceep_download_1 = 1'b0;
 always @(posedge clk_1x) begin
    seceep_download_1 <= seceep_download;
    if (seceep_download_1 && !seceep_download) begin   // download just finished
-      sec_cart_type <= (sec_eep_max >= 13'd560) ? 2'd2 :
-                       (sec_eep_max >= 13'd112) ? 2'd1 : 2'd0;
+      sec_cart_type <= (sec_eep_max >= 13'd560) ? 2'd2 :   // ZS01    (4116 B)
+                       (sec_eep_max >= 13'd256) ? 2'd1 : 2'd0;  // X76F041 (548 B) else X76F100 (132 B)
    end
 end
 
