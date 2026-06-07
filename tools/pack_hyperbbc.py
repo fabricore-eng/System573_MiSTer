@@ -9,9 +9,16 @@ Interleave (from MAME konami/ksys573.cpp flashbank_map, umask16):
   banks (control reg 0x1F500000 value -> chip pair), MAME order m,l,j,h:
     bank0 = 31m/27m   bank1 = 31l/27l   bank2 = 31j/27j   bank3 = 31h/27h
 
-NOTE: the bank ORDER (m,l,j,h) is from the investigator's read of flashbank_map and
-is being cross-checked against the raw source separately. The packer is parameterized
-so re-ordering is a one-line change.
+CONFIRMED (2026-06-07) byte-faithful against the authoritative MAME flashbank_map
+(ksys573.cpp:974-983) + the hyperbbc ROM CRCs:
+  bank0 0x0000000..0x03fffff = 31m(umask 0x00ff, LOW) / 27m(umask 0xff00, HIGH)
+  bank1 0x0400000..0x07fffff = 31l / 27l
+  bank2 0x0800000..0x0bfffff = 31j / 27j
+  bank3 0x0c00000..0x0ffffff = 31h / 27h     (ENDIANNESS_LITTLE, ksys573.cpp:2575)
+So the bank ORDER (m,l,j,h) and the byte lane (even=31x LOW, odd=27x HIGH) are CORRECT
+-- this REFUTES the flash-layout hypothesis for the hyperbbc graphics garble: the flash
+data reaching the GPU is byte-correct, so the garble is a RENDER/CLUT/draw-path issue,
+not a data-layout bug. The packer is parameterized so re-ordering is a one-line change.
 """
 import sys, os, zlib, zipfile
 
