@@ -61,6 +61,14 @@ module x76f100 #(
                      CMD_CHG_RPW = 8'hfe;
 
     // ---- NVRAM (persists across system reset) ----
+    // data[] is the 112-byte EEPROM body. Like the X76F041 it is accessed through a
+    // SINGLE synchronous write port and a SINGLE registered read port so Quartus
+    // infers it as block RAM rather than 896 flip-flops + a computed-index address
+    // mux. The 8-byte block write is serialised to one byte per clock by a small
+    // burst engine; the protocol read drives the address one cycle ahead and
+    // consumes the registered byte. The deterministic k->k default pattern is a
+    // RAM-init (block-RAM friendly) so existing read-default tests still pass. The
+    // small 8-byte register files (wpw/rpw/wbuf) stay as registers.
     reg [7:0] data [0:111];
     reg [7:0] wpw  [0:7];   // write password
     reg [7:0] rpw  [0:7];   // read password
@@ -76,6 +84,24 @@ module x76f100 #(
         for (k = 0; k < 112; k = k + 1)
             data[k] = k[7:0]; // deterministic default pattern for simulation
     end
+
+    // ---- data[] single write port + registered read port (block-RAM friendly) ----
+    // Read port: rd_addr is driven one cycle ahead (rd_addr_next, below) and the
+    // byte lands in data_rdata; with two cycles of latency the address is stable for
+    // the ~9 idle clocks per serial bit, so the byte is ready when shifted out.
+    // Write port: one byte per clock, from the block-flush burst engine.
+    localparam [1:0] BRST_IDLE = 2'd0, BRST_WRITE = 2'd1;
+    reg [1:0] brst_state;
+    reg [3:0] brst_idx;        // 0..8 burst byte index
+    reg [7:0] brst_buf [0:7];  // the 8 bytes to write
+    reg [6:0] brst_base;       // block base offset {command[4:1],3'b000}
+    reg       brst_kick;       // 1-clock pulse: FSM requests a block flush
+
+    reg [6:0] ram_waddr;
+    reg [7:0] ram_wdata;
+    reg       ram_we;
+    reg [6:0] rd_addr;
+    reg [7:0] data_rdata;
 
     // ---- volatile state ----
     reg [2:0] state;
@@ -101,11 +127,52 @@ module x76f100 #(
 
     // temporaries
     reg [7:0] s;
-    reg [7:0] off;
     reg       match;
     integer   j;
 
+    // ----- data[] read address, one cycle ahead of the ST_READ consumer -----
+    // The read offset {command[4:1],3'b000}+bytec can run past the 112-byte body
+    // (the device streams 0x00 there). Track an in-range address and an OOB flag so
+    // the registered read returns the right byte (or 0) when shifted out.
+    wire [7:0] rd_off_next = {command[4:1], 3'b000} + bytec;
+    wire       rd_oob_next = (rd_off_next >= 8'd112);
+    reg        rd_oob;
+
+    // ----- RAM port: the ONLY place data[] is read or written (block-RAM cell) -----
     always @(posedge clk) begin
+        rd_addr    <= rd_oob_next ? 7'd0 : rd_off_next[6:0];
+        rd_oob     <= rd_oob_next;
+        data_rdata <= data[rd_addr];
+        if (ram_we) data[ram_waddr] <= ram_wdata;
+    end
+
+    always @(posedge clk) begin
+        // one-shot default
+        ram_we <= 1'b0;
+
+        // ===== write-burst engine: serialise the 8-byte block flush to one byte /
+        // clock (a block flush only starts on a rising-SCL edge, ~9 idle clocks
+        // apart, so the burst completes before the next edge and never overlaps a
+        // protocol read -- ST_READ vs ST_WRITE are distinct states). =====
+        case (brst_state)
+            BRST_IDLE: if (brst_kick) begin
+                brst_idx   <= 4'd0;
+                brst_state <= BRST_WRITE;
+            end
+            BRST_WRITE: begin
+                if (brst_idx < 4'd8) begin
+                    if (({1'b0, brst_base} + {4'd0, brst_idx}) < 8'd112) begin
+                        ram_we    <= 1'b1;
+                        ram_waddr <= brst_base + {3'd0, brst_idx};
+                        ram_wdata <= brst_buf[brst_idx];
+                    end
+                    brst_idx <= brst_idx + 4'd1;
+                end else
+                    brst_state <= BRST_IDLE;
+            end
+            default: brst_state <= BRST_IDLE;
+        endcase
+
         if (rst) begin
             state   <= ST_STOP;
             bitc    <= 4'd0;
@@ -115,8 +182,10 @@ module x76f100 #(
             retry   <= 4'd0;
             pw_ok   <= 1'b0;
             sda_o   <= 1'b0;
+            brst_kick <= 1'b0;
             for (j = 0; j < 8; j = j + 1) wbuf[j] <= 8'h00;
         end else begin
+            brst_kick <= 1'b0;   // FSM burst request is a one-shot pulse
             // ===== chip select transitions =====
             if (pcs != 1'b0 && cs == 1'b0)              // enable: 1->0
                 state <= ST_STOP;
@@ -199,18 +268,18 @@ module x76f100 #(
                                         pw_ok <= match;
                                         if (!match) begin
                                             if (retry == 4'd7) begin
-                                                // lockout: zero passwords + data
+                                                // lockout: zero the passwords.
                                                 // synthesis translate_off
-                                                // SIM-ONLY: 112-byte + 16-byte clocked
-                                                // full-array clear (Quartus-hostile).
-                                                // The 8-fail lockout never trips at BIOS
-                                                // boot -- the cart is read, not brute-forced.
+                                                // SIM-ONLY: 16-byte clocked password
+                                                // clear. The 8-fail lockout never trips
+                                                // at BIOS boot -- the cart is read, not
+                                                // brute-forced. (data[] is the M10K body
+                                                // and is not bulk-cleared from here; it
+                                                // has a single write port.)
                                                 for (j = 0; j < 8; j = j + 1) begin
                                                     rpw[j] <= 8'h00;
                                                     wpw[j] <= 8'h00;
                                                 end
-                                                for (j = 0; j < 112; j = j + 1)
-                                                    data[j] <= 8'h00;
                                                 // synthesis translate_on
                                                 retry <= 4'd0;
                                             end else
@@ -243,11 +312,13 @@ module x76f100 #(
                                                 rpw[j] <= wbuf[j];
                                             rpw[7] <= shift;
                                         end else begin
-                                            for (j = 0; j < 8; j = j + 1) begin
-                                                off = {command[4:1], 3'b000} + j[7:0];
-                                                if (off < 8'd112)
-                                                    data[off] <= (j == 7) ? shift : wbuf[j];
-                                            end
+                                            // hand the 8-byte block to the burst engine,
+                                            // which serialises it to the single data[]
+                                            // write port (one byte per clock).
+                                            for (j = 0; j < 7; j = j + 1) brst_buf[j] <= wbuf[j];
+                                            brst_buf[7] <= shift;
+                                            brst_base   <= {command[4:1], 3'b000};
+                                            brst_kick   <= 1'b1;
                                         end
                                         bytec <= 8'd0;
                                     end else
@@ -257,10 +328,12 @@ module x76f100 #(
                         end
                     end else if (state == ST_READ) begin
                         if (bitc < 4'd8) begin
-                            if (bitc == 4'd0) begin
-                                off = {command[4:1], 3'b000} + bytec;
-                                s   = (off < 8'd112) ? data[off] : 8'h00;
-                            end else
+                            if (bitc == 4'd0)
+                                // registered read: data_rdata == data[off] (rd_addr
+                                // tracked the offset one cycle ahead); rd_oob streams
+                                // 0x00 for offsets past the 112-byte body.
+                                s = rd_oob ? 8'h00 : data_rdata;
+                            else
                                 s = shift;
                             sda_o <= s[7];
                             shift <= s << 1;
