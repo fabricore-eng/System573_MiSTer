@@ -10,7 +10,7 @@ IVFLAGS := -g2005-sv -Wall
 RTL     := ../rtl
 BUILD   := build
 
-TESTS := watchdog adc0834 m48t58 s573_nvram_loader ds2401 adc0838 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck
+TESTS := watchdog adc0834 m48t58 s573_nvram_loader s573_seccart_loader ds2401 adc0838 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck
 
 # Per-test RTL dependencies
 SRC_watchdog      := $(RTL)/watchdog.v
@@ -18,6 +18,7 @@ SRC_adc0834       := $(RTL)/adc0834.v
 SRC_adc0838       := $(RTL)/adc0838.v
 SRC_m48t58        := $(RTL)/m48t58.v
 SRC_s573_nvram_loader := $(RTL)/s573_nvram_loader.v $(RTL)/m48t58.v
+SRC_s573_seccart_loader := $(RTL)/s573_seccart_loader.v
 SRC_ds2401        := $(RTL)/ds2401.v
 SRC_x76f100       := $(RTL)/x76f100.v
 SRC_x76f041       := $(RTL)/x76f041.v
@@ -32,16 +33,23 @@ SRC_s573_flash    := $(RTL)/s573_flash.v $(RTL)/flash_nor.v
 SRC_s573_flash_sdram := $(RTL)/s573_flash.v $(RTL)/flash_nor.v
 SRC_s573_flash_image := $(RTL)/s573_flash.v $(RTL)/flash_nor.v
 SRC_flash_nor     := $(RTL)/flash_nor.v
-SRC_s573_seccart  := $(RTL)/s573_seccart.v $(RTL)/x76f100.v $(RTL)/ds2401.v
+SRC_s573_seccart  := $(RTL)/s573_seccart.v $(RTL)/x76f100.v $(RTL)/x76f041.v $(RTL)/ds2401.v
 SRC_s573_bus      := $(RTL)/s573_bus.v
 SRC_s573_io       := $(RTL)/s573_io.v
 SRC_system573_top := $(RTL)/system573_top.v $(RTL)/s573_bus.v $(RTL)/s573_io.v \
                      $(RTL)/watchdog.v $(RTL)/adc0834.v $(RTL)/m48t58.v $(RTL)/ds2401.v \
-                     $(RTL)/s573_flash.v $(RTL)/flash_nor.v $(RTL)/s573_seccart.v $(RTL)/x76f100.v \
+                     $(RTL)/s573_flash.v $(RTL)/flash_nor.v $(RTL)/s573_seccart.v $(RTL)/x76f100.v $(RTL)/x76f041.v \
                      $(RTL)/atapi.v $(RTL)/k573dio.v $(RTL)/k573_mp3stream.v $(RTL)/k573_mp3dec.v
 SRC_drivecheck     := $(SRC_system573_top)
 
-.PHONY: all clean $(TESTS)
+.PHONY: all clean secdata $(TESTS)
+
+# Derive the (gitignored, copyrighted) pnchmn2 security-cart $readmemh fixtures from
+# the dump before the seccart test. No-op (test self-skips Part 2) if the dump is
+# absent. Order-only so it always runs first for s573_seccart.
+secdata:
+	@sh gen_secdata.sh >/dev/null 2>&1 || true
+s573_seccart: secdata
 
 all:
 	@fail=0; \

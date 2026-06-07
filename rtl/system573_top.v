@@ -53,6 +53,16 @@ module system573_top #(
     input  wire [12:0] nvram_addr,
     input  wire [7:0]  nvram_din,
 
+    // Security-cartridge image load (e.g. pnchmn2 gqa09ja.u1 / .u6), streamed in at
+    // reset. cart_type selects the EEPROM model: 0 = X76F100, 1 = X76F041.
+    input  wire [1:0]  sec_cart_type,
+    input  wire        sec_eep_we,    // EEPROM (.u1, 548-byte x76f041 image) byte write
+    input  wire [9:0]  sec_eep_addr,
+    input  wire [7:0]  sec_eep_din,
+    input  wire        sec_ser_we,    // DS2401 (.u6, 8-byte serial image) byte write
+    input  wire [2:0]  sec_ser_addr,
+    input  wire [7:0]  sec_ser_din,
+
     // Board inputs (JAMMA / coins / DIP) from the MiSTer host
     input  wire [3:0]  dip_sw,
     input  wire [7:0]  p1_ctrl,
@@ -143,8 +153,11 @@ module system573_top #(
     wire [7:0]  sec_in;
     s573_seccart #(.DS_SERIAL(CART_SERIAL), .DS_CLK_HZ(CLK_FREQ_HZ)) u_seccart (
         .clk(clk), .rst(rst),
+        .cart_type(sec_cart_type),
         .latch_we(sel_seclatch & exp1_we), .d_latch(exp1_wdata[7:0]),
         .io0_dir(sec_io0_dir),
+        .load_eep_we(sec_eep_we), .load_eep_addr(sec_eep_addr), .load_eep_data(sec_eep_din),
+        .load_ser_we(sec_ser_we), .load_ser_addr(sec_ser_addr), .load_ser_data(sec_ser_din),
         .sec_io0(sec_io0), .sec_in(sec_in), .sec_drdy(sec_drdy), .sec_irdy(sec_irdy)
     );
 

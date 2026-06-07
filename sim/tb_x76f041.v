@@ -15,7 +15,10 @@ module tb_x76f041;
 
     x76f041 #(.CONFIG_PASSWORD(CONFIG_PASSWORD), .CONFIG_REGS(CONFIG_REGS)) dut (
         .clk(clk), .rst(rst), .cs(cs), .sec_rst(sec_rst),
-        .scl(scl), .sda_i(sda_m), .sda_o(sda_o)
+        .scl(scl), .sda_i(sda_m), .sda_o(sda_o),
+        // this tb uses the compile-time params; the load port is exercised by the
+        // pnchmn2 real-image test in tb_s573_seccart.v.
+        .load_we(1'b0), .load_addr(10'd0), .load_data(8'd0)
     );
 
     always #5 clk = ~clk;

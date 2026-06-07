@@ -35,6 +35,10 @@ incremental_db/
 /dumps/**/*.22g
 /dumps/**/*.zip
 
+# Security-cart sim fixtures: $readmemh hex DERIVED from the (gitignored) game
+# dumps by sim/gen_secdata.sh. Copyrighted -- regenerable, never commit.
+sim/secdata/
+
 # Full-system sim outputs
 sim/system/out/
 *.rbf

@@ -343,7 +343,7 @@ always @(posedge clk_1x) begin : ffwd
 	fast_forward <= (FFrequest | ff_latch);
 end
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | cdDownloadReset;
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | cdDownloadReset;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -642,11 +642,14 @@ hps_ext hps_ext
 
 reg bios_download, exe_download, cdinfo_download, code_download;
 reg flash_download, nvram_download;
+reg seceep_download, secser_download;
 always @(posedge clk_1x) begin
 	bios_download    <= ioctl_download & (ioctl_index[5:0] == 0);
 	exe_download     <= ioctl_download & (ioctl_index == 1);
 	flash_download   <= ioctl_download & (ioctl_index == 2);   // 573 onboard flash (16 MB)
 	nvram_download   <= ioctl_download & (ioctl_index == 3);   // 573 M48T58 NVRAM (8 KB)
+	seceep_download  <= ioctl_download & (ioctl_index == 4);   // security cart EEPROM (.u1: 548 B x76f041 / 112 B x76f100 / 4116 B zs01)
+	secser_download  <= ioctl_download & (ioctl_index == 5);   // security cart DS2401 serial (.u6: 8 B)
 	cdinfo_download  <= ioctl_download & (ioctl_index == 251);
 	code_download    <= ioctl_download & (ioctl_index == 255);
 end
@@ -747,6 +750,14 @@ always @(posedge clk_1x) begin
       // (nv_hi=0, ioctl_wr=1), drop it on the odd-write cycle (nv_hi=1) so the
       // stream resumes. Same registered back-pressure pattern as the bios path.
       if (nvram_nv_hi)   ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
+   end else if (seceep_download) begin
+      // security-cart EEPROM (.u1): same 2-cycle WIDE unpack as the NVRAM path.
+      if (seceep_nv_hi)  ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
+   end else if (secser_download) begin
+      // security-cart DS2401 serial (.u6): same 2-cycle WIDE unpack.
+      if (secser_nv_hi)  ioctl_wait <= 1'b0;
       else if (ioctl_wr) ioctl_wait <= 1'b1;
    end else begin
       ioctl_wait <= 0;
@@ -1421,6 +1432,69 @@ s573_nvram_loader nvram_loader (
    .nvram_din  (nvram_din),
    .nv_hi      (nvram_nv_hi)
 );
+
+// -----------------------------------------------------------------------------
+// 573 SECURITY CARTRIDGE image load (Feature A). Two WIDE(1) ioctl channels:
+//   index 4 = EEPROM image (.u1): the X76F041 (548 B) / X76F100 (112 B) / ZS01
+//             (4116 B) secure-serial-flash NVRAM, streamed into s573_seccart's
+//             EEPROM model byte-by-byte (the loader unpacks each WIDE word into 2
+//             byte writes, like the NVRAM path).
+//   index 5 = DS2401 serial (.u6): the 8-byte 1-Wire silicon serial ROM.
+// The cart TYPE is inferred from the EEPROM image SIZE (the loader reports the
+// highest byte index seen): >=548 -> X76F041 (type 1); <=112 -> X76F100 (type 0);
+// >=4116 would be ZS01 (type 2, not yet modeled). Latched once the EEPROM download
+// completes; defaults to type 0 (matches the prior param-only behaviour, so a game
+// with no .u1 -- e.g. flash-only hyperbbc -- is unaffected).
+wire        sec_eep_we;
+wire [9:0]  sec_eep_addr;
+wire [7:0]  sec_eep_din;
+wire        seceep_nv_hi;
+wire [9:0]  sec_eep_max;
+s573_seccart_loader #(.AW(10)) seceep_loader (
+   .clk        (clk_1x),
+   .load_en    (seceep_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[9:0]),
+   .ioctl_dout (ioctl_dout),
+   .byte_we    (sec_eep_we),
+   .byte_addr  (sec_eep_addr),
+   .byte_data  (sec_eep_din),
+   .nv_hi      (seceep_nv_hi),
+   .max_addr   (sec_eep_max)
+);
+
+wire        sec_ser_we;
+wire [2:0]  sec_ser_addr;
+wire [7:0]  sec_ser_din;
+wire        secser_nv_hi;
+wire [2:0]  sec_ser_max;
+s573_seccart_loader #(.AW(3)) secser_loader (
+   .clk        (clk_1x),
+   .load_en    (secser_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[2:0]),
+   .ioctl_dout (ioctl_dout),
+   .byte_we    (sec_ser_we),
+   .byte_addr  (sec_ser_addr),
+   .byte_data  (sec_ser_din),
+   .nv_hi      (secser_nv_hi),
+   .max_addr   (sec_ser_max)
+);
+
+// Infer the cart type from the loaded EEPROM size (highest byte index written).
+// 548-byte image (max index 547) -> X76F041; smaller -> X76F100. Latched after the
+// EEPROM download deasserts so the threshold sees the final max_addr.
+reg [1:0] sec_cart_type = 2'd0;
+reg       seceep_download_1 = 1'b0;
+always @(posedge clk_1x) begin
+   seceep_download_1 <= seceep_download;
+   if (seceep_download_1 && !seceep_download) begin   // download just finished
+      // 548-byte X76F041 image addresses up to 547 (> 112). A 112-byte X76F100
+      // image tops out at 111. (ZS01 = type 2 would top out > 4096; reserved.)
+      sec_cart_type <= (sec_eep_max >= 10'd112) ? 2'd1 : 2'd0;
+   end
+end
+
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
 wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
@@ -1622,6 +1696,13 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
    .nvram_din      (nvram_din),
+   .sec_cart_type  (sec_cart_type),
+   .sec_eep_we     (sec_eep_we),
+   .sec_eep_addr   (sec_eep_addr),
+   .sec_eep_din    (sec_eep_din),
+   .sec_ser_we     (sec_ser_we),
+   .sec_ser_addr   (sec_ser_addr),
+   .sec_ser_din    (sec_ser_din),
    // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
    // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and

@@ -67,7 +67,9 @@ module k573dio #(
     wire        ow_pd;
     wire        ow_line = ~(ow_master_low | ow_pd);  // wired-AND, pulled up
     ds2401 #(.SERIAL(DS_SERIAL), .CLK_FREQ_HZ(DS_CLK_HZ)) board_id (
-        .clk(clk), .rst(rst), .dq_in(ow_line), .dq_pd(ow_pd)
+        .clk(clk), .rst(rst), .dq_in(ow_line), .dq_pd(ow_pd),
+        // The DIO board's DS2401 keeps its compile-time SERIAL param (no image load).
+        .load_we(1'b0), .load_addr(3'd0), .load_data(8'd0)
     );
 
     // ----- board DRAM (sim-sized) with separate read/write pointers -----

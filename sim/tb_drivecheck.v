@@ -35,7 +35,10 @@ module tb_drivecheck;
         .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
         .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
         .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
-        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0),
+        .sec_cart_type(2'd0),
+        .sec_eep_we(1'b0), .sec_eep_addr(10'd0), .sec_eep_din(8'd0),
+        .sec_ser_we(1'b0), .sec_ser_addr(3'd0), .sec_ser_din(8'd0)
     );
 
     always #5 clk = ~clk;

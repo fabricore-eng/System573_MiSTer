@@ -12,7 +12,8 @@ module tb_ds2401;
     integer errors = 0;
 
     ds2401 #(.SERIAL(SERIAL), .CLK_FREQ_HZ(1_000_000)) dut (
-        .clk(clk), .rst(rst), .dq_in(line), .dq_pd(ds_pd)
+        .clk(clk), .rst(rst), .dq_in(line), .dq_pd(ds_pd),
+        .load_we(1'b0), .load_addr(3'd0), .load_data(8'd0)
     );
 
     always #5 clk = ~clk;                 // 100 MHz; 1 clk == 1 us in the model

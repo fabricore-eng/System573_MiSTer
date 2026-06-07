@@ -44,7 +44,24 @@ module x76f041 #(
     input  wire sec_rst,    // chip RST pin, active high (0->1 = response to reset)
     input  wire scl,        // serial clock
     input  wire sda_i,      // SDA driven by the host (1 = released/high)
-    output reg  sda_o       // SDA driven by the device (1 = high, 0 = low)
+    output reg  sda_o,      // SDA driven by the device (1 = high, 0 = low)
+
+    // ---- boot-time NVRAM image load (the 548-byte MAME x76f041 nvram image) ----
+    // Streamed in byte-by-byte at boot from the security-EEPROM ioctl channel. The
+    // image layout (machine/x76f041.cpp nvram_read/nvram_write order) is:
+    //   [  0:  3] response-to-reset (4 bytes, 0x19,0x55,0xAA,0x55) -- IGNORED here
+    //            (the RTR constant is hard-wired in rtr_val()); accepted + dropped.
+    //   [  4: 11] write password    (8 bytes) -> wpw[0..7]
+    //   [ 12: 19] read password     (8 bytes) -> rpw[0..7]
+    //   [ 20: 27] config password   (8 bytes) -> cpw[0..7]
+    //   [ 28: 35] config registers  (8 bytes) -> creg[0..7]
+    //   [ 36:547] 512 data bytes              -> data[0..511]
+    // load_we writes load_data at byte address load_addr (0..547). When any byte is
+    // loaded, `loaded` latches and the loaded NVRAM overrides the compile-time
+    // params (params stay the default for sims that never drive the load port).
+    input  wire        load_we,
+    input  wire [9:0]  load_addr,   // 0..547
+    input  wire [7:0]  load_data
 );
     // ---- states (match MAME state_t order) ----
     localparam [4:0]
@@ -85,6 +102,14 @@ module x76f041 #(
     reg [7:0] wbuf  [0:7];
     reg [7:0] ptemp [0:15];  // password-program double buffer
 
+    // ---- image-load byte-offset map (MAME nvram layout) ----
+    // 4-byte RTR header at [0:3] is consumed but not stored (RTR is constant).
+    localparam integer LD_WPW  = 4;     // write password   [4:11]
+    localparam integer LD_RPW  = 12;    // read  password   [12:19]
+    localparam integer LD_CPW  = 20;    // config password  [20:27]
+    localparam integer LD_CREG = 28;    // config registers [28:35]
+    localparam integer LD_DATA = 36;    // 512 data bytes   [36:547]
+
     integer n;
     initial begin
         for (n = 0; n < 8; n = n + 1) begin
@@ -108,6 +133,10 @@ module x76f041 #(
     reg       pw_ok;
 
     reg pscl, pcs, psda, prst;
+
+    // High once any image byte has been loaded (the loaded NVRAM is authoritative;
+    // before that the compile-time params remain in effect so existing sims pass).
+    reg loaded = 1'b0;
 
     function [7:0] rtr_val(input [7:0] b);
         case (b[1:0])
@@ -176,6 +205,26 @@ module x76f041 #(
     endtask
 
     always @(posedge clk) begin
+        // ===== boot-time NVRAM image load =====
+        // Independent of the FSM reset: the security-EEPROM ioctl stream arrives
+        // while rst is asserted. Each byte lands in its array slot per the offset
+        // map; the 4-byte RTR header (load_addr < LD_WPW) is dropped. Latching
+        // `loaded` makes the loaded NVRAM authoritative over the params.
+        if (load_we) begin
+            loaded <= 1'b1;
+            if (load_addr >= LD_DATA[9:0])
+                data[load_addr - LD_DATA[9:0]] <= load_data;
+            else if (load_addr >= LD_CREG[9:0])
+                creg[load_addr - LD_CREG[9:0]] <= load_data;
+            else if (load_addr >= LD_CPW[9:0])
+                cpw[load_addr - LD_CPW[9:0]] <= load_data;
+            else if (load_addr >= LD_RPW[9:0])
+                rpw[load_addr - LD_RPW[9:0]] <= load_data;
+            else if (load_addr >= LD_WPW[9:0])
+                wpw[load_addr - LD_WPW[9:0]] <= load_data;
+            // load_addr < LD_WPW: the 4-byte RTR header -- accepted and dropped.
+        end
+
         if (rst) begin
             state   <= ST_STOP;
             bitc    <= 4'd0;
