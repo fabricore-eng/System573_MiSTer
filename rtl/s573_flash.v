@@ -84,6 +84,28 @@ module s573_flash #(
     input  wire [127:0] flash_mem_q,     // the 16-byte burst (8 words) returned
     input  wire        flash_mem_ready,  // 1-cycle: flash_mem_q valid
 
+    // SDRAM single-word WRITE-BACK port (used only when SIM_BACKING=0): NOR program
+    // makes the 16 MB onboard flash WRITABLE so a CD game's installer can re-program
+    // it. On a program data cycle we write the line buffer through (so the verify
+    // read HITs the new value immediately) AND emit one 16-bit write-back here; the
+    // parent (emu.sv) muxes it into the free SDRAM ch3 writer (cheats engine is
+    // disabled, psx_patches/0008). flash_wr_req pulses one cycle; flash_wr_ack (the
+    // ch3 completion) ends it. Array reads stall (flash_ready=0) while a write is in
+    // flight, so the BIOS's post-program AMD data-poll read serialises each
+    // program -> SDRAM commit -> next program (no lost writes). ERASE is a no-op
+    // against the 0xFF-preloaded blank image (the command FSM still completes, and
+    // verify reads return 0xFFFF), so a single-pass install needs program only.
+    output reg         flash_wr_req,     // pulse: request a 16-bit SDRAM write-back
+    output reg         flash_wr_busy,    // LEVEL: held high for the whole write-back
+                                         // transaction (req pulse .. ack). The parent
+                                         // mux selects flash_wr_addr/data onto ch3 with
+                                         // THIS, not the req pulse, so the address stays
+                                         // presented until the SDRAM controller services
+                                         // it (it samples the bus continuously).
+    output reg  [26:0] flash_wr_addr,    // flat 16-bit word index (parent adds base)
+    output reg  [15:0] flash_wr_data,    // the programmed 16-bit word (NOR-ANDed)
+    input  wire        flash_wr_ack,     // 1-cycle: the ch3 write completed
+
     // DEBUG (HW bring-up): observe WHY the fill FSM does/doesn't trigger. Round-2
     // bars proved flash_mem_req never pulses (req_cnt=0) -> the array_read trigger
     // never fires. Expose the trigger inputs so the next bar-decode pins the cause:
@@ -145,10 +167,15 @@ module s573_flash #(
         assign flash_ready = 1'b1;          // always ready in behavioral mode
         assign dbg_flash   = 24'd0;         // debug observers unused in behavioral mode
 
-        // SDRAM fill port unused in behavioral mode (held at their reset values).
+        // SDRAM fill + write-back ports unused in behavioral mode (the inline
+        // flash_nor chips have their own writable mem[] BRAM). Held at reset values.
         always @(posedge clk) begin
             flash_mem_req  <= 1'b0;
             flash_mem_addr <= 27'd0;
+            flash_wr_req   <= 1'b0;
+            flash_wr_busy  <= 1'b0;
+            flash_wr_addr  <= 27'd0;
+            flash_wr_data  <= 16'd0;
         end
     end else begin : g_sdram
         // ----- HW path: 16 MB SDRAM-backed flash with a 16-word line buffer -----
@@ -179,6 +206,7 @@ module s573_flash #(
         // -- fill for them (POST's flash-ID check must never stall).
         wire [15:0] cmd_dout;
         wire        id_read;
+        wire        prog_now;
         wire [15:0] line_word = line[req_idx];
         flash_nor #(.WORDS(WIN_WORDS), .SECTOR_WORDS(SECTOR_WORDS),
                     .BACKING_EXTERNAL(1)) cmd (
@@ -189,7 +217,8 @@ module s573_flash #(
             .din(win_din),
             .dout(cmd_dout),
             .ext_rd_data(line_word),
-            .id_read(id_read)
+            .id_read(id_read),
+            .prog_now(prog_now)
         );
 
         // A pending array read that needs the backing store: selected internal
@@ -235,11 +264,38 @@ module s573_flash #(
                 line_tag      <= 19'h7FFFF;
                 flash_mem_req <= 1'b0;
                 flash_mem_addr<= 27'd0;
+                flash_wr_req  <= 1'b0;
+                flash_wr_busy <= 1'b0;
+                flash_wr_addr <= 27'd0;
+                flash_wr_data <= 16'd0;
             end else begin
                 flash_mem_req <= 1'b0;
+                flash_wr_req  <= 1'b0;
+
+                // ---- NOR program write-back (write-through cache + ch3 write) ----
+                // prog_now is a one-cycle strobe on the program data write. Apply the
+                // NOR rule (cell &= data) against the cached word -- or 0xFFFF (erased)
+                // if this word's line isn't currently buffered, which is exactly right
+                // for a single-pass install into the 0xFF-preloaded blank image. Write
+                // the line buffer THROUGH (so the BIOS's verify read HITs the new value)
+                // and kick one 16-bit SDRAM write-back. Array reads stall while
+                // wr_pending (flash_ready below), so that verify read serialises this
+                // program's SDRAM commit before the next program can start.
+                // (prog_now never coincides with a fill: the bus is stalled during a
+                // fill, so the CPU cannot issue the program store until F_IDLE.)
+                if (prog_now) begin
+                    if (tag_hit) line[req_idx] <= line[req_idx] & win_din;
+                    flash_wr_addr <= {4'b0000, flash_word};
+                    flash_wr_data <= (tag_hit ? line[req_idx] : 16'hFFFF) & win_din;
+                    flash_wr_req  <= 1'b1;
+                    flash_wr_busy <= 1'b1;
+                end else if (flash_wr_ack) begin
+                    flash_wr_busy <= 1'b0;
+                end
+
                 case (fstate)
                     F_IDLE: begin
-                        if (array_read && !tag_hit) begin
+                        if (array_read && !tag_hit && !flash_wr_busy) begin
                             // start a fill of the missing line
                             fill_tag       <= req_tag;
                             line_valid     <= 1'b0;
@@ -274,9 +330,13 @@ module s573_flash #(
             end
         end
 
-        // Ready: ID reads + writes + line-buffer HITs are ready immediately; an
-        // array read that misses stalls until the line is valid for its tag.
-        assign flash_ready = !array_read || id_read || tag_hit;
+        // Ready: ID reads + writes are always ready (writes cannot stall on EXP1 --
+        // patch 0006 only holds READS). A line-buffer HIT is ready unless a program
+        // write-back is in flight: while wr_pending, EVERY array read stalls so the
+        // BIOS's post-program AMD data-poll read blocks until this word's SDRAM commit
+        // lands -- serialising program -> commit -> next program (no lost writes). An
+        // array read that misses still stalls until its line fills.
+        assign flash_ready = !array_read || id_read || (tag_hit && !flash_wr_busy);
 
         // Read mux: absent PCMCIA bank / unselected -> all ones; otherwise the
         // command-FSM output (which returns the line-buffer word on array reads

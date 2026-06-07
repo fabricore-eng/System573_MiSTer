@@ -1417,6 +1417,24 @@ wire [127:0] flash_mem_q;
 wire        flash_mem_ready;
 wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-up)
 
+// 573 onboard-flash SDRAM WRITE-BACK (NOR program / CD-game install): system573_top
+// -> the SDRAM ch3 writer (free during gameplay -- cheats engine disabled by patch
+// 0008). One 16-bit word per request; flash_wr_ack = the ch3 completion.
+wire        flash_wr_req;       // 1-cycle ch3 request pulse
+wire        flash_wr_busy;      // LEVEL: flash owns ch3 (pulse .. ack) -> mux select
+wire [26:0] flash_wr_addr;      // flat 16-bit word index into the 16 MB image
+wire [15:0] flash_wr_data;
+wire        flash_wr_ack;
+// ch3 byte address for a flash program write: FLASH_START + (word << 1) -- same
+// addressing as the ch4 read path so a programmed word reads back coherently.
+wire [26:0] flash_wr_ch3_addr = FLASH_START + {flash_wr_addr[25:0], 1'b0};
+// ch3 owner select: a HPS download (load time) always wins; otherwise a flash
+// program write-back drives ch3 (cheats engine is disabled, patch 0008).
+wire        ch3_dl    = exe_download | bios_download | flash_download;
+// The flash write-back ch3 completion (sdramCh3_done) is an ack only when flash --
+// not a download -- owns ch3. flash_wr_busy is never high during a download.
+assign      flash_wr_ack = sdramCh3_done & ~ch3_dl & flash_wr_busy;
+
 // 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB). hps_io is WIDE(1): every
 // ioctl_wr delivers a 16-bit word (ioctl_dout[7:0]=file[2k], [15:8]=file[2k+1])
 // and ioctl_addr steps by 2. s573_nvram_loader unpacks each word into TWO byte
@@ -1703,6 +1721,11 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .flash_mem_addr (flash_mem_addr),
    .flash_mem_q    (flash_mem_q),
    .flash_mem_ready(flash_mem_ready),
+   .flash_wr_req   (flash_wr_req),
+   .flash_wr_busy  (flash_wr_busy),
+   .flash_wr_addr  (flash_wr_addr),
+   .flash_wr_data  (flash_wr_data),
+   .flash_wr_ack   (flash_wr_ack),
    .flash_dbg      (flash_dbg),
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
@@ -1856,12 +1879,18 @@ sdram sdram
 	.ch2_be   (sdram_be),
 	.ch2_ready(sdram_writeack),
 
-	.ch3_addr ((exe_download | bios_download | flash_download) ? ramdownload_wraddr : cheats_addr),
-	.ch3_din  ((exe_download | bios_download | flash_download) ? ramdownload_wrdata : cheats_dout),
+	// ch3 priority: HPS download (load time) > flash program write-back (gameplay) >
+	// cheats (disabled, patch 0008). flash_wr_busy is the LEVEL that holds the flash
+	// address/data/be presented to ch3 across the whole transaction; flash_wr_req is
+	// the one-cycle request pulse. A flash word writes the LOWER 16 bits only (be
+	// 4'b0011 masks the upper word of the 32-bit ch3 pair) so the adjacent word is
+	// untouched -- a true single-word NOR program.
+	.ch3_addr (ch3_dl ? ramdownload_wraddr : flash_wr_busy ? flash_wr_ch3_addr        : cheats_addr),
+	.ch3_din  (ch3_dl ? ramdownload_wrdata : flash_wr_busy ? {16'h0000, flash_wr_data} : cheats_dout),
 	.ch3_dout (cheats_din),
-	.ch3_req  ((exe_download | bios_download | flash_download) ? ramdownload_wr     : cheats_ena),
-	.ch3_rnw  (cheats_rnw),
-	.ch3_be   ((exe_download | bios_download | flash_download) ? 4'b1111            : cheats_be),
+	.ch3_req  (ch3_dl ? ramdownload_wr     : flash_wr_busy ? flash_wr_req             : cheats_ena),
+	.ch3_rnw  (                              flash_wr_busy ? 1'b0                      : cheats_rnw),
+	.ch3_be   (ch3_dl ? 4'b1111            : flash_wr_busy ? 4'b0011                  : cheats_be),
 	.ch3_ready(sdramCh3_done),
 
 	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).

@@ -45,6 +45,15 @@ module system573_top #(
     input  wire [127:0] flash_mem_q,
     input  wire        flash_mem_ready,
 
+    // SDRAM flash single-word WRITE-BACK port (FLASH_SIM_BACKING=0): NOR program
+    // makes the onboard flash writable for a CD game's installer. emu.sv muxes this
+    // into the free SDRAM ch3 writer and returns the ch3 completion on flash_wr_ack.
+    output wire        flash_wr_req,
+    output wire        flash_wr_busy,
+    output wire [26:0] flash_wr_addr,
+    output wire [15:0] flash_wr_data,
+    input  wire        flash_wr_ack,
+
     // DEBUG passthrough: s573_flash trigger-state observers (HW bring-up).
     output wire [23:0] flash_dbg,
 
@@ -153,6 +162,9 @@ module system573_top #(
         .flash_ready(flash_ready),
         .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
         .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready),
+        .flash_wr_req(flash_wr_req), .flash_wr_busy(flash_wr_busy),
+        .flash_wr_addr(flash_wr_addr),
+        .flash_wr_data(flash_wr_data), .flash_wr_ack(flash_wr_ack),
         .dbg_flash(flash_dbg)
     );
     // The EXP1 wait is asserted ONLY while a flash access is not ready (a missed
