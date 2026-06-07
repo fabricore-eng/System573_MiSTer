@@ -1,0 +1,17 @@
+<!--
+  TEST B: launch hyperbbc as a STANDALONE CONSOLE core via .mgl (is_arcade_type=0).
+  Loads the SAME known-good data the arcade .mra uses (stock BIOS + the real hyperbbc
+  flash + nvram), NO CD. Purpose: prove the .mgl/console launch mechanism + the new F0
+  BIOS CONF_STR entry actually load the BIOS (the prior bare .mgl black-screened because
+  there was no F0 -> BIOS never loaded). Expected: boots+runs hyperbbc exactly like the
+  .mra. If this works, the mechanism is sound and Test C (hypbbc2p install) can proceed.
+
+  Requires: _Console/Konami_System_573.rbf (deploy the build there) + the listed files
+  staged under /media/fat/games/System573/.
+-->
+<mistergamedescription>
+  <rbf>_Console/Konami_System_573</rbf>
+  <file delay="1" type="f" index="0" path="games/System573/573bios.bin"/>
+  <file delay="1" type="f" index="2" path="games/System573/hbbflash.bin"/>
+  <file delay="1" type="f" index="3" path="games/System573/hbbnvram.bin"/>
+</mistergamedescription>
