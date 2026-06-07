@@ -9,6 +9,20 @@ It reuses the exact full-573 DUT + memory models of `sim/system573` (`psx_mister
 `sdram_model3x` + `ddrram_model` + `framebuffer`), but instead of tying the savestate path off it
 **drives the real in-core savestate loader**.
 
+> ### ⏱ Do Stage 0 FIRST — it may name the bug without any sim
+> A HW savestate ALSO freezes our complete VRAM. Before running this (slow) sim replay, run the
+> cheap board-free **static VRAM byte-compare** on the same `.ss`:
+> ```
+> tools/ss_garble_probe.sh <real.ss> local/mame_vram_title.bin   # -> per-region SSIM/%diff + heatmap
+> ```
+> `tools/ss_vram_extract.py` carves the `.ss` VRAM (savetype 15, byte 0x100000, 1 MiB) and RAM
+> (savetype 16, byte 0x200000, 2 MiB) slices; the probe renders our frozen VRAM + MAME's and runs
+> `frame_diff_regions.py`. Because TEXTURE pages are scene-independent, a TEXTURE/CLUT region
+> diverging = the data bug, even if the scene-dependent FRAMEBUFFER region differs. Only escalate to
+> this Stage-1 sim replay if Stage 0 shows the textures/CLUTs are byte-CORRECT in VRAM yet still
+> render garbled (→ a GPU *sampling* bug the per-draw tap isolates). Both tools are self-tested
+> (`--selftest`); the probe pipeline is validated end-to-end (VRAM==MAME→MATCH, gradient→MISMATCH).
+
 ## How the savestate-load is wired (the real HW path, no vendored edit)
 
 On real hardware (`rtl/emu.sv:1351-1353`) the framework wires `ss_save`/`ss_load`/`ss_slot` straight
