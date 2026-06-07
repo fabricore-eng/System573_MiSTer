@@ -25,10 +25,14 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
 # PSX_MiSTer needs the DDR3 framebuffer path (sys_top gates FB_* on this).
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
-# 1 (not 6): this Mac has 16 GB RAM and the Colima VM is 11 GB; 6 parallel synthesis
-# workers OOM quartus_map on the large PSX core under Rosetta. Serial = lower peak RAM
-# (slower). See docs/PHASE4_HARDWARE.md (build RAM constraint).
-set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
+# 2: builds now run on the native dell box (i5-7500, 4 cores/4 threads, 14 GB RAM) --
+# the Mac/Colima 11 GB VM that forced serial synthesis (6 workers OOM'd quartus_map) is
+# gone. Under the hub's cap-2 build semaphore, 2 builds x 2 = 4 cores (full, no
+# oversubscription); RAM-safe (A&S workers + Fitter peak ~4.6 GB << 14 GB). This only
+# speeds Analysis & Synthesis + multi-corner timing (~6 min of ~38); the Fitter place &
+# route -- the ~30 min / ~80% bottleneck -- is single-threaded regardless of this value.
+# See docs/PHASE4_HARDWARE.md and memory dell-build-box (build-time levers).
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 2
 
 # Core RTL (573 fabric + emu.sv + the nested psx/rtl PSX core qips).
 set_global_assignment -name QIP_FILE files.qip
