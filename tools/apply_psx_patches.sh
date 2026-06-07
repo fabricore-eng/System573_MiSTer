@@ -46,7 +46,12 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # color-mode (4bpp=RED/8bpp=BLUE/15bit=YELLOW) so one screenshot reveals which
           # texture mode the green-striped polys use. Gated by DBG_TEXMODE_MAP in
           # gpu_pixelpipeline.vhd; set '0' (constant-folds away) before any production rbf.
-          "$ROOT/psx_patches/0012-s573-debug-texmode-flagcolor.patch" )
+          "$ROOT/psx_patches/0012-s573-debug-texmode-flagcolor.patch" \
+          # 0013: CLUT-cache coherency fix. gpu.vhd invalidated only the TEXTURE cache
+          # (not the palette cache) on VRAM writes (fill/cpu2vram/vram2vram), so a palette
+          # uploaded to a cached CLUT row was ignored -> stale CLUT -> the hyperbbc green
+          # foreground-quad garble. Asserts pipeline_clearCachePalette too. Production fix.
+          "$ROOT/psx_patches/0013-s573-clut-cache-coherency.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

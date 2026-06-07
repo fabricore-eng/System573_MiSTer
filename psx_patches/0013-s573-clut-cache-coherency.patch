@@ -1,0 +1,12 @@
+diff --git a/rtl/gpu.vhd b/rtl/gpu.vhd
+index fb29855..35857a9 100644
+--- a/rtl/gpu.vhd
++++ b/rtl/gpu.vhd
+@@ -987,6 +987,7 @@ begin
+             
+             if (vramFill_done = '1' or cpu2vram_done = '1' or vram2vram_done = '1') then
+                pipeline_clearCacheTexture <= '1';
++               pipeline_clearCachePalette <= '1';  -- 573: a VRAM write can overwrite a cached CLUT's source row; the palette cache (keyed only on textPalX/Y) was NOT invalidated here -> stale CLUT reused on later same-coord draws = garble. Match the 0x01 clear-cache + texture-cache behaviour.
+             end if;
+             
+             if (softReset = '1') then
