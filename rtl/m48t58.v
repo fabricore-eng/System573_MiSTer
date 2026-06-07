@@ -44,21 +44,7 @@ module m48t58 #(
     // coincides with the download.
     input  wire        nvram_we,
     input  wire [12:0] nvram_addr,
-    input  wire [7:0]  nvram_din,
-    // NVRAM SAVE-BACK readout port. A second, independent read port on the same M10K
-    // NVRAM array so the SD save FSM in emu.sv can stream the 8 KB out without
-    // disturbing the CPU read port (ram_q). Registered (1-cycle latency), same as the
-    // CPU port -- the save FSM presents sav_rd_addr, waits one clock, then samples
-    // sav_rd_dout. Covers the full 8184-byte NVRAM region (the RTC top 8 bytes are
-    // live clock state, not persisted via this port). Reads of the RTC region return 0.
-    input  wire [12:0] sav_rd_addr,
-    output reg  [7:0]  sav_rd_dout,
-    // DIRTY flag: set whenever the CPU writes the lower NVRAM array (a real persistable
-    // change to operator settings / high scores). The ioctl image load does NOT dirty
-    // (it is the just-loaded clean image). emu.sv watches this to schedule an SD save
-    // and pulses dirty_clr once the save has been latched.
-    input  wire        dirty_clr,
-    output reg         dirty
+    input  wire [7:0]  nvram_din
 );
     localparam [12:0] RTC_BASE = 13'd8184;
     localparam integer DIVMAX  = (CLK_FREQ_HZ > 1) ? CLK_FREQ_HZ - 1 : 0;
@@ -111,15 +97,6 @@ module m48t58 #(
     reg [7:0] ram_q;
     always @(posedge clk) ram_q <= ram[addr];
 
-    // Second (read-only) port for the SD save-back stream. Inferring a dual read-port
-    // M10K (one extra read port, no extra storage) keeps this LEAN -- it reuses the
-    // existing 8 KB block RAM, no wide register array. The RTC top 8 bytes are not in
-    // ram[] (they are the live clock file), so a save read in that region returns 0.
-    reg [7:0] sav_rd_q;
-    always @(posedge clk)
-        sav_rd_q <= (sav_rd_addr < RTC_BASE) ? ram[sav_rd_addr] : 8'h00;
-    always @(*) sav_rd_dout = sav_rd_q;
-
     // ----- lower-NVRAM array write port (single write port -> M10K) -----
     // A post-reset bus write takes priority over the ioctl image load. CRITICAL: the
     // image load is rst-INDEPENDENT. emu.sv asserts the core reset for the ENTIRE NVRAM
@@ -134,23 +111,6 @@ module m48t58 #(
             ram[addr] <= din;                   // bus write to lower NVRAM (post-reset)
         else if (nvram_we && nvram_addr < RTC_BASE)
             ram[nvram_addr] <= nvram_din;        // ioctl image load (any rst state)
-    end
-
-    // ----- DIRTY flag: a CPU NVRAM write makes the image stale on SD -----
-    // Set on a post-reset bus write to the lower NVRAM array (the persistable region;
-    // RTC clock writes do NOT count -- the clock is regenerated from the host RTC each
-    // boot, not saved). NOT set by the ioctl image load (that IS the SD copy). emu.sv's
-    // save FSM pulses dirty_clr after it latches the contents to flush. A same-cycle
-    // CPU write WINS over dirty_clr (the write branch has priority below), so dirty
-    // stays high and the just-written byte is captured by the NEXT save -- a write that
-    // races the clear is never lost.
-    always @(posedge clk) begin
-        if (rst)
-            dirty <= 1'b0;
-        else if (!rst && we && !addr_is_rtc)
-            dirty <= 1'b1;                       // new persistable change
-        else if (dirty_clr)
-            dirty <= 1'b0;                       // save latched -> clean
     end
 
     // Read mux (snapshot when READ freeze is active).

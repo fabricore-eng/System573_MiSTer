@@ -53,15 +53,6 @@ module system573_top #(
     input  wire [12:0] nvram_addr,
     input  wire [7:0]  nvram_din,
 
-    // M48T58 NVRAM SAVE-BACK to SD (high-score / operator-settings persistence).
-    // sav_rd_addr/sav_rd_dout = the outbound readout port the SD save FSM streams from;
-    // nvram_dirty rises when the CPU writes NVRAM and nvram_dirty_clr clears it once a
-    // save has been scheduled. Brought up to emu.sv where the hps_io SD channel lives.
-    input  wire [12:0] nvram_sav_rd_addr,
-    output wire [7:0]  nvram_sav_rd_dout,
-    output wire        nvram_dirty,
-    input  wire        nvram_dirty_clr,
-
     // Board inputs (JAMMA / coins / DIP) from the MiSTer host
     input  wire [3:0]  dip_sw,
     input  wire [7:0]  p1_ctrl,
@@ -199,9 +190,7 @@ module system573_top #(
         .din(exp1_wdata[7:0]),
         .we(sel_rtc & exp1_we),
         .dout(rtc_dout),
-        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din),
-        .sav_rd_addr(nvram_sav_rd_addr), .sav_rd_dout(nvram_sav_rd_dout),
-        .dirty(nvram_dirty), .dirty_clr(nvram_dirty_clr)
+        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din)
     );
 
     // --- Konami ASIC I/O ---

@@ -375,7 +375,6 @@ parameter CONF_STR = {
 	"O[71],Save to SDCard,On Open OSD,Manual;",
 	"SC2,SAVMCD,Mount Memory Card 1;",
 	"SC3,SAVMCD,Mount Memory Card 2;",
-	"SC4,NVM,Mount 573 NVRAM;",
 	"O[63],Automount Memory Card 1,Yes,No;",
 	"-;",
 	"O[36],Savestates to SDCard,On,Off;",
@@ -499,17 +498,15 @@ reg  [31:0] sd_lba0 = 0;
 reg  [31:0] sd_lba1;
 reg  [ 6:0] sd_lba2;
 reg  [ 6:0] sd_lba3;
-reg  [ 3:0] sd_lba4;            // 573 NVRAM: 8 blocks of 1 KB (BLKSZ=3) => LBA 0..7
-reg   [4:0] sd_rd;
-reg   [4:0] sd_wr;
-wire  [4:0] sd_ack;
-wire  [8:0] sd_buff_addr;       // BLKSZ=3 + WIDE => 512 words/block (addr 0..511)
+reg   [3:0] sd_rd;
+reg   [3:0] sd_wr;
+wire  [3:0] sd_ack;
+wire  [8:0] sd_buff_addr;
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din2;
 wire [15:0] sd_buff_din3;
-wire [15:0] sd_buff_din4;       // 573 NVRAM save-back word stream
 wire        sd_buff_wr;
-wire  [4:0] img_mounted;
+wire  [3:0] img_mounted;
 wire        img_readonly;
 wire [63:0] img_size;
 wire        ioctl_download;
@@ -558,7 +555,7 @@ wire [127:0] status_in = {status[127:39],ss_slot,status[36:19], 2'b00, status[16
 wire bk_pending;
 wire DIRECT_VIDEO;
 
-hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(5), .BLKSZ(3)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(4), .BLKSZ(3)) hps_io
 (
 	.clk_sys(clk_1x),
 	.HPS_BUS(HPS_BUS),
@@ -587,14 +584,14 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(5), .BLKSZ(3)) hps_io
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(ioctl_wait),
 
-	.sd_lba('{sd_lba0, sd_lba1, sd_lba2, sd_lba3, sd_lba4}),
-	.sd_blk_cnt('{0, 0, 0, 0, 0}),
+	.sd_lba('{sd_lba0, sd_lba1, sd_lba2, sd_lba3}),
+	.sd_blk_cnt('{0,0, 0, 0}),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3, sd_buff_din4}),
+	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3}),
 	.sd_buff_wr(sd_buff_wr),
 
 	.TIMESTAMP(RTC_time),
@@ -1409,10 +1406,9 @@ wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-
 // self-test (the red "N") failed. emu drives ioctl_wait from nv_hi (see the
 // download always block above) to hold the stream one cycle for the 2nd write,
 // matching the proven bios/exe/flash back-pressure path.
-// ioctl image-load path (the .mra-shipped NVRAM, ioctl_index 3).
-wire        nvram_ld_we;
-wire [12:0] nvram_ld_addr;
-wire [7:0]  nvram_ld_din;
+wire        nvram_we;
+wire [12:0] nvram_addr;
+wire [7:0]  nvram_din;
 wire        nvram_nv_hi;
 s573_nvram_loader nvram_loader (
    .clk        (clk_1x),
@@ -1420,56 +1416,10 @@ s573_nvram_loader nvram_loader (
    .ioctl_wr   (ioctl_wr),
    .ioctl_addr (ioctl_addr[12:0]),
    .ioctl_dout (ioctl_dout),
-   .nvram_we   (nvram_ld_we),
-   .nvram_addr (nvram_ld_addr),
-   .nvram_din  (nvram_ld_din),
+   .nvram_we   (nvram_we),
+   .nvram_addr (nvram_addr),
+   .nvram_din  (nvram_din),
    .nv_hi      (nvram_nv_hi)
-);
-
-// ----------------------------------------------------------------------------
-// 573 M48T58 NVRAM PERSISTENCE to SD (high scores / operator settings).
-// s573_nvram_sd mirrors the PSX memcard SD handshake on hps_io VD slot 4: it loads
-// the NVRAM from a mounted .NVM save file (img_mounted[4]) and writes it back when
-// the CPU has dirtied it. Its byte load port is muxed with the ioctl loader above:
-// the ioctl download (the .mra default image) wins while nvram_download is high; once
-// the download is done the SD loader owns the m48t58 byte-write port. The two never
-// overlap (the SD mount/save runs post-boot, the ioctl load only during download).
-wire        nvram_sd_we;
-wire [12:0] nvram_sd_addr;
-wire [7:0]  nvram_sd_din;
-wire        nvram_dirty;
-wire        nvram_dirty_clr;
-wire [12:0] nvram_sav_rd_addr;
-wire [7:0]  nvram_sav_rd_dout;
-wire        nvram_saving;
-
-// Muxed m48t58 byte-write port: ioctl loader during download, SD loader otherwise.
-wire        nvram_we   = nvram_download ? nvram_ld_we   : nvram_sd_we;
-wire [12:0] nvram_addr = nvram_download ? nvram_ld_addr : nvram_sd_addr;
-wire [7:0]  nvram_din  = nvram_download ? nvram_ld_din  : nvram_sd_din;
-
-s573_nvram_sd nvram_sd (
-   .clk          (clk_1x),
-   .rst          (reset_or),
-   .dirty        (nvram_dirty),
-   .dirty_clr    (nvram_dirty_clr),
-   .save_req     (memcard_save),         // reuse the "Save Memory Cards" / OSD autosave pulse
-   .saving       (nvram_saving),
-   .nvram_we     (nvram_sd_we),
-   .nvram_addr   (nvram_sd_addr),
-   .nvram_din    (nvram_sd_din),
-   .sav_rd_addr  (nvram_sav_rd_addr),
-   .sav_rd_dout  (nvram_sav_rd_dout),
-   .img_mounted  (img_mounted[4]),
-   .img_size     (img_size),
-   .sd_lba       (sd_lba4),
-   .sd_rd        (sd_rd[4]),
-   .sd_wr        (sd_wr[4]),
-   .sd_ack       (sd_ack[4]),
-   .sd_buff_addr (sd_buff_addr[8:0]),
-   .sd_buff_dout (sd_buff_dout),
-   .sd_buff_din  (sd_buff_din4),
-   .sd_buff_wr   (sd_buff_wr)
 );
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
@@ -1672,10 +1622,6 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
    .nvram_din      (nvram_din),
-   .nvram_sav_rd_addr (nvram_sav_rd_addr),
-   .nvram_sav_rd_dout (nvram_sav_rd_dout),
-   .nvram_dirty       (nvram_dirty),
-   .nvram_dirty_clr   (nvram_dirty_clr),
    // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
    // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and

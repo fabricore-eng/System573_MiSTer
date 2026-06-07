@@ -10,7 +10,7 @@ IVFLAGS := -g2005-sv -Wall
 RTL     := ../rtl
 BUILD   := build
 
-TESTS := watchdog adc0834 m48t58 s573_nvram_loader s573_nvram_sd ds2401 adc0838 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck
+TESTS := watchdog adc0834 m48t58 s573_nvram_loader ds2401 adc0838 x76f100 x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck
 
 # Per-test RTL dependencies
 SRC_watchdog      := $(RTL)/watchdog.v
@@ -18,7 +18,6 @@ SRC_adc0834       := $(RTL)/adc0834.v
 SRC_adc0838       := $(RTL)/adc0838.v
 SRC_m48t58        := $(RTL)/m48t58.v
 SRC_s573_nvram_loader := $(RTL)/s573_nvram_loader.v $(RTL)/m48t58.v
-SRC_s573_nvram_sd     := $(RTL)/s573_nvram_sd.v $(RTL)/m48t58.v
 SRC_ds2401        := $(RTL)/ds2401.v
 SRC_x76f100       := $(RTL)/x76f100.v
 SRC_x76f041       := $(RTL)/x76f041.v
