@@ -42,6 +42,9 @@ sim/system/out/
 # NVC sim build artifacts
 sim/nvc/build/
 sim/system573/build/
+sim/system573_ssreplay/build/
+sim/gpu_replay/build/
+sim/gpu_replay/__pycache__/
 
 # Stray sim outputs if NVC is ever run outside build/ (run.sh cds to build/ itself)
 /R:*
