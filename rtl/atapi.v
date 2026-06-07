@@ -35,7 +35,18 @@ module atapi #(
     input  wire [15:0] din,
     output reg  [15:0] dout,
 
-    output wire        intrq        // interrupt request (IRQ10 on the 573)
+    output wire        intrq,       // interrupt request (IRQ10 on the 573)
+
+    // ---- mounted-CD-image sector source (Feature B) ----
+    // cd_attached=1 routes READ(10)/READ(12) data-in from the EXTERNAL sector buffer
+    // (s573_cdimg, fed from a mounted CD image) instead of the SIM-only disc[] store.
+    // sec_req pulses with sec_lba when a READ packet is dispatched; sbuf_q returns the
+    // 2048-byte user-data word for sbuf_addr (word index, byte = addr*2 into the sector).
+    input  wire        cd_attached, // 1 = external CD image present; 0 = legacy disc[] (sim)
+    output reg         sec_req,     // 1-clk strobe: host BIOS asked to read sec_lba
+    output reg  [31:0] sec_lba,     // requested raw sector LBA (READ(10/12) big-endian LBA)
+    output wire [10:0] sbuf_addr,   // word index into the buffered sector (= ridx/2)
+    input  wire [15:0] sbuf_q       // buffered sector word
 );
     // status bits
     localparam [7:0] ST_BSY=8'h80, ST_DRDY=8'h40, ST_DF=8'h20, ST_DSC=8'h10,
@@ -147,9 +158,11 @@ module atapi #(
             irq_pending <= 1'b0; irq_event <= 1'b0; irq_out <= 1'b0;
             r_feat <= 0; r_devctl <= 0;
             datain_disc <= 1'b0; datain_ident <= 1'b0;
+            sec_req <= 1'b0; sec_lba <= 32'd0;
             set_signature;
         end else begin
             irq_event <= 1'b0;                           // default; set by the 13 event sites
+            sec_req   <= 1'b0;                           // default; pulsed on READ dispatch
 
             // Edge-guaranteed INTRQ. irq_out tracks irq_pending, except a fresh event
             // (irq_event) raised while irq_out is ALREADY high forces one low clk first
@@ -210,6 +223,12 @@ module atapi #(
                                           irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h28, 8'hA8: begin       // READ(10) / READ(12) (disc data-in)
                                           // LBA in pkt[2..5] (big-endian); one 2048-byte sector per request.
+                                          // Feature B: capture the full 32-bit LBA and pulse sec_req so the
+                                          // external CD-image reader (s573_cdimg) fetches THIS sector. The
+                                          // disc_base index (low bits) still drives the legacy sim disc[]
+                                          // store when no CD image is attached.
+                                          sec_lba   <= {pkt[2], pkt[3], pkt[4], pkt[5]};
+                                          sec_req   <= cd_attached;   // only when an image is mounted
                                           disc_base <= {pkt[5][$clog2(NSECT)-1:0], 11'd0};
                                           resp_len  <= 13'd2048;
                                           r_bclo <= 8'h00; r_bchi <= 8'h08; // 0x0800
@@ -307,13 +326,16 @@ module atapi #(
         end
     end
 
-    // disc data-in word. SIM reads the disc[] backing store; SYNTHESIS returns 0 so
-    // Quartus does NOT infer the NSECT*2048-byte array as distributed RAM. The disc[]
-    // read is asynchronous (combinational), so it cannot map to block RAM -- left live
-    // in synthesis it explodes into ~64 Kbit of LUT RAM and overflows the device (the
-    // real CD-data path is DDR3-backed, future work; the BIOS boot / flash games never
-    // read the disc). The translate_off pragma is honored by Quartus and ignored by
-    // iverilog, so the READ(10/12) sim test still streams real sector bytes.
+    // disc data-in word. Two sources:
+    //  * cd_attached=1 (HW / CD-image sim): the EXTERNAL sector buffer sbuf_q (block
+    //    RAM in s573_cdimg, fed from the mounted CD image). sbuf_addr is the word index
+    //    ridx/2; the buffer holds the 2048 user bytes of the requested sector at word 0.
+    //    sbuf_q is registered (1-clk), which is fine here -- the PIO host first polls
+    //    STATUS for several cycles after dispatch, and reads successive words many clocks
+    //    apart, so the addressed word is always settled before the host samples reg0.
+    //  * cd_attached=0 (legacy unit sim): the SIM-only disc[] store (asynchronous read,
+    //    translate_off'd so synthesis does not infer ~64 Kbit of LUT RAM).
+    assign sbuf_addr = ridx[12:1];
     reg [15:0] disc_dout;
     always @(*) begin
         disc_dout = 16'h0000;
@@ -327,7 +349,7 @@ module atapi #(
         case (addr)
             4'd0:    dout = (state != S_DATAIN) ? 16'h0000 :
                             datain_ident ? ident_word(ridx) :
-                            datain_disc  ? disc_dout
+                            datain_disc  ? (cd_attached ? sbuf_q : disc_dout)
                                          : {resp_byte(resp_cmd, ridx[5:0] + 6'd1),
                                             resp_byte(resp_cmd, ridx[5:0])};
             4'd1:    dout = {8'h00, r_error};

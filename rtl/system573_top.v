@@ -72,6 +72,19 @@ module system573_top #(
     input  wire        test_btn,
     input  wire [1:0]  pcmcia_present,
     input  wire        cd_present,      // 1 = ATAPI CD drive attached; 0 = no_cdrom flash config (MAME konami573 no_cdrom)
+
+    // ---- mounted CD-image sector stream (Feature B) ----
+    // cd_image=1 routes ATAPI READ(10/12) data from a mounted CD image (via the
+    // s573_cdimg reader on the MiSTer CUECHD sd-block host stream) instead of the
+    // SIM-only disc[] store. The cd_* ports below are emu.sv's sd_lba1/sd_rd[1]/
+    // sd_ack[1]/sd_buff_wr/sd_buff_dout (the same channel cd_top used pre-patch-0011).
+    input  wire        cd_image,        // 1 = a CD image is mounted (drive READ from it)
+    output wire        cd_hps_req,      // -> sd_rd[1]      (request a raw sector)
+    output wire [31:0] cd_hps_lba,      // -> sd_lba1       (raw sector LBA)
+    input  wire        cd_hps_ack,      // <- sd_ack[1]
+    input  wire        cd_hps_write,    // <- sd_buff_wr    (one 16-bit word per pulse)
+    input  wire [15:0] cd_hps_data,     // <- sd_buff_dout
+
     input  wire [7:0]  adc_ch0,
     input  wire [7:0]  adc_ch1,
     input  wire [7:0]  adc_ch2,
@@ -166,11 +179,31 @@ module system573_top #(
     wire        atapi_intrq;
     wire        atapi_sel = sel_ide0 | sel_ide1;
     wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
+    // CD-image sector path (Feature B): atapi.v dispatches a READ -> sec_req/sec_lba;
+    // s573_cdimg fetches the raw sector from the mounted image and presents its 2048
+    // user-data bytes back as the sbuf buffer that atapi.v streams to the host.
+    wire        atapi_sec_req;
+    wire [31:0] atapi_sec_lba;
+    wire [10:0] atapi_sbuf_addr;
+    wire [15:0] atapi_sbuf_q;
     atapi u_atapi (
         .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
-        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq)
+        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq),
+        .cd_attached(cd_image),
+        .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
+        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q)
+    );
+
+    // --- mounted-CD-image sector reader (Feature B) ---
+    s573_cdimg u_cdimg (
+        .clk(clk), .rst(rst),
+        .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
+        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
+        .sec_ready(), .sec_busy(),
+        .cd_req(cd_hps_req), .cd_lba(cd_hps_lba),
+        .cd_ack(cd_hps_ack), .cd_wr(cd_hps_write), .cd_data(cd_hps_data)
     );
     // cd_present gates the IDE read mux + INTRQ. CORRECTION (HW-verified 2026-06-03):
     // a real 573 -- even for no_cdrom flash games (gchgchmp/hyperbbc) -- carries a CR-589

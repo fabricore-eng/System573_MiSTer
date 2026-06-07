@@ -29,7 +29,9 @@ module tb_irqdeliver;
 
     atapi dut (.clk(clk), .rst(rst), .ide_rst(1'b0),
                .sel(sel), .addr(addr), .we(we), .re(re),
-               .din(din), .dout(dout), .intrq(intrq));
+               .din(din), .dout(dout), .intrq(intrq),
+               .cd_attached(1'b0), .sec_req(), .sec_lba(),
+               .sbuf_addr(), .sbuf_q(16'h0000));
 
     always #5 clk = ~clk;
 

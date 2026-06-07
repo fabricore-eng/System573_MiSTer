@@ -495,10 +495,14 @@ wire [127:0] status;
 wire [15:0] status_menumask = {(PadPortNeGcon1 | PadPortNeGcon2), hack_480p, filter_on, saving_memcard, (bk_pending | saving_memcard), bk_pending, status[59], multitap, biosMod, ~TURBO_MEM, (status[55] && ~hack_480p), (PadPortDS1 | PadPortDS2), dbg_enabled, (PadPortGunCon1 | PadPortGunCon2 | PadPortJustif1 | PadPortJustif2), SDRAM2_EN, (snacPort1 | snacPort2)};
 wire        forced_scandoubler;
 reg  [31:0] sd_lba0 = 0;
-reg  [31:0] sd_lba1;
+wire [31:0] sd_lba1;                 // System 573: driven by the ATAPI CD reader (u_s573)
 reg  [ 6:0] sd_lba2;
 reg  [ 6:0] sd_lba3;
 reg   [3:0] sd_rd;
+// Dummy sinks for the removed consumer-PSX cd_top outputs (psx_patches/0011 ties them
+// to 0); the 573's own ATAPI CD reader drives sd_rd[1]/sd_lba1 instead.
+wire        psx_cd_hps_req_unused;
+wire [31:0] psx_cd_hps_lba_unused;
 reg   [3:0] sd_wr;
 wire  [3:0] sd_ack;
 wire  [8:0] sd_buff_addr;
@@ -1211,8 +1215,12 @@ psx
    .trackinfo_addr  (ramdownload_wraddr[10:2]),
    .trackinfo_write (ramdownload_wr && cdinfo_download),
    .resetFromCD     (resetFromCD),
-   .cd_hps_req      (sd_rd[1]),
-   .cd_hps_lba      (sd_lba1),
+   // System 573 (Feature B): the CUECHD sd-block channel (index 1) is now driven by
+   // the 573's own ATAPI CD reader (s573_cdimg, inside system573_top), NOT the removed
+   // consumer-PSX cd_top. psx_patches/0011 ties these PSX cd_hps outputs to 0, so route
+   // them to dummies and let system573_top drive sd_rd[1]/sd_lba1 (see u_s573 below).
+   .cd_hps_req      (psx_cd_hps_req_unused),
+   .cd_hps_lba      (psx_cd_hps_lba_unused),
    .cd_hps_ack      (sd_ack[1]),
    .cd_hps_write    (sd_buff_wr),
    .cd_hps_data     (sd_buff_dout),
@@ -1732,6 +1740,16 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
                                            // BSY-stuck and the check times out -> CDR BAD -> HARDWARE ERROR.
                                            // Presenting the drive lets atapi.v answer the 0xEB14 signature +
                                            // IDENTIFY PACKET DEVICE (0xA1) so CDR reads OK with the UNMODIFIED BIOS.
+   // Mounted CD image (Feature B): when a .cue/.chd is mounted via the CUECHD slot
+   // (img_mounted[1] -> hasCD), route ATAPI READ(10/12) data from it. s573_cdimg drives
+   // the sd-block channel (sd_rd[1]/sd_lba1) and consumes sd_ack[1]/sd_buff_wr/sd_buff_dout
+   // -- the exact stream the removed cd_top used (raw 2352-byte sectors, 16b/word).
+   .cd_image       (hasCD),
+   .cd_hps_req     (sd_rd[1]),
+   .cd_hps_lba     (sd_lba1),
+   .cd_hps_ack     (sd_ack[1]),
+   .cd_hps_write   (sd_buff_wr),
+   .cd_hps_data    (sd_buff_dout),
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),

@@ -39,6 +39,10 @@ incremental_db/
 # dumps by sim/gen_secdata.sh. Copyrighted -- regenerable, never commit.
 sim/secdata/
 
+# CD-image sim fixtures: $readmemh hex sectors DERIVED from the (gitignored) game
+# CHD/CD dumps by sim/gen_cddata.sh. Copyrighted -- regenerable, never commit.
+sim/cddata/
+
 # Full-system sim outputs
 sim/system/out/
 *.rbf
