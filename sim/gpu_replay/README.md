@@ -1,0 +1,124 @@
+# GPU-replay NVC rig (`sim/gpu_replay`)
+
+A GPU-**isolated** GP0/GP1 command-replay testbench for NVC. It stands the vendored
+`psx.gpu` up standalone (no CPU, no BIOS, no full system), drives it from a text
+command stream, and captures the rendered framebuffer to the upstream `.gra` dump
+machinery. Purpose: test the hyperbbc bg-panel garble **in simulation** — split an
+RTL-logic bug (sim garbles too) from a HW-timing interaction (sim renders clean,
+since the sim VRAM model is ideal-timing) via the `SLOWTIMING` knob.
+
+It is the NVC twin of the upstream ModelSim rig `psx/sim/gpu/src/tb/tb.vhd`, but:
+- pure **reset** bring-up (no `tb_savestates`/.ss load — with `loading_savestate='0'`
+  a plain reset fully soft-resets the GPU, so the stream programs everything);
+- **VRAM preload** via the `ddrram_model` `COMMAND_FILE_START_2` path (`TARGET=0`
+  loads a raw 1024x512x2 LE image linearly into the model's `data[]` — proven
+  byte-exact, see Milestone 1);
+- the **full current `gpu.vhd` port map** (this 573 fork has a 28-bit `vram_ADDR`
+  and many ports the old upstream tb lacks), copied from `psx_top.vhd`; the DDR
+  address mapping `DDRAM_ADDR(24:0) <= vram_ADDR(27:3)` (base `0x3<<25`) is copied
+  from `psx_mister.vhd`;
+- generic-selectable command file + VRAM file + `SLOWTIMING` (the latency lever).
+
+Nothing in the vendored `psx/` submodule is edited; the tb only INSTANTIATES it.
+
+## Files
+- `tb_gpu_replay.vhd` — the harness (original to this repo).
+- `gen_stream.py` — GP0/GP1 stream generator (single source of truth for the
+  byte-exact encodings). Subcommands: `demo`, `texrect [bpp tx ty]`, `texquad`.
+- `run.sh` — analyze + elaborate + run + render `.gra`→PNG.
+- `cmd_*.txt` — generated command streams.
+
+## Command-stream format
+One event per line, all hex; `#` comments + blank lines skipped:
+```
+<addr> <time> <data>
+```
+`addr` = GPU `bus_addr` (`00000000`=GP0 data/cmd FIFO, `00000004`=GP1 control);
+`time` = clk1x tick at/after which to issue the write; `data` = the 32-bit word.
+
+## Run it
+```
+sim/gpu_replay/run.sh [CMD_FILE] [VRAM_FILE] [SLOWTIMING] [DRAIN_MS]
+```
+- `CMD_FILE`   command stream (default `cmd_fill_demo.txt`). **Use an absolute path.**
+- `VRAM_FILE`  raw 1024x512x2 LE VRAM image to preload (default ""=none).
+- `SLOWTIMING` `ddrram_model` VRAM read latency in cycles (0=ideal; the timing lever).
+- `DRAIN_MS`   drain after the last command, an NVC time literal (default `"4 ms"`).
+
+Outputs land in `build/`:
+- `gra_fb_out.gra` / `.png` — raw VRAM-as-drawn, 1024x512 (the **direct render**;
+  use this for garble analysis — unaffected by display crop/timing).
+- `gra_fb_out_vga.gra` / `.png` — displayed video, 640x480 (post display crop).
+
+### Milestone-1 demo (prove the rig)
+```
+sim/gpu_replay/run.sh "$PWD/cmd_fill_demo.txt" "" 0 "4 ms"
+```
+Renders a 320x240 dark-blue VRAM fill with red/green/white flat rectangles at known
+positions — confirmed pixel-exact (red=(248,0,0), green=(0,248,0), white=(248,248,248),
+fill 100% coverage). The full draw pipeline (fill + rect rasterizer + pixel pipeline +
+VRAM writes) works end-to-end in NVC.
+
+## Findings (2026-06-06)
+
+### Milestone 1 — DONE. The NVC GPU-replay rig is up and proven.
+Plus a **VRAM-preload round-trip** validation: preloading `local/titlehunt_11.bin`
+and dumping VRAM back renders **byte-identical** to the known-good `titlehunt_11.png`
+(0 pixels differ) — the preload format + `.gra`→PNG path are trustworthy.
+
+### Milestone 2 — the CLUT experiment, DONE (via the textured-rect path).
+The bg garble forensics (memory/573-game-boot-blockers.md) pinned the suspect to
+render-time 4bpp/8bpp **CLUT sampling** of byte-correct bg textures. We tested OUR
+GPU's actual 4bpp→CLUT sampling RTL by replaying a **raw textured rectangle**
+(GP0 0x65, the `gpu_rect` path) over MAME's byte-exact title-VRAM (texpage 0E,
+CLUT 0x7ac0), into a cleared display region.
+
+| run | CLUT | SLOWTIMING | vs python 4bpp ground-truth |
+|-----|------|-----------|------------------------------|
+| A | correct (MAME `mame_clut7ac0.bin`) | 0 (ideal) | **SSIM 1.0000, 0.0% diff, byte-exact** |
+| B | wrong (our self-test gradient) | 0 | SSIM 0.1131, 33.2% diff (garbled colors) |
+| C | correct | 20 (realistic latency) | **SSIM 1.0000, byte-exact (== run A)** |
+
+Reproduce:
+```
+python3 gen_stream.py texrect 0 14 0 > cmd_texrect.txt        # generator
+# then a 64x64 raw rect sampling UV(0,64) of texpage 0E (see the experiment block)
+```
+The "SPEED" meter graphic renders RED-on-correct (A/C) vs WHITE/GREEN-on-wrong (B):
+same texels, wrong palette — exactly the on-HW symptom signature. See
+`local/_exp_montage.png` (A | B | C).
+
+**Verdict (RTL-logic vs HW-timing) for the bg garble:**
+- The GPU's 4bpp-indexed-texture **CLUT sampling RTL is CORRECT** — byte-exact vs
+  the reference decode when the correct CLUT is present (run A).
+- It is **timing-invariant**: SLOWTIMING=0 and SLOWTIMING=20 produce identical output
+  (run C == run A). So the bg garble is **NOT** a VRAM-read-latency / HW-timing
+  interaction in the GPU sampler.
+- A **wrong CLUT reproduces the garble** (run B): structure preserved, colors wrong.
+  This is consistent with — and points the remaining hunt at — the **CLUT-data path**
+  (the small palette that lands in VRAM at draw time), not the GPU sampler and not
+  timing. (Honest caveat below.)
+
+### Honest caveats / limits
+- **GP0-stream reconstruction fidelity:** we do NOT have MAME's exact 320-quad
+  bg-panel GP0 stream, so we did NOT replay the real scene. We tested the *mechanism*
+  (4bpp→CLUT sampling of the real texture+palette), which is the decisive variable the
+  forensics isolated, but this is an **isolated-primitive** test, not a scene replay.
+- **The CLUT slot is volatile** (memory note 2026-06-06 retraction): a static VRAM
+  dump can't prove *which* CLUT is live at the real draw, so run B demonstrates
+  "wrong CLUT ⇒ this garble", not "the real garble IS a wrong CLUT". It rules the
+  GPU sampler + timing IN/OUT cleanly; it does not by itself close the root cause.
+- **Textured primitives are slow in sim and hang if under-drained.** The GPU's
+  draw-timing model charges ~4 clk2x per textured/transparent pixel, so a 256x256
+  textured prim needs ~262k clk2x (~2 ms drain); under-draining leaves `proc_idle='0'`
+  and looks like a hang. Untextured fills/flat-rects are cheap. Size textured draws +
+  `DRAIN_MS` accordingly (a 64x64 rect needs ~2 ms).
+- **The poly path (GP0 0x2C/0x28) was not used** for the experiment — the rect path
+  (`gpu_rect`) reaches the same 4bpp→CLUT pixel pipeline without the heavier poly
+  timing, and is the cleaner vehicle here. (Untextured flat quads also obey the same
+  per-pixel timing budget; give them enough drain if you use them.)
+
+## Debug
+`tb_gpu_replay.vhd` has a `DBG_TEX` constant (ships **false**). Set it `true` to
+enable an internal probe (`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/
+`DDRAM_RD`) via VHDL-2008 external names — used to diagnose the textured-draw timing.
