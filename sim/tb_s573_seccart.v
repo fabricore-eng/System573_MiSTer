@@ -59,6 +59,25 @@ module tb_s573_seccart;
         .sec_io0(sec_io0_2), .sec_in(sec_in_2), .sec_drdy(sec_drdy_2), .sec_irdy(sec_irdy_2)
     );
 
+    // ---- Part 3 DUT: ZS01 (cart_type 2), loaded with the real gtrfrk5m dump ----
+    // SDA WIRING DIFFERS: the ZS01 cassette drives SDA-out from CONTROL bit 6 (io0_dir,
+    // ACTIVE-LOW) -- NOT D0. SCL=D1, CS=D2, RST=D3, DS2401=D4; readback = sec_io0.
+    reg [7:0]  dl3   = 8'b0000_0100;  // cs=1(desel via D2), scl=0, rst=0, ds=0
+    reg        io0_3 = 1'b0;          // control bit 6 (active-low): 0 -> SDA released(1)
+    reg        e3_we = 0;  reg [12:0] e3_addr = 0;  reg [7:0] e3_data = 0;
+    reg        s3_we = 0;  reg [2:0]  s3_addr = 0;  reg [7:0] s3_data = 0;
+    wire       sec_io0_3, sec_irdy_3, sec_drdy_3;
+    wire [7:0] sec_in_3;
+
+    s573_seccart #(.DS_CLK_HZ(1_000_000)) dut3 (
+        .clk(clk), .rst(rst),
+        .cart_type(2'd2),                 // ZS01
+        .latch_we(1'b0), .d_latch(dl3), .io0_dir(io0_3),
+        .load_eep_we(e3_we), .load_eep_addr(e3_addr), .load_eep_data(e3_data),
+        .load_ser_we(s3_we), .load_ser_addr(s3_addr), .load_ser_data(s3_data),
+        .sec_io0(sec_io0_3), .sec_in(sec_in_3), .sec_drdy(sec_drdy_3), .sec_irdy(sec_irdy_3)
+    );
+
     always #5 clk = ~clk;
     task tk; begin repeat (3) @(posedge clk); end endtask
     task wait_us(input integer n); begin repeat (n) @(posedge clk); end endtask
@@ -151,13 +170,135 @@ module tb_s573_seccart;
         @(negedge clk); s_load_we=0; end
     endtask
 
+    // =====================================================================
+    // Part 3 infrastructure (ZS01 over dut3): the master drives the packet protocol.
+    // SDA-out = io0_3 (control bit 6, ACTIVE-LOW): io0_3=0 releases SDA (high), io0_3=1
+    // pulls it low. SCL=dl3[1], CS=dl3[2], RST=dl3[3], DS2401=dl3[4]; readback=sec_io0_3.
+    // =====================================================================
+    reg [7:0] z_eep [0:4115];   // gtrfrk5m gea26jaa.u1 (4116 bytes, ZS01 NVRAM + padding)
+    reg [7:0] z_ser [0:7];      // gtrfrk5m gea26jaa.u6 (8 bytes)
+    reg [7:0] z_cmdkey [0:7];   // command key from the dump ([4:11])
+
+    task z_load_eep(input [12:0] a, input [7:0] v); begin
+        @(negedge clk); e3_addr=a; e3_data=v; e3_we=1;
+        @(negedge clk); e3_we=0; end
+    endtask
+    task z_load_ser(input [2:0] a, input [7:0] v); begin
+        @(negedge clk); s3_addr=a; s3_data=v; s3_we=1;
+        @(negedge clk); s3_we=0; end
+    endtask
+
+    // drive ZS01 SDA via control bit 6 (active-low): sda_drv=1 -> pull low (io0_3=1).
+    task z_sda(input v); begin io0_3 = ~v; tk; end endtask   // v=1 release(high), v=0 low
+    task z_scl(input v); begin dl3[1] = v; tk; end endtask
+
+    // I2C-like start: SDA 1->0 while SCL high
+    task z_start; begin
+        dl3[1]=0;tk; io0_3=~1'b1;tk; dl3[1]=1;tk; io0_3=~1'b0;tk; dl3[1]=0;tk;
+    end endtask
+    task z_stop; begin
+        dl3[1]=0;tk; io0_3=~1'b0;tk; dl3[1]=1;tk; io0_3=~1'b1;tk;
+    end endtask
+    task z_send(input [7:0] dat, output ack);
+        integer i; begin
+            for (i=7;i>=0;i=i-1) begin dl3[1]=0;tk; io0_3=~dat[i];tk; dl3[1]=1;tk; end
+            dl3[1]=0;tk; io0_3=~1'b1;tk; dl3[1]=1;tk; ack=sec_io0_3; dl3[1]=0;tk; // 9th = dev ack
+        end
+    endtask
+    task z_read(output [7:0] dat);   // master ACKs every byte (drives SDA low on 9th)
+        integer i; begin
+            dat=8'h00;
+            for (i=7;i>=0;i=i-1) begin dl3[1]=0;tk; io0_3=~1'b1;tk; dl3[1]=1;tk; dat[i]=sec_io0_3; end
+            dl3[1]=0;tk; io0_3=~1'b0;tk; dl3[1]=1;tk; dl3[1]=0;tk; io0_3=~1'b1; // master ack (low)
+        end
+    endtask
+    task z_read_rtr(output [7:0] dat);   // RTR: device shifts MSB-first on falling SCL
+        integer i; begin
+            dat=8'h00;
+            for (i=0;i<8;i=i+1) begin dl3[1]=1;tk; dl3[1]=0;tk; dat={dat[6:0],sec_io0_3}; end
+        end
+    endtask
+
+    // ---- master-side ZS01 cipher (independent transliteration of zs01.cpp) ----
+    function [7:0] ror8(input [7:0] x, input [2:0] r); ror8 = (x >> r) | (x << ((4'd8-r)&3'd7)); endfunction
+    function [7:0] rol8(input [7:0] x, input [2:0] r); rol8 = (x << r) | (x >> ((4'd8-r)&3'd7)); endfunction
+    function [15:0] z_crc(input [79:0] dd);
+        integer a3,a2; reg [15:0] v; reg [7:0] b; begin
+            v=16'hffff;
+            for (a3=0;a3<10;a3=a3+1) begin
+                b=dd[8*(9-a3)+:8]; v=v^{b,8'h00};
+                for (a2=0;a2<8;a2=a2+1) v = v[15] ? ((v<<1)^16'h1021) : (v<<1);
+            end
+            z_crc = ~v;
+        end
+    endfunction
+
+    reg [7:0] zpkt [0:11];
+    reg [7:0] zrsp [0:11];
+    // descending scramble with key (host->device); key bytes z_cmdkey[0..7] or rkey
+    task z_encrypt(input [7:0] k0,k1,k2,k3,k4,k5,k6,k7);
+        integer idx,kk; reg [7:0] prev,acc,kb,key[0:7]; begin
+            key[0]=k0;key[1]=k1;key[2]=k2;key[3]=k3;key[4]=k4;key[5]=k5;key[6]=k6;key[7]=k7;
+            prev=8'hff;
+            for (idx=11;idx>=0;idx=idx-1) begin
+                acc = key[0] + (zpkt[idx]^prev);
+                for (kk=1;kk<=7;kk=kk+1) begin kb=key[kk]; acc=rol8(acc,kb[7:5]); acc=acc+(kb&8'h1f); end
+                zpkt[idx]=acc; prev=acc;
+            end
+        end
+    endtask
+    // descending descramble of the response with the response key (== device decrypt)
+    task z_decrypt(input [7:0] k0,k1,k2,k3,k4,k5,k6,k7);
+        integer idx,kk; reg [7:0] prev,t1,t0,kb,key[0:7]; begin
+            key[0]=k0;key[1]=k1;key[2]=k2;key[3]=k3;key[4]=k4;key[5]=k5;key[6]=k6;key[7]=k7;
+            prev=8'hff;
+            for (idx=11;idx>=0;idx=idx-1) begin
+                t1=zrsp[idx]; t0=t1;
+                for (kk=7;kk>=1;kk=kk-1) begin kb=key[kk]; t0=t0-(kb&8'h1f); t0=ror8(t0,kb[7:5]); end
+                zrsp[idx]=(t0-key[0])^prev; prev=t1;
+            end
+        end
+    endtask
+
+    // Run one ZS01 command: build [cmd][addr][8 payload][crc], scramble with the cmd
+    // key, clock in, read+descramble the 12-byte response with the response key.
+    // bad_key=1 scrambles with the WRONG command key (negative control).
+    task z_command(input [7:0] cmd, input [7:0] addr, input [63:0] payload,
+                   input bad_key, input [63:0] rkey,
+                   output [7:0] status, output [63:0] rdata);
+        integer i; reg [15:0] crc; reg [7:0] k0,k1,k2,k3,k4,k5,k6,k7; reg lack; begin
+            zpkt[0]=cmd; zpkt[1]=addr;
+            for (i=0;i<8;i=i+1) zpkt[2+i]=payload[8*(7-i)+:8];
+            crc = z_crc({zpkt[0],zpkt[1],zpkt[2],zpkt[3],zpkt[4],zpkt[5],zpkt[6],zpkt[7],zpkt[8],zpkt[9]});
+            zpkt[10]=crc[15:8]; zpkt[11]=crc[7:0];
+            k0=z_cmdkey[0]; k1=z_cmdkey[1]; k2=z_cmdkey[2]; k3=z_cmdkey[3];
+            k4=z_cmdkey[4]; k5=z_cmdkey[5]; k6=z_cmdkey[6]; k7=z_cmdkey[7];
+            if (bad_key) begin                 // wrong key -> device CRC fails
+                k0=k0^8'hff; k1=k1^8'hff; k2=k2^8'hff; k3=k3^8'hff;
+                k4=k4^8'hff; k5=k5^8'hff; k6=k6^8'hff; k7=k7^8'hff;
+            end
+            z_encrypt(k0,k1,k2,k3,k4,k5,k6,k7);
+            z_start;
+            for (i=0;i<12;i=i+1) z_send(zpkt[i], lack);
+            for (i=0;i<12;i=i+1) z_read(zrsp[i]);
+            z_decrypt(rkey[63:56],rkey[55:48],rkey[47:40],rkey[39:32],
+                      rkey[31:24],rkey[23:16],rkey[15:8],rkey[7:0]);
+            status = zrsp[0];
+            rdata  = {zrsp[2],zrsp[3],zrsp[4],zrsp[5],zrsp[6],zrsp[7],zrsp[8],zrsp[9]};
+        end
+    endtask
+
     integer i;
     reg [7:0] b0,b1,b2,b3,d;
     reg       ack;
     reg [63:0] rom, exprom;
     reg        bv;
+    reg [7:0] zst;
+    reg [63:0] zdat;
+    reg [15:0] zc;
+    reg z_present;
 
-    integer fh;
+    integer fh, fh3;
     reg data_present;
 
     initial begin
@@ -172,6 +313,15 @@ module tb_s573_seccart;
             $readmemh("secdata/pnchmn2_u1.hex", eep_img);
             $readmemh("secdata/pnchmn2_u6.hex", ser_img);
             data_present = 1'b1;
+        end
+        // Part 3 (ZS01) uses gtrfrk5m's real dump, gated independently.
+        z_present = 1'b0;
+        fh3 = $fopen("secdata/gtrfrk5m_u1.hex", "r");
+        if (fh3 != 0) begin
+            $fclose(fh3);
+            $readmemh("secdata/gtrfrk5m_u1.hex", z_eep);
+            $readmemh("secdata/gtrfrk5m_u6.hex", z_ser);
+            z_present = 1'b1;
         end
 
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; tk;
@@ -309,6 +459,82 @@ module tb_s573_seccart;
             errors=errors+1; end
       end // if (data_present)
 
+      // =====================================================================
+      // Part 3: ZS01 cart loaded with the REAL gtrfrk5m dump (dut3)
+      //   This is the Feature-A clean validation target: gtrfrk5m is flash + ZS01.
+      //   We load the real gea26jaa.u1 (4116-byte ZS01 NVRAM image) + .u6 through the
+      //   new load ports, then drive the authenticated packet protocol:
+      //     (a) response-to-reset = 5A 53 00 01
+      //     (b) authenticated READ of address 0x00 returns the REAL decrypted data
+      //         00 00 4a 41 00 00 f7 46 -- NOT the sim-default ramp 00..07
+      //     (c) READ of address 0x01 returns the REAL 02 00 00 00 00 00 00 fd
+      //     (d) READ config regs (0xFE) returns the dump's 47 45 41 32 36 00 00 00
+      //     (e) READ internal DS2401 (0xFC) returns the loaded .u6 serial bytes
+      //     (f) NEGATIVE CONTROL: a packet scrambled with the WRONG command key fails
+      //         the device CRC and returns STATUS_ERROR (0x02), not OK.
+      // =====================================================================
+      if (!z_present) begin
+        $display("NOTE: gtrfrk5m dump absent -- skipping ZS01 real-data test (run sim/gen_secdata.sh with dumps/)");
+      end else begin
+        // ---- stream the real .u1 (4116 B) + .u6 (8 B) in through the load ports ----
+        for (i=0;i<4116;i=i+1) z_load_eep(i[12:0], z_eep[i]);
+        for (i=0;i<8;   i=i+1) z_load_ser(i[2:0],  z_ser[i]);
+        // the master needs the command key from the dump ([4:11]) to scramble packets.
+        for (i=0;i<8;i=i+1) z_cmdkey[i] = z_eep[4+i];
+        tk;
+
+        // ---- (a) response to reset ----
+        dl3[2]=0; tk;                    // CS low (D2) = select
+        dl3[3]=1; tk;                    // RST high (D3) -> RTR
+        z_read_rtr(b0); z_read_rtr(b1); z_read_rtr(b2); z_read_rtr(b3);
+        if ({b0,b1,b2,b3} !== 32'h5a53_0001) begin
+            $display("FAIL: zs01 rtr %02h%02h%02h%02h (want 5a530001)", b0,b1,b2,b3); errors=errors+1; end
+        dl3[3]=0; tk;                    // RST low (device self-stops after RTR)
+
+        // ---- (b) authenticated READ of address 0x00 = the real data ----
+        z_command(8'h01, 8'h00, 64'hA0A1_A2A3_A4A5_A6A7, 1'b0, 64'hA0A1_A2A3_A4A5_A6A7, zst, zdat);
+        if (zst !== 8'h00) begin $display("FAIL: zs01 read0 status=%02h (want 00)", zst); errors=errors+1; end
+        if (zdat !== 64'h0000_4a41_0000_f746) begin
+            $display("FAIL: zs01 read addr0 = %016h (want real 00004a410000f746)", zdat); errors=errors+1; end
+        if (zdat === 64'h0001_0203_0405_0607) begin
+            $display("FAIL: zs01 read addr0 is the SIM-DEFAULT ramp -- load not applied"); errors=errors+1; end
+
+        // ---- (c) READ of address 0x01 = the real data ----
+        z_command(8'h01, 8'h01, 64'hB0B1_B2B3_B4B5_B6B7, 1'b0, 64'hB0B1_B2B3_B4B5_B6B7, zst, zdat);
+        if (zst !== 8'h00) begin $display("FAIL: zs01 read1 status=%02h", zst); errors=errors+1; end
+        if (zdat !== 64'h0200_0000_0000_00fd) begin
+            $display("FAIL: zs01 read addr1 = %016h (want real 020000000000 00fd)", zdat); errors=errors+1; end
+
+        // ---- (d) READ config registers (address 0xFE) = the dump's config ----
+        z_command(8'h01, 8'hfe, 64'hC0C1_C2C3_C4C5_C6C7, 1'b0, 64'hC0C1_C2C3_C4C5_C6C7, zst, zdat);
+        if (zst !== 8'h00) begin $display("FAIL: zs01 cfg status=%02h", zst); errors=errors+1; end
+        if (zdat !== 64'h4745_4132_3600_0000) begin
+            $display("FAIL: zs01 config = %016h (want real 4745413236000000)", zdat); errors=errors+1; end
+
+        // ---- (e) READ internal DS2401 (address 0xFC) = the loaded .u6 serial ----
+        // MAME returns direct_read(7-i) for i=0..7 = file bytes 7,6,...,0.
+        z_command(8'h01, 8'hfc, 64'hD0D1_D2D3_D4D5_D6D7, 1'b0, 64'hD0D1_D2D3_D4D5_D6D7, zst, zdat);
+        if (zst !== 8'h00) begin $display("FAIL: zs01 ds2401 status=%02h", zst); errors=errors+1; end
+        if (zdat !== {z_ser[7],z_ser[6],z_ser[5],z_ser[4],z_ser[3],z_ser[2],z_ser[1],z_ser[0]}) begin
+            $display("FAIL: zs01 internal ds2401 = %016h (want loaded %02h%02h%02h%02h%02h%02h%02h%02h)",
+                     zdat, z_ser[7],z_ser[6],z_ser[5],z_ser[4],z_ser[3],z_ser[2],z_ser[1],z_ser[0]);
+            errors=errors+1; end
+
+        // ---- (f) NEGATIVE CONTROL: wrong command key -> device CRC fails -> ERROR ----
+        // On a bad-CRC packet the device does NOT update its response key (MAME only
+        // sets m_response_key on a successful READ), so the error response is scrambled
+        // with the STALE key = the previous (0xFC) command's payload D0..D7. Descramble
+        // with that; the freshly-set rbuf[0]=STATUS_ERROR then decodes to 0x02.
+        z_command(8'h01, 8'h00, 64'hE0E1_E2E3_E4E5_E6E7, 1'b1, 64'hD0D1_D2D3_D4D5_D6D7, zst, zdat);
+        if (zst !== 8'h02) begin
+            $display("FAIL: zs01 wrong-key did NOT report STATUS_ERROR (got %02h, want 02)", zst);
+            errors=errors+1; end
+        if (zst === 8'h00) begin
+            $display("FAIL: zs01 wrong-key was ACCEPTED (status OK) -- auth not enforced"); errors=errors+1; end
+
+        dl3[2]=1; tk;                    // deselect
+      end // if (z_present)
+
         if (errors == 0) begin
             $display("RESULT: PASS (s573_seccart)");
             if (data_present) begin
@@ -317,6 +543,10 @@ module tb_s573_seccart;
                 $display("  loaded DS2401 ROM = %016h (real pnchmn2 d202030405060701)", rom);
             end else
                 $display("  (X76F041 real-data Part 2 skipped: pnchmn2 dump absent)");
+            if (z_present)
+                $display("  ZS01 gtrfrk5m: authenticated READ addr0 = 00004a410000f746 (REAL, not default ramp),");
+            else
+                $display("  (ZS01 real-data Part 3 skipped: gtrfrk5m dump absent)");
         end else
             $display("RESULT: FAIL (s573_seccart, %0d errors)", errors);
         $finish;

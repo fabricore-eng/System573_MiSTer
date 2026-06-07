@@ -1441,20 +1441,20 @@ s573_nvram_loader nvram_loader (
 //             byte writes, like the NVRAM path).
 //   index 5 = DS2401 serial (.u6): the 8-byte 1-Wire silicon serial ROM.
 // The cart TYPE is inferred from the EEPROM image SIZE (the loader reports the
-// highest byte index seen): >=548 -> X76F041 (type 1); <=112 -> X76F100 (type 0);
-// >=4116 would be ZS01 (type 2, not yet modeled). Latched once the EEPROM download
+// highest byte index seen): >=560 -> ZS01 (type 2, the 4116-byte gtrfrk5m .u1);
+// >=548 -> X76F041 (type 1); else X76F100 (type 0). Latched once the EEPROM download
 // completes; defaults to type 0 (matches the prior param-only behaviour, so a game
 // with no .u1 -- e.g. flash-only hyperbbc -- is unaffected).
 wire        sec_eep_we;
-wire [9:0]  sec_eep_addr;
+wire [12:0] sec_eep_addr;   // 13-bit covers the padded 4116-byte ZS01 .u1
 wire [7:0]  sec_eep_din;
 wire        seceep_nv_hi;
-wire [9:0]  sec_eep_max;
-s573_seccart_loader #(.AW(10)) seceep_loader (
+wire [12:0] sec_eep_max;
+s573_seccart_loader #(.AW(13)) seceep_loader (
    .clk        (clk_1x),
    .load_en    (seceep_download),
    .ioctl_wr   (ioctl_wr),
-   .ioctl_addr (ioctl_addr[9:0]),
+   .ioctl_addr (ioctl_addr[12:0]),
    .ioctl_dout (ioctl_dout),
    .byte_we    (sec_eep_we),
    .byte_addr  (sec_eep_addr),
@@ -1482,16 +1482,19 @@ s573_seccart_loader #(.AW(3)) secser_loader (
 );
 
 // Infer the cart type from the loaded EEPROM size (highest byte index written).
-// 548-byte image (max index 547) -> X76F041; smaller -> X76F100. Latched after the
-// EEPROM download deasserts so the threshold sees the final max_addr.
+// Latched after the EEPROM download deasserts so the threshold sees the final
+// max_addr. Size tiers (top byte index):
+//   ZS01      (.u1 = 4116 B, gtrfrk5m)         -> max_addr = 4115  -> type 2
+//   X76F041   (.u1 = 548 B,  pnchmn2)          -> max_addr =  547  -> type 1
+//   X76F100   (.u1 = 112 B,  hyperbbc-class)   -> max_addr <=  111  -> type 0
+// Thresholds: >=560 (well above 548) -> ZS01; else >=112 -> X76F041; else X76F100.
 reg [1:0] sec_cart_type = 2'd0;
 reg       seceep_download_1 = 1'b0;
 always @(posedge clk_1x) begin
    seceep_download_1 <= seceep_download;
    if (seceep_download_1 && !seceep_download) begin   // download just finished
-      // 548-byte X76F041 image addresses up to 547 (> 112). A 112-byte X76F100
-      // image tops out at 111. (ZS01 = type 2 would top out > 4096; reserved.)
-      sec_cart_type <= (sec_eep_max >= 10'd112) ? 2'd1 : 2'd0;
+      sec_cart_type <= (sec_eep_max >= 13'd560) ? 2'd2 :
+                       (sec_eep_max >= 13'd112) ? 2'd1 : 2'd0;
    end
 end
 

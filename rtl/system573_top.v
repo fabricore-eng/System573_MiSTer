@@ -56,8 +56,8 @@ module system573_top #(
     // Security-cartridge image load (e.g. pnchmn2 gqa09ja.u1 / .u6), streamed in at
     // reset. cart_type selects the EEPROM model: 0 = X76F100, 1 = X76F041.
     input  wire [1:0]  sec_cart_type,
-    input  wire        sec_eep_we,    // EEPROM (.u1, 548-byte x76f041 image) byte write
-    input  wire [9:0]  sec_eep_addr,
+    input  wire        sec_eep_we,    // EEPROM (.u1: 548 B x76f041 / 4116 B zs01) byte write
+    input  wire [12:0] sec_eep_addr,  // 13-bit covers the padded 4116-byte ZS01 .u1
     input  wire [7:0]  sec_eep_din,
     input  wire        sec_ser_we,    // DS2401 (.u6, 8-byte serial image) byte write
     input  wire [2:0]  sec_ser_addr,

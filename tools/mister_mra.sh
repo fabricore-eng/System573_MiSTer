@@ -11,8 +11,9 @@
 # comes up from one `load_core`, which is what makes hands-off HW testing possible.
 #
 # The security-cart parts (4/5) are OPTIONAL: a flash-only game (hyperbbc) omits
-# them; a security game (pnchmn2) passes them via --eeprom / --serial (or env
-# EEPROM=/SERIAL=). The core infers the cart type from the .u1 SIZE.
+# them; a security game (pnchmn2 = X76F041, gtrfrk5m = ZS01) passes them via
+# --eeprom / --serial (or env EEPROM=/SERIAL=). The core infers the cart type from the
+# .u1 SIZE (112 = X76F100, 548 = X76F041, 4116 = ZS01).
 #
 # Pairs with tools/mister_filmstrip.sh to watch the boot:
 #   tools/mister_mra.sh --film
@@ -32,6 +33,11 @@
 #     tools/mister_mra.sh --eeprom dumps/pnchmn2/eeprom.u1 \
 #       --serial dumps/pnchmn2/serial.u6 pnchmn2_573 dumps/bios/573.bin \
 #       dumps/pnchmn2/flash16m.bin dumps/hyperbbc/nvram8k.bin
+#
+#   gtrfrk5m ZS01 example (after `python3 tools/pack_gtrfrk5m.py`):
+#     tools/mister_mra.sh --eeprom dumps/gtrfrk5m/eeprom.u1 \
+#       --serial dumps/gtrfrk5m/serial.u6 gtrfrk5m_573 dumps/bios/573.bin \
+#       dumps/gtrfrk5m/flash16m.bin dumps/hyperbbc/nvram8k.bin
 #
 # Deploys: rbf -> _Arcade/cores, zip -> games/mame, mra -> _Arcade. Reads
 # local/mister.env for the board. The core's .rbf is taken from
