@@ -656,7 +656,13 @@ end
 
 reg cart_loaded = 0;
 always @(posedge clk_1x) begin
-	if (exe_download || img_mounted[1]) begin
+	// allow_ss (savestate enable) is gated on this. The upstream PSX cases are an
+	// .EXE upload (exe_download) or a mounted CD image (img_mounted[1]). A 573
+	// FLASH-only game (e.g. hyperbbc) loads via neither -> cart_loaded stayed 0 ->
+	// savestates were silently disabled (Alt-F1 / OSD "Save state" did nothing).
+	// flash_download (ioctl_index==2) is the onboard-flash game-load signal; latch
+	// on it too so savestates work for flash games (needed for the garble capture).
+	if (exe_download || img_mounted[1] || flash_download) begin
 		cart_loaded <= 1;
 	end
 end
