@@ -87,6 +87,68 @@ Consequences + options for the garble per-draw work:
 
 The harness still **fully de-risks the FSM**: it runs the complete load handshake end-to-end.
 
+**Option A is now IMPLEMENTED** (tb generics `PRELOAD_VRAM`/`PRELOAD_RAM` + `VRAM_FILE`/`RAM_FILE`;
+`run.sh` carves the slices with `tools/ss_vram_extract.py` and preloads them; auto-ON when a real
+`.ss` is given). Addressing (verified): the VRAM slice → `ddrram_model` `TARGET=0` lands in
+`data[0..0x3FFFF]` (the 1024×512 RGB555 window the GPU samples — `ddrram_model.vhd:359-374`); the
+main-RAM slice → the main `sdram_model3x` `TARGET=0` lands at PSX phys 0 (`data[0]`; a RAM read
+indexes `data[ram_Adr&~1]` with top bits "00" for phys 0, `memorymux.vhd:576/630`). Both disjoint
+from the BIOS (`0x800000`) and the savestate region (`data[0x800000..]`). `FIX_POLY_DIV` (ships ON)
+ports the `sim/gpu_replay` M5 tb-side repair so the POLY/LINE paths render under NVC (the same
+inout-record `'U'`-poison would otherwise silently emit 0 pixels — see below).
+
+## ⚠️⚠️ STAGE-1 RESULT (2026-06-07): the full-system replay DEADLOCKS on resume — bounded NEGATIVE
+
+Ran with the real `local/hyperbbc_garble.ss` (Option A preload + load + FIX_POLY_DIV) out to 150 ms
+sim time (~20 min wall). **The garble does NOT reproduce, and it cannot, because the resume
+deadlocks the GPU/DMA before the CPU ever reaches the 320-quad band redraw.** Evidence (all
+objective, via the `PCPROBE`/`GPUPROBE`/`DRAWTAP` external-name taps added here; flip them on):
+
+1. **Load completes + CPU resumes correctly.** Load FSM runs to `state_loaded=1` at ~5.9 ms (SPURAM
+   replay dominates). The CPU then executes REAL game code (554 distinct PCs, IRQs fire), so the
+   RAM preload is faithful. The frozen PC `0x801391C0` is a VSync spin (`bne` on a flag at
+   `0x8017BCC4` cleared by the vblank ISR); the CPU breaks out of it (ISR works).
+
+2. **The CPU then spins on the GPU-DMA-busy bit and never advances.** It parks polling
+   `D2_CHCR (0x1F8010A8) & 0x01000000` (GPU DMA ch2 start/busy) and `GPUSTAT & 0x04000000`
+   (ReadyRecDMA) — waiting for the GPU DMA of the OT (which CONTAINS the band's 320 `0x2C` quads)
+   to finish. It never finishes.
+
+3. **The GPU is permanently STUCK mid-command (the deadlock).** From ~20 ms onward `GPUPROBE` shows
+   a single stable terminal state: `procIdle=0` (a draw command is mid-flight) + `procReqFifo=1`
+   (the active drawer is requesting more FIFO words) + `fifoEmpty=1` + `dmaOn=0` (FIFO empty, DMA
+   off → the words never come). `procIdle` returns to 1 **zero** times after 20 ms; **zero** new GPU
+   pixels are written (the `gra` stays exactly the preload size). `polyReqFifo=0 rectReqFifo=0` at
+   the stall, so the stuck drawer is a **non-poly block-transfer/fill** (cpu2vram / vram2vram /
+   fill / line) that consumed its opcode but not its parameter words.
+
+**Root cause = a savestate-resume mid-DMA inconsistency.** The `.ss` was captured with the GPU
+mid-command and DMA ch2 mid-linked-list-transfer. FASTSIM restores the GPU **registers** (incl. the
+mid-command `proc_idle=0`) but the **in-flight DMA pointer/count** + the partially-filled GPU
+command FIFO do not resume coherently, so the drawer waits forever for FIFO words DMA will never
+deliver → `proc_done` never fires → `D2_CHCR` busy never clears → CPU spins → the band redraw is
+never reached. This is independent of (and upstream of) the garble; the cold `sim/gpu_replay` rig
+remains the only tool that actually rasterises the band quads (it injects the GP0 stream directly,
+bypassing the DMA/FIFO resume).
+
+**So the disambiguator the plan wanted (live CLUT cache at the garble draw) is NOT obtainable from
+this savestate via this path** — the live draw never executes. The established forensic chain stands
+unchanged (cold rig M5: poly path + CLUT lookup are byte-faithful; the garble REQUIRES a green-ramp
+CLUT live at draw time; no such CLUT exists in the `.ss` VRAM). Pinning (a) wrong-coord-upstream vs
+(b) cache-staleness still needs the **live GPU CLUT-cache state at the real on-HW draw** (an on-HW
+CLUT-cache probe), OR a *mid-frame* (not GAME-OVER-static) savestate captured when the GPU/DMA are
+idle between frames (so the resume doesn't land mid-command), OR a vendored-edit that re-syncs the
+DMA/FIFO on `state_loaded`. The harness + taps are in place for the latter two the moment such a
+`.ss` exists.
+
+Reproduce the negative:
+```
+# all taps on, run to 30 ms (the deadlock is fully established by ~20 ms):
+DRAWTAP=1 PCPROBE=1 GPUPROBE=1 sim/system573_ssreplay/run.sh 30ms local/hyperbbc_garble.ss
+tail build/gpuprobe.log     # -> the stable procIdle=0 procReqFifo=1 fifoEmpty=1 terminal stall
+grep -c '^OUT' build/drawtap.log   # -> 0 (band never drawn)
+```
+
 ## Run recipe
 
 ```
@@ -107,9 +169,12 @@ DRAWTAP=1 sim/system573_ssreplay/run.sh 5ms /path/to/state.ss
 ```
 
 Env knobs: `LOAD_AT` (when after reset to pulse `load_state`, default `"60 us"`), `TURBO`,
-`SLOWVRAM`, `RAM8MB`. Outputs land in `build/` (gitignored): `gra_fb_out_vga.gra/.png` (640×480
-displayed video), `gra_fb_out.gra/.png` (1024×512 raw VRAM), `ssreplay.log` (the load sequence),
-`ssload_probe.log` (the load-FSM handshake edges), `drawtap.log` (if `DRAWTAP=1`).
+`SLOWVRAM`, `RAM8MB`, `PRELOAD` (Option A VRAM+RAM preload; auto-ON for a real `.ss`),
+`DRAWTAP` (per-draw CLUT tap over the garble band → `drawtap.log`), `PCPROBE` (CPU-PC liveness →
+`pcprobe.log`), `GPUPROBE` (DMA/GPU-FIFO/draw state → `gpuprobe.log`). Outputs land in `build/`
+(gitignored): `gra_fb_out_vga.gra/.png` (640×480 displayed video), `gra_fb_out.gra/.png` (1024×512
+raw VRAM), `ssreplay.log` (the load sequence), `ssload_probe.log` (the load-FSM handshake edges),
+`drawtap.log`/`pcprobe.log`/`gpuprobe.log` (if the matching probe is on).
 
 ## Where to drop a real `.ss`
 

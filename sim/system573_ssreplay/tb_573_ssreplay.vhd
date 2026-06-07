@@ -51,6 +51,7 @@ library tb;
 use tb.globals.all;       -- COMMAND_FILE_* signals (the model-load handshake)
 
 library psx;
+use psx.pGPU.all;         -- div_type (the FIX_POLY_DIV whole-record force aliases)
 
 entity tb_573_ssreplay is
    generic
@@ -65,6 +66,18 @@ entity tb_573_ssreplay is
       -- LOAD_SS='1': preload SS_FILE into the ddrram_model + pulse load_state. '0'
       -- = plain boot (no savestate), to A/B the resume vs a stock boot.
       LOAD_SS     : std_logic := '1';
+      -- *** Option A (README) preload of the FASTSIM-skipped VRAM + RAM slices ***
+      -- With is_simu='1' the in-core user-load SKIPS savetype 15 (VRAM) + 16 (RAM).
+      -- To get a faithful per-draw render we additionally preload the .ss VRAM slice
+      -- straight into the ddrram_model VRAM window (TARGET=0 -> data[0..0x3FFFF], the
+      -- 1024x512 RGB555 region the GPU samples) and the .ss main-RAM slice into the
+      -- main sdram_model3x (TARGET=0 -> PSX physical 0x0, the game code/data the CPU
+      -- runs). Both are tb-only COMMAND_FILE preloads (no vendored edit). run.sh
+      -- carves the slices with tools/ss_vram_extract.py and passes the basenames.
+      PRELOAD_VRAM : std_logic := '0';
+      PRELOAD_RAM  : std_logic := '0';
+      VRAM_FILE    : string    := "ss_vram.bin";   -- 1 MiB, 1024x512 RGB555 LE
+      RAM_FILE     : string    := "ss_ram.bin";    -- 2 MiB, PSX main RAM bytes
       -- DDR word index where the savestate region ALIASES into the ddrram_model
       -- data[] array. DERIVATION (see report): savestates Softmap_SaveState_ADDR =
       -- 0x3800000 (DWORD) -> top ddr3_ADDR = (addr<<2) = 0xE000000 byte ->
@@ -81,7 +94,40 @@ entity tb_573_ssreplay is
       SLOWVRAM    : integer := 0;
       -- Per-draw GPU tap (Stage-1 deliverable). Ships OFF; flip to '1' (or run.sh
       -- DRAWTAP=1) to emit a per-draw record via NVC external names (no DUT edit).
+      -- When ON it taps the live CLUT pipeline (drawMode, textPalX/Y, the CLUT-load
+      -- handshake reqVRAMXPos/YPos, CLUTaddrB index, CLUTDataB color, output
+      -- pixelColor) over the garble band so the report can PIN the wrong-CLUT source.
       DRAWTAP     : std_logic := '0';
+      -- Diagnostic CPU-PC + activity probe (pcprobe.log): samples PC + GPU/IRQ
+      -- liveness so we can tell a resumed-and-progressing CPU from a wait-loop spin
+      -- (the redraw never arriving = a bounded negative). Ships OFF.
+      PCPROBE     : std_logic := '0';
+      -- Diagnostic GPU/DMA-state probe (gpuprobe.log): taps the DMA state machine +
+      -- GPU command-FIFO + draw proc_idle so we can pin WHY the GPU produces no
+      -- pixels when the CPU spins on the GPU-DMA-busy bit (D2_CHCR bit24). Ships OFF.
+      GPUPROBE    : std_logic := '0';
+      -- FIX_POLY_DIV (ships ON): repair the NVC inout-record 'U' poison on the
+      -- shared-divider read ports so the POLY (0x2C QUAD) + LINE paths RENDER under
+      -- NVC. gpu.vhd wires the dividers through `inout div_type` ports on
+      -- gpu_poly/gpu_line; those drawers never assign the read-only .done/.quotient/
+      -- .remainder fields, but an inout port still creates a SOURCE for the whole
+      -- record, and div_type.done is a default-less std_logic -> NVC init-time
+      -- multi-source resolution makes POLY_DIV(i).done='U' forever -> gpu_poly's
+      -- divider-gated states never advance -> 0 pixels (the band's 320 quads draw
+      -- NOTHING). This is the SAME blocker the cold sim/gpu_replay rig hit; the fix
+      -- (force the whole div_type record on each igpu_poly/igpu_line.divN port to the
+      -- real divider instance outputs gdividers(i).idivider.*) is ported verbatim,
+      -- re-rooted to this harness's GPU path. Pure NVC artifact; NO psx/ edit; on
+      -- silicon there is no init 'U'. Without it the WHOLE garble experiment is a
+      -- false negative (poly path silently emits no pixels). See gpu_replay README M5.
+      FIX_POLY_DIV : boolean := true;
+      -- Garble band window (display/VRAM pixel coords) the tap restricts to, so the
+      -- log stays bounded to the 320-quad chain that paints the green band. Defaults
+      -- = the hyperbbc GAME-OVER band (M5: display x123..378 y0..203).
+      TAP_X0      : integer := 123;
+      TAP_X1      : integer := 378;
+      TAP_Y0      : integer := 0;
+      TAP_Y1      : integer := 203;
       -- sim time (after reset release) at which to pulse load_state, and the pulse
       -- width. Defaults give the resetMode init time to settle + validate the slot.
       LOAD_AT     : time := 60 us;
@@ -237,6 +283,53 @@ begin
       COMMAND_FILE_START_1 <= '0';
       wait for 1 us;
       report "tb_573_ssreplay: BIOS loaded into SDRAM model";
+
+      -- (1b) Option A: PRELOAD the .ss main-RAM slice into the SAME sdram_model3x at
+      --      PSX physical byte 0 (TARGET=0 -> data[0..]). The FASTSIM user-load skips
+      --      savetype 16 (RAM), so without this the CPU steps forward over BIOS-left
+      --      garbage instead of the frozen game code/data. Independent COMMAND_FILE_
+      --      START_1 handshake (the model serves one load per pulse). Byte-array
+      --      model: file bytes land 1:1 at data[TARGET+i], and a main-RAM read indexes
+      --      data[ram_Adr & ~1] with ram_Adr top bits "00" for phys 0 (memorymux.vhd
+      --      :576/:630), so byte 0 == data[0]. The slice is the pre-carved 2 MiB
+      --      ss_ram.bin (run.sh: tools/ss_vram_extract.py), loaded whole (OFFSET/SIZE=0).
+      if PRELOAD_RAM = '1' then
+         COMMAND_FILE_NAME    <= (others => ' ');
+         COMMAND_FILE_NAME(1 to RAM_FILE'length) <= RAM_FILE;
+         COMMAND_FILE_NAMELEN <= RAM_FILE'length;
+         COMMAND_FILE_TARGET  <= 0;
+         COMMAND_FILE_OFFSET  <= 0;
+         COMMAND_FILE_SIZE    <= 0;        -- whole 2 MiB slice
+         COMMAND_FILE_ENDIAN  <= '0';
+         COMMAND_FILE_START_1 <= '1';
+         wait for 200 ns;
+         COMMAND_FILE_START_1 <= '0';
+         wait for 5 us;                    -- 2 MiB byte-by-byte load
+         report "tb_573_ssreplay: .ss main-RAM slice preloaded into SDRAM model @0";
+      end if;
+
+      -- (1c) Option A: PRELOAD the .ss VRAM slice into the ddrram_model VRAM window
+      --      (TARGET=0 -> data[0..0x3FFFF] = 1024x512 RGB555 the GPU samples; see
+      --      ddrram_model.vhd:359-374 dumpVRAMimage which reads data[y*512+x]). The
+      --      FASTSIM user-load skips savetype 15 (VRAM), so without this the GPU draws
+      --      over whatever VRAM the boot left, not the frozen scene/textures/CLUTs.
+      --      The slice is the pre-carved 1 MiB ss_vram.bin (same byte layout as data[]:
+      --      each 32-bit LE word = 2 RGB555 px). Loaded BEFORE the savestate-region
+      --      load below (disjoint: VRAM=data[0..0x3FFFF], SS region=data[0x800000..]).
+      if PRELOAD_VRAM = '1' then
+         COMMAND_FILE_NAME    <= (others => ' ');
+         COMMAND_FILE_NAME(1 to VRAM_FILE'length) <= VRAM_FILE;
+         COMMAND_FILE_NAMELEN <= VRAM_FILE'length;
+         COMMAND_FILE_TARGET  <= 0;
+         COMMAND_FILE_OFFSET  <= 0;
+         COMMAND_FILE_SIZE    <= 0;        -- whole 1 MiB slice
+         COMMAND_FILE_ENDIAN  <= '0';      -- .bin is LE 32-bit words
+         COMMAND_FILE_START_2 <= '1';
+         wait for 16 ns;
+         COMMAND_FILE_START_2 <= '0';
+         wait for 3 us;
+         report "tb_573_ssreplay: .ss VRAM slice preloaded into ddrram_model @0";
+      end if;
 
       -- (2) savestate -> ddrram_model at the aliased savestate word base, via the
       --     ddrram_model COMMAND_FILE_START_2 handshake. The model loads the whole
@@ -767,41 +860,260 @@ begin
    );
 
    -- =======================================================================
-   -- PER-DRAW GPU TAP (DRAWTAP='1'; Stage-1 deliverable scaffold). Reads, via
-   -- NVC external-name aliases (no DUT edit), the GPU draw-input + output state
-   -- the plan calls out, and emits one record per drawn primitive to drawtap.log.
-   -- Ships OFF (DRAWTAP='0'). The exact alias paths are pinned to this fork's
-   -- gpu.vhd / gpu_pixelpipeline.vhd (psx_top.igpu.*); if a name has drifted,
-   -- NVC reports the unresolved external name at elaboration -- update here only.
+   -- PER-DRAW GPU CLUT TAP (DRAWTAP='1'; Stage-1 deliverable). Via NVC external
+   -- names (no DUT edit) it reads the FULL CLUT pipeline the garble hunt needs and
+   -- emits, restricted to the garble band (TAP_X*/Y*), to drawtap.log:
    --
-   -- This is intentionally MINIMAL + GATED: Stage 1's first job is the de-risk
-   -- (does the load resume?), and the tap is the hook Stage 1/2 fills in once a
-   -- real .ss reproduces the garble. Enabling it on a design where a name moved
-   -- would fail elaboration, so it is OFF until the .ss arrives + the exact
-   -- signals are confirmed against the live gpu.vhd.
+   --   OUT  rows : each pixel write -- stage6 x/y, drawMode(8:7) (color mode),
+   --               CLUTaddrB(0) (the texel INDEX), CLUTDataB(0) (the CLUT-looked-up
+   --               color), pixelColor (the output). For 4bpp (drawMode(8)='0')
+   --               pixelColor derives from texdata_palette==CLUTDataB. The
+   --               DISAMBIGUATOR: pixelColor==CLUT[index] (correct blue) vs
+   --               ==index<<5 (green leak), and what CLUTDataB itself holds.
+   --   CLUT rows : during the palette load (state=REQUESTPALETTE/WAITPALETTE), the
+   --               LIVE cache coord textPalX/Y + textPalFetched, the request coord
+   --               reqVRAMXPos/YPos (where the CLUT is read FROM), CLUTaddrA, and the
+   --               vram_DOUT word being written into the CLUT RAM. This shows whether
+   --               the live CLUT coord is (0,491)=0x7ac0 (blue, correct) and whether
+   --               the bytes it loads are blue or a green ramp.
+   --
+   -- The alias paths are the SAME ones the cold gpu_replay rig (DBG_TAP8) proved,
+   -- re-rooted at the full-system GPU instance
+   -- .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.*. The per-i
+   -- combinational CLUT arrays are tapped at the dpram INSTANCE PORTS
+   -- (gfiltermemmult(0).iclutram.{address_b,q_b}) because NVC folds the arch-level
+   -- array signals; run.sh passes --no-collapse to keep these names live.
    -- =======================================================================
+   -- -----------------------------------------------------------------------
+   -- FIX_POLY_DIV: repair the NVC inout-record 'U' poison on the shared dividers so
+   -- the POLY + LINE paths render (see the FIX_POLY_DIV generic comment + the
+   -- gpu_replay rig M5 root-cause). Ported verbatim from sim/gpu_replay, re-rooted to
+   -- .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.*. Clean sources = the divider
+   -- instance output ports gdividers(i).idivider.*; poisoned sinks = the whole
+   -- div_type record on each igpu_poly/igpu_line.divN inout port. COMBINATIONAL force
+   -- (the divider .done is a single clk2x pulse; a clk-gated mirror lands a cycle
+   -- late and the drawer misses it). NO psx/ edit.
+   -- -----------------------------------------------------------------------
+   fix_div_gen : if FIX_POLY_DIV generate
+      fix_div : process
+         alias s0d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(0).idivider.done : std_logic >>;
+         alias s0q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(0).idivider.quotient  : signed(44 downto 0) >>;
+         alias s0r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(0).idivider.remainder : signed(24 downto 0) >>;
+         alias s1d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(1).idivider.done : std_logic >>;
+         alias s1q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(1).idivider.quotient  : signed(44 downto 0) >>;
+         alias s1r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(1).idivider.remainder : signed(24 downto 0) >>;
+         alias s2d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(2).idivider.done : std_logic >>;
+         alias s2q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(2).idivider.quotient  : signed(44 downto 0) >>;
+         alias s2r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(2).idivider.remainder : signed(24 downto 0) >>;
+         alias s3d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(3).idivider.done : std_logic >>;
+         alias s3q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(3).idivider.quotient  : signed(44 downto 0) >>;
+         alias s3r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(3).idivider.remainder : signed(24 downto 0) >>;
+         alias s4d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(4).idivider.done : std_logic >>;
+         alias s4q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(4).idivider.quotient  : signed(44 downto 0) >>;
+         alias s4r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(4).idivider.remainder : signed(24 downto 0) >>;
+         alias s5d is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(5).idivider.done : std_logic >>;
+         alias s5q is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(5).idivider.quotient  : signed(44 downto 0) >>;
+         alias s5r is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.gdividers(5).idivider.remainder : signed(24 downto 0) >>;
+         alias p1 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div1 : div_type >>;
+         alias p2 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div2 : div_type >>;
+         alias p3 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div3 : div_type >>;
+         alias p4 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div4 : div_type >>;
+         alias p5 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div5 : div_type >>;
+         alias p6 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_poly.div6 : div_type >>;
+         alias l1 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div1 : div_type >>;
+         alias l2 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div2 : div_type >>;
+         alias l3 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div3 : div_type >>;
+         alias l4 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div4 : div_type >>;
+         alias l5 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div5 : div_type >>;
+         alias l6 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_line.div6 : div_type >>;
+      begin
+         wait on s0d, s0q, s0r, s1d, s1q, s1r, s2d, s2q, s2r,
+                 s3d, s3q, s3r, s4d, s4q, s4r, s5d, s5q, s5r;
+         p1.done <= force s0d; p1.quotient <= force s0q; p1.remainder <= force s0r;
+         p2.done <= force s1d; p2.quotient <= force s1q; p2.remainder <= force s1r;
+         p3.done <= force s2d; p3.quotient <= force s2q; p3.remainder <= force s2r;
+         p4.done <= force s3d; p4.quotient <= force s3q; p4.remainder <= force s3r;
+         p5.done <= force s4d; p5.quotient <= force s4q; p5.remainder <= force s4r;
+         p6.done <= force s5d; p6.quotient <= force s5q; p6.remainder <= force s5r;
+         l1.done <= force s0d; l1.quotient <= force s0q; l1.remainder <= force s0r;
+         l2.done <= force s1d; l2.quotient <= force s1q; l2.remainder <= force s1r;
+         l3.done <= force s2d; l3.quotient <= force s2q; l3.remainder <= force s2r;
+         l4.done <= force s3d; l4.quotient <= force s3q; l4.remainder <= force s3r;
+         l5.done <= force s4d; l5.quotient <= force s4q; l5.remainder <= force s4r;
+         l6.done <= force s5d; l6.quotient <= force s5q; l6.remainder <= force s5r;
+      end process;
+   end generate;
+
+   -- -----------------------------------------------------------------------
+   -- DIAGNOSTIC CPU-PC + liveness probe (PCPROBE='1' -> pcprobe.log). Samples the
+   -- CPU PC + irqRequest + GPU DMA-request every N clk1x. Used to tell a resumed,
+   -- progressing CPU (PC wanders over code) from a wait-loop spin (PC parked in a
+   -- few addresses = the redraw never arriving = bounded negative).
+   -- -----------------------------------------------------------------------
+   pcprobe_gen : if PCPROBE = '1' generate
+      pcprobe : process(clk1x)
+         alias a_pc    is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.icpu.PC : unsigned(31 downto 0) >>;
+         alias a_irq   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.irqRequest : std_logic >>;
+         alias a_gpudma is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.gpu_dmaRequest : std_logic >>;
+         file     f      : text;
+         variable status : FILE_OPEN_STATUS;
+         variable opened : boolean := false;
+         variable l      : line;
+         variable cnt    : integer := 0;
+         variable pv_pc  : unsigned(31 downto 0) := (others => '1');
+      begin
+         if rising_edge(clk1x) then
+            if not opened then
+               file_open(status, f, "pcprobe.log", write_mode); file_close(f);
+               opened := true;
+            end if;
+            cnt := cnt + 1;
+            if cnt >= 200 and not is_x(std_logic_vector(a_pc)) then  -- ~ every 200 clk1x
+               cnt := 0;
+               if a_pc /= pv_pc then
+                  write(l, string'("t=")); write(l, now);
+                  write(l, string'(" PC=0x")); write(l, to_hstring(a_pc));
+                  write(l, string'(" irq=")); write(l, a_irq);
+                  write(l, string'(" gpudma=")); write(l, a_gpudma);
+                  file_open(status, f, "pcprobe.log", append_mode);
+                  writeline(f, l); file_close(f);
+                  pv_pc := a_pc;
+               end if;
+            end if;
+         end if;
+      end process;
+   end generate;
+
+   -- -----------------------------------------------------------------------
+   -- DIAGNOSTIC GPU/DMA-state probe (GPUPROBE='1' -> gpuprobe.log). Pins WHY the GPU
+   -- renders no pixels while the CPU spins on D2_CHCR busy: taps the DMA active
+   -- channel + dmaOn + DMA_GPU_waiting + gpu_dmaRequest and the GPU command-FIFO
+   -- (fifoIn_Empty/Valid) + draw proc_idle. Logs on any change.
+   -- -----------------------------------------------------------------------
+   gpuprobe_gen : if GPUPROBE = '1' generate
+      gpuprobe : process(clk1x)
+         alias a_dmaOn   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.dmaOn : std_logic >>;
+         alias a_gpuwait is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.DMA_GPU_waiting : std_logic >>;
+         alias a_gpureq  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.gpu_dmaRequest : std_logic >>;
+         alias a_actch   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.idma.activeChannel : integer range 0 to 6 >>;
+         alias a_todev   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.idma.toDevice : std_logic >>;
+         alias a_fEmpty  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.fifoIn_Empty : std_logic >>;
+         alias a_fValid  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.fifoIn_Valid : std_logic >>;
+         alias a_procidle is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.proc_idle : std_logic >>;
+         alias a_procReqF is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.proc_requestFifo : std_logic >>;
+         alias a_polyReqF is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.poly_requestFifo : std_logic >>;
+         alias a_rectReqF is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.rect_requestFifo : std_logic >>;
+         alias a_polyVR   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.poly_reqVRAMEnable : std_logic >>;
+         file     f      : text;
+         variable status : FILE_OPEN_STATUS;
+         variable opened : boolean := false;
+         variable l      : line;
+         variable cnt    : integer := 0;
+         variable pv     : std_logic_vector(7 downto 0) := (others => 'X');
+         variable cur    : std_logic_vector(7 downto 0);
+      begin
+         if rising_edge(clk1x) then
+            if not opened then
+               file_open(status, f, "gpuprobe.log", write_mode); file_close(f);
+               opened := true;
+            end if;
+            cur := a_dmaOn & a_gpuwait & a_gpureq & a_todev & a_fEmpty & a_fValid & a_procidle & a_procReqF;
+            cnt := cnt + 1;
+            if (cur /= pv or cnt >= 5000) and not is_x(cur) then
+               cnt := 0; pv := cur;
+               write(l, string'("t=")); write(l, now);
+               write(l, string'(" dmaOn=")); write(l, a_dmaOn);
+               write(l, string'(" gpuWait=")); write(l, a_gpuwait);
+               write(l, string'(" gpuReq=")); write(l, a_gpureq);
+               write(l, string'(" actCh=")); write(l, a_actch);
+               write(l, string'(" toDev=")); write(l, a_todev);
+               write(l, string'(" fifoEmpty=")); write(l, a_fEmpty);
+               write(l, string'(" fifoValid=")); write(l, a_fValid);
+               write(l, string'(" procIdle=")); write(l, a_procidle);
+               write(l, string'(" procReqFifo=")); write(l, a_procReqF);
+               write(l, string'(" polyReqFifo=")); write(l, a_polyReqF);
+               write(l, string'(" rectReqFifo=")); write(l, a_rectReqF);
+               write(l, string'(" polyReqVRAM=")); write(l, a_polyVR);
+               file_open(status, f, "gpuprobe.log", append_mode);
+               writeline(f, l); file_close(f);
+            end if;
+         end if;
+      end process;
+   end generate;
+
    drawtap_gen : if DRAWTAP = '1' generate
       drawtap : process(clk2x)
-         -- draw-input side (gpu_pixelpipeline.vhd): the texel + palette the
-         -- pixel pipeline samples, plus the draw mode (gpu.vhd drawMode).
-         alias t_pixWrite is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.pixelWrite : std_logic >>;
-         alias t_pixColor is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.pixelColor      : std_logic_vector(15 downto 0) >>;
-         alias t_pixAddr  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.pixelAddr       : unsigned(19 downto 0) >>;
+         -- output / per-pixel resolve side
+         alias t_drawMode   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.drawMode      : unsigned(13 downto 0) >>;
+         alias t_s6valid    is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.stage6_valid  : std_logic >>;
+         alias t_s6x        is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.stage6_x      : unsigned(9 downto 0) >>;
+         alias t_s6y        is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.stage6_y      : unsigned(8 downto 0) >>;
+         alias t_pixColor   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.pixelColor    : std_logic_vector(15 downto 0) >>;
+         alias t_clutAddrB0 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.address_b : std_logic_vector(7 downto 0) >>;
+         alias t_clutDataB0 is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.q_b       : std_logic_vector(15 downto 0) >>;
+         -- CLUT-load handshake side (the live cache coord + where it reads from).
+         -- NB: the pipeline `state` enum is a local type (not aliasable across the
+         -- external-name boundary); CLUTwrenA already gates the CLUT-load rows and
+         -- textPalFetched reports the cache validity, so `state` is not needed.
+         alias t_textPalX   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.textPalX       : unsigned(9 downto 0) >>;
+         alias t_textPalY   is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.textPalY       : unsigned(8 downto 0) >>;
+         alias t_textPalFet is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.textPalFetched : std_logic >>;
+         alias t_reqx       is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.reqVRAMXPos    : unsigned(9 downto 0) >>;
+         alias t_reqy       is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.reqVRAMYPos    : unsigned(8 downto 0) >>;
+         alias t_reqsize    is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.reqVRAMSize    : unsigned(10 downto 0) >>;
+         alias t_clutWrenA  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.CLUTwrenA      : std_logic >>;
+         alias t_clutAddrA  is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.igpu_pixelpipeline.CLUTaddrA      : unsigned(5 downto 0) >>;
+         alias t_vrdout     is << signal .tb_573_ssreplay.ipsx_mister.ipsx_top.igpu.vram_DOUT                         : std_logic_vector(63 downto 0) >>;
          file     f      : text;
          variable status : FILE_OPEN_STATUS;
          variable opened : boolean := false;
          variable l      : line;
          variable n      : integer := 0;
+         variable c      : integer := 0;
+         function inband(x : unsigned; y : unsigned) return boolean is
+         begin
+            return (to_integer(x) >= TAP_X0 and to_integer(x) <= TAP_X1 and
+                    to_integer(y) >= TAP_Y0 and to_integer(y) <= TAP_Y1);
+         end function;
       begin
          if rising_edge(clk2x) then
             if not opened then
                file_open(status, f, "drawtap.log", write_mode); file_close(f);
                opened := true;
             end if;
-            if t_pixWrite = '1' and n < 2000000 and not is_x(t_pixColor) then
-               write(l, string'("pixWrite addr=0x")); write(l, to_hstring(t_pixAddr));
-               write(l, string'(" color=0x"));        write(l, to_hstring(t_pixColor));
-               write(l, string'(" t="));               write(l, now);
+
+            -- CLUT-load rows: every word written into the CLUT RAM (the palette the
+            -- GPU will sample). Capturing CLUTwrenA gives the EXACT CLUT contents +
+            -- the coord it was read from -- the (a)-vs-(b) disambiguator data.
+            if t_clutWrenA = '1' and c < 200000 and not is_x(t_vrdout) then
+               write(l, string'("CLUT  t=")); write(l, now);
+               write(l, string'(" reqX="));   write(l, to_integer(t_reqx));
+               write(l, string'(" reqY="));   write(l, to_integer(t_reqy));
+               write(l, string'(" size="));   write(l, to_integer(t_reqsize));
+               write(l, string'(" addrA="));  write(l, to_integer(t_clutAddrA));
+               write(l, string'(" palFetched=")); write(l, t_textPalFet);
+               write(l, string'(" textPalX=")); write(l, to_integer(t_textPalX));
+               write(l, string'(" textPalY=")); write(l, to_integer(t_textPalY));
+               write(l, string'(" vramDOUT=0x")); write(l, to_hstring(t_vrdout));
+               file_open(status, f, "drawtap.log", append_mode);
+               writeline(f, l); file_close(f);
+               c := c + 1;
+            end if;
+
+            -- OUT rows: each in-band pixel write -- the resolve the garble needs.
+            if t_s6valid = '1' and inband(t_s6x, t_s6y) and n < 400000
+               and not is_x(t_pixColor) then
+               write(l, string'("OUT   t=")); write(l, now);
+               write(l, string'(" x="));      write(l, to_integer(t_s6x));
+               write(l, string'(" y="));      write(l, to_integer(t_s6y));
+               write(l, string'(" mode="));   write(l, std_logic'image(t_drawMode(8)));
+               write(l, std_logic'image(t_drawMode(7)));
+               write(l, string'(" idxB=0x")); write(l, to_hstring(t_clutAddrB0));
+               write(l, string'(" clutDataB=0x")); write(l, to_hstring(t_clutDataB0));
+               write(l, string'(" palFetched=")); write(l, t_textPalFet);
+               write(l, string'(" textPalX=")); write(l, to_integer(t_textPalX));
+               write(l, string'(" textPalY=")); write(l, to_integer(t_textPalY));
+               write(l, string'(" pixelColor=0x")); write(l, to_hstring(t_pixColor));
                file_open(status, f, "drawtap.log", append_mode);
                writeline(f, l); file_close(f);
                n := n + 1;

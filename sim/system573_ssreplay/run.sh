@@ -18,7 +18,10 @@
 #
 # Env:
 #   LOAD_SS=0   boot WITHOUT a savestate (A/B vs the resume) -- skips preload+pulse
-#   DRAWTAP=1   enable the per-draw GPU tap (drawtap.log) -- OFF by default
+#   DRAWTAP=1   enable the per-draw GPU CLUT tap (drawtap.log) -- OFF by default
+#   PRELOAD=1   (default when a real .ss is given) Option A: also carve the .ss
+#               VRAM(15)+RAM(16) slices (FASTSIM skips them) and preload them into
+#               the ddrram_model VRAM window + the main sdram_model3x. Set 0 to skip.
 #   LOAD_AT     NVC time literal: when (after reset) to pulse load_state (def "60 us")
 #   TURBO       1 (default) sim accelerators; 0 = realistic timing
 #   SLOWVRAM    ddrram_model VRAM read latency, cycles (default 0)
@@ -37,13 +40,25 @@ WD="$HERE/build"
 
 STOP_TIME="${1:-2ms}"
 SS_FILE_IN="${2:-}"
+# Resolve a relative .ss path to absolute NOW (the build cd's into $WD, after which a
+# relative path no longer resolves -> the staging block would silently fall back to a
+# synthetic zero .ss). Absolute keeps the top-level PRELOAD check + staging consistent.
+if [ -n "$SS_FILE_IN" ] && [ -f "$SS_FILE_IN" ]; then
+  SS_FILE_IN="$(cd "$(dirname "$SS_FILE_IN")" && pwd)/$(basename "$SS_FILE_IN")"
+fi
 RAM8MB="${RAM8MB:-1}"
 TURBO="${TURBO:-1}"
 SLOWVRAM="${SLOWVRAM:-0}"
 LOAD_SS="${LOAD_SS:-1}"
 DRAWTAP="${DRAWTAP:-0}"
+PCPROBE="${PCPROBE:-0}"
+GPUPROBE="${GPUPROBE:-0}"
 LOAD_AT="${LOAD_AT:-60 us}"
 REUSE="${REUSE:-0}"
+# PRELOAD defaults ON when a real .ss is supplied (Option A), OFF otherwise.
+if [ -n "$SS_FILE_IN" ] && [ -f "$SS_FILE_IN" ]; then PRELOAD="${PRELOAD:-1}"; else PRELOAD="${PRELOAD:-0}"; fi
+VRAM_BASENAME="ss_vram.bin"
+RAM_BASENAME="ss_ram.bin"
 BIOS_SRC="$ROOT/dumps/bios/700a01(gchgchmp).22g"
 
 # The savestate region is SAVESTATESIZE = 0x100000 DWORDs = 1048576 dwords = 4 MiB.
@@ -75,6 +90,11 @@ if [ "$REUSE" = "1" ]; then
     if [ -n "$SS_FILE_IN" ] && [ -f "$SS_FILE_IN" ]; then
       cp "$SS_FILE_IN" "$WD/$SS_BASENAME"
       echo "   staged real savestate: $SS_FILE_IN ($(wc -c < "$SS_FILE_IN") bytes)"
+      if [ "$PRELOAD" = "1" ]; then
+        python3 "$ROOT/tools/ss_vram_extract.py" "$WD/$SS_BASENAME" \
+                --vram "$WD/$VRAM_BASENAME" --ram "$WD/$RAM_BASENAME"
+        echo "   re-carved Option A slices ($VRAM_BASENAME + $RAM_BASENAME)"
+      fi
     fi
   fi
 else
@@ -89,6 +109,12 @@ if [ "$LOAD_SS" != "0" ]; then
   if [ -n "$SS_FILE_IN" ] && [ -f "$SS_FILE_IN" ]; then
     cp "$SS_FILE_IN" "$WD/$SS_BASENAME"
     echo "== savestate: REAL $SS_FILE_IN ($(wc -c < "$SS_FILE_IN") bytes) =="
+    # Option A: carve the FASTSIM-skipped VRAM(15)+RAM(16) slices for tb preload.
+    if [ "$PRELOAD" = "1" ]; then
+      python3 "$ROOT/tools/ss_vram_extract.py" "$WD/$SS_BASENAME" \
+              --vram "$WD/$VRAM_BASENAME" --ram "$WD/$RAM_BASENAME"
+      echo "== Option A preload: carved $VRAM_BASENAME (VRAM) + $RAM_BASENAME (RAM) =="
+    fi
   else
     if [ -n "$SS_FILE_IN" ]; then
       echo "== savestate: '$SS_FILE_IN' not found -> generating SYNTHETIC valid-header .ss =="
@@ -135,10 +161,15 @@ analyze tb "$TBSRC/globals.vhd" "$TBSRC/sdram_model3x.vhd" \
 echo "== analyzing tb_573_ssreplay =="
 analyze tb "$HERE/tb_573_ssreplay.vhd"
 
-echo "== elaborating tb_573_ssreplay (LOAD_SS=$LOAD_SS RAM8MB=$RAM8MB TURBO=$TURBO SLOWVRAM=$SLOWVRAM DRAWTAP=$DRAWTAP LOAD_AT='$LOAD_AT') =="
-$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_573_ssreplay --stats \
+echo "== elaborating tb_573_ssreplay (LOAD_SS=$LOAD_SS PRELOAD=$PRELOAD RAM8MB=$RAM8MB TURBO=$TURBO SLOWVRAM=$SLOWVRAM DRAWTAP=$DRAWTAP LOAD_AT='$LOAD_AT') =="
+# --no-collapse: keep the per-i combinational CLUT signals (CLUTaddrB/CLUTDataB at
+# the dpram instance ports) NAMEABLE so the DRAWTAP external-name taps resolve.
+$NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_573_ssreplay --stats --no-collapse \
      -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'" -gSLOWVRAM=$SLOWVRAM \
-     -gLOAD_SS="'$LOAD_SS'" -gDRAWTAP="'$DRAWTAP'" \
+     -gLOAD_SS="'$LOAD_SS'" -gDRAWTAP="'$DRAWTAP'" -gPCPROBE="'$PCPROBE'" \
+     -gGPUPROBE="'$GPUPROBE'" \
+     -gPRELOAD_VRAM="'$PRELOAD'" -gPRELOAD_RAM="'$PRELOAD'" \
+     -gVRAM_FILE="$VRAM_BASENAME" -gRAM_FILE="$RAM_BASENAME" \
      -gSS_FILE="$SS_BASENAME" -gLOAD_AT="$LOAD_AT"
 
 fi   # end of build (REUSE=0 path)
