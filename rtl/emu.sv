@@ -358,6 +358,12 @@ parameter CONF_STR = {
 	"PSX;SS3E000000:400000;",
 	"H7S1,CUECHD,Load CD;",
 	"h7-,Reload core for CD;",
+	// F0 (ioctl index 0 = bios_download) lets a .mgl / standalone-console launch load
+	// the 573 BIOS as a normal core file (type="f" index="0"). The arcade .mra loads
+	// the BIOS via <rom index=0>, but a .mgl matches CONF_STR F-entries by index and
+	// there was no F0 -> a bare .mgl never loaded the BIOS (black screen). This unblocks
+	// the CD-installer launch path (mount the CD via the S1 slot, no arcade "unsafe" guard).
+	"F0,BIN,Load 573 BIOS;",
 	"F1,EXE,Load Exe;",
 	"F2,BIN,Load 573 Flash;",
 	"F3,BIN,Load 573 NVRAM;",
