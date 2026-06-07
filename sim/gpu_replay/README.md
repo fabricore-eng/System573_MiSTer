@@ -118,7 +118,50 @@ same texels, wrong palette — exactly the on-HW symptom signature. See
   timing, and is the cleaner vehicle here. (Untextured flat quads also obey the same
   per-pixel timing budget; give them enough drain if you use them.)
 
+### Milestone 3 — bg-panel garble REPLAY from the real savestate (2026-06-07).
+
+Drove the EXACT hyperbbc GAME-OVER bg-panel GP0 stream — the four 8bpp textured
+rects extracted verbatim from the savestate display list in `local/ss_ram.bin`
+(OT head ~0x1e0b60): `E1` texpage X=640/768 (8bpp) + `0x64` rects, CLUT 0x7800 ->
+VRAM(0,480) — over the frozen savestate VRAM (`local/ss_vram.bin`). Generator:
+`gen_stream.py bgpanel573` -> `cmd_bgpanel573.txt`.
+
+**The sim does NOT reproduce the garble** (the decisive negative result):
+
+| comparison | SSIM | %diff | MAE | verdict |
+|------------|------|-------|-----|---------|
+| SIM garble-region vs HW frozen garble-region | 0.036 | 98.7% | 80.9 | **MISMATCH** |
+| SIM node2 vs Python ground-truth 8bpp decode (texpage768/CLUT(0,480)) | **0.9991** | 0.36% | 0.08 | **MATCH** |
+
+The bg rects, drawn by our GPU over clean VRAM, render a coherent cityscape that
+is **byte-identical to the reference 8bpp decode** — NOT the green digital-rain
+garble that the frozen HW VRAM shows at those exact screen pixels (display origin
+verified (0,0), meanDiff 0.0). Result is **timing-invariant** (SLOWTIMING 0 == 20,
+both 1.2% green). So our 8bpp→CLUT pixelpipeline is faithful for THIS primitive;
+the garble is NOT a render-time defect in the bg-rect 8bpp path as reconstructed.
+
+**TAP findings** (`DBG_TAP8`): the per-pixel 8bpp resolve trace shows, for every
+bg-rect pixel: mode='0''1' (8bpp), `clutAddrB`=the real texel index (0x8c..0xf8 =
+140..248, NOT 0..31), `clutDataB`=a proper cityscape color (e.g. 0x158d), and the
+CLUT-load handshake reads reqX=0 reqY=0x1E0(480) reqSize=0x100(256) with byte-exact
+(0,480) contents. So: index does NOT leak to output, CLUT lookup IS honored, CLUT
+contents ARE correct. The frozen-HW green (0x0060/0x00c0/0x0141 = green-only) equals
+neither `clutDataB` NOR `index<<5` (0x1180...) — it isn't this rect's resolve at all.
+
+Conclusion: the established "8bpp pixelpipeline render-time defect drawn by these
+rects" attribution is NOT confirmed by replay. The green was painted by a DIFFERENT
+primitive / draw-state than the reconstructed 4 bg rects (the frozen green is not a
+consistent function of texpage-768 indices through any CLUT — each index maps to
+20-76 different frozen values). Next: trace the FULL OT (the 0x2c quads + the chain
+into bucket 0x287580) to find the primitive that actually writes the green, or
+capture the live GPU register/CLUT-cache state at draw time (not in `ss_ram.bin`).
+
 ## Debug
-`tb_gpu_replay.vhd` has a `DBG_TEX` constant (ships **false**). Set it `true` to
-enable an internal probe (`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/
-`DDRAM_RD`) via VHDL-2008 external names — used to diagnose the textured-draw timing.
+`tb_gpu_replay.vhd` has a `DBG_TEX` constant (ships **false**) — internal probe
+(`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/`DDRAM_RD`) for textured-
+draw timing — and a `DBG_TAP8` constant (ships **false**) — the 8bpp CLUT-resolve
+tap (per-pixel `clutAddrB`/`clutDataB`/cache-word + the CLUT-load handshake), written
+to `build/tap8.log`. Both via VHDL-2008 external names (no `psx/` edit). `DBG_TAP8`
+taps the per-`i` combinational arrays at the dpram INSTANCE PORTS
+(`gfiltermemmult(0).iclutram.{address_b,q_b}`, `.icache.q_b`) because NVC folds the
+arch-level array signals away; `run.sh` passes `--no-collapse` to keep names live.

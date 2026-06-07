@@ -66,6 +66,12 @@ architecture sim of tb_gpu_replay is
    -- the dbg_tex process (proc_idle / reqVRAMEnable / VRAMIdle / pipeline_stall).
    constant DBG_TEX : boolean := false;
 
+   -- 8bpp-resolve TAP gate (ships OFF). Set true to log the 8bpp CLUT-resolve
+   -- path per textured pixel + the CLUT-load handshake, to a trace file. Used to
+   -- pin the hyperbbc bg-panel garble. Read-only external-name taps into the
+   -- vendored gpu_pixelpipeline (NO submodule edit). Writes build/tap8.log.
+   constant DBG_TAP8 : boolean := false;
+
    signal clk1x               : std_logic := '1';
    signal clk2x               : std_logic := '1';
    signal clkvid              : std_logic := '1';
@@ -516,6 +522,87 @@ begin
                          " pipeline_stall=" & std_logic'image(pstall) &
                          " DDRAM_RD=" & std_logic'image(DDRAM_RD);
                end if;
+            end if;
+         end if;
+      end process;
+   end generate;
+
+   -- -----------------------------------------------------------------------
+   -- DBG_TAP8: 8bpp CLUT-resolve TAP. External-name read taps into the vendored
+   -- gpu_pixelpipeline (no submodule edit). Logs two things to build/tap8.log:
+   --   PIX rows  : per stage1-valid TEXTURED pixel, the resolve signals
+   --               (x,y,colormode, U, texdata_raw, CLUTaddrB, CLUTDataB,
+   --                texdata_palette, texcolor) -- index 0 (the rect's used lane).
+   --   CLUT rows : during the palette load (state=REQUESTPALETTE/WAITPALETTE),
+   --               reqVRAMXPos/YPos/Size + CLUTaddrA + the vram_DOUT being loaded.
+   -- All values hex. A python post-pass parses this.
+   -- -----------------------------------------------------------------------
+   dbg_tap8_gen : if DBG_TAP8 generate
+      -- External-name aliases of vendored pixelpipeline internals. The per-i
+      -- combinational arrays (texdata_raw/CLUTaddrB/CLUTDataB/texdata_palette)
+      -- are NOT preserved as named signals by NVC (folded into consumers), so we
+      -- tap them at the dpram INSTANCE PORTS inside the gfiltermemmult(0) generate
+      -- (those ARE real named signals), which carry exactly those values:
+      --   icache.q_b   (64b)  = the cache word texdata_raw(0) is byte-muxed from
+      --   iclutram.address_b  = CLUTaddrB(0)  (the 8bpp index used to index CLUT)
+      --   iclutram.q_b        = CLUTDataB(0)  (the color the CLUT returned)
+      -- For 8bpp (drawMode(8)='0') texdata_palette(0) == CLUTDataB(0) by line 439.
+      alias t_drawMode    is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.drawMode        : unsigned(13 downto 0) >>;
+      alias t_s1valid     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_valid    : std_logic >>;
+      alias t_s1texture   is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_texture  : std_logic >>;
+      alias t_s1x         is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_x        : unsigned(9 downto 0) >>;
+      alias t_s1y         is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_y        : unsigned(8 downto 0) >>;
+      alias t_cacheq0     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).icache.q_b      : std_logic_vector(63 downto 0) >>;
+      alias t_clutaddrB0  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.address_b : std_logic_vector(7 downto 0) >>;
+      alias t_clutdataB0  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.q_b    : std_logic_vector(15 downto 0) >>;
+      -- CLUT-load handshake taps
+      alias t_clutwren    is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.CLUTwrenA       : std_logic >>;
+      alias t_clutaddrA   is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.CLUTaddrA       : unsigned(5 downto 0) >>;
+      alias t_reqx        is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.reqVRAMXPos     : unsigned(9 downto 0) >>;
+      alias t_reqy        is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.reqVRAMYPos     : unsigned(8 downto 0) >>;
+      alias t_reqsize     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.reqVRAMSize     : unsigned(10 downto 0) >>;
+      alias t_texPalReqX  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalReqX     : unsigned(9 downto 0) >>;
+      alias t_texPalReqY  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalReqY     : unsigned(8 downto 0) >>;
+      -- CLUT-load source word: tap the clut RAM write port A data (vram_DOUT) the
+      -- model is streaming in during WAITPALETTE.
+      alias t_clutwrdata  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.q_a    : std_logic_vector(63 downto 0) >>;
+      alias t_clutwraddrA is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.address_a : std_logic_vector(5 downto 0) >>;
+      alias t_vrdout      is << signal .tb_gpu_replay.igpu.vram_DOUT                          : std_logic_vector(63 downto 0) >>;
+
+      function h(v : std_logic_vector) return string is begin
+         return to_hstring(v);
+      end function;
+      function h(v : unsigned) return string is begin
+         return to_hstring(std_logic_vector(v));
+      end function;
+   begin
+      dbg_tap8 : process(clk2x)
+         file ftap         : text open write_mode is "tap8.log";
+         variable l        : line;
+         variable npix     : integer := 0;
+      begin
+         if rising_edge(clk2x) then
+            -- CLUT load: log every 64-bit word the CLUT RAM ingests (WAITPALETTE).
+            if (t_clutwren = '1') then
+               write(l, string'("CLUT wr wraddrA=") & h(t_clutwraddrA) &
+                        " ctrAddrA=" & h(t_clutaddrA) &
+                        " reqX=" & h(t_reqx) & " reqY=" & h(t_reqy) &
+                        " reqSize=" & h(t_reqsize) &
+                        " palReqX=" & h(t_texPalReqX) & " palReqY=" & h(t_texPalReqY) &
+                        " vram_DOUT=" & h(t_vrdout));
+               writeline(ftap, l);
+            end if;
+            -- per textured pixel resolve (stage1 valid + textured): one line.
+            -- texdata_palette(0)==clutDataB for 8bpp; clutAddrB==the index used.
+            if (t_s1valid = '1' and t_s1texture = '1') then
+               npix := npix + 1;
+               write(l, string'("PIX x=") & h(t_s1x) & " y=" & h(t_s1y) &
+                        " dm=" & h(t_drawMode) &
+                        " mode=" & std_logic'image(t_drawMode(8)) & std_logic'image(t_drawMode(7)) &
+                        " cacheWord=" & h(t_cacheq0) &
+                        " clutAddrB=" & h(t_clutaddrB0) &
+                        " clutDataB(=palette8bpp)=" & h(t_clutdataB0));
+               writeline(ftap, l);
             end if;
          end if;
       end process;

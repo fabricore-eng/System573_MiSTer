@@ -236,12 +236,68 @@ def build_texrect(tx=14, ty=0, colors=0, clut=0x7ac0, sx=0, sy=0, w=256, h=256,
     return s.dump()
 
 
+def build_bgpanel573():
+    """Reproduce the hyperbbc GAME-OVER bg-panel garble from the REAL savestate
+    display list (extracted from local/ss_ram.bin, OT head ~0x1e0b60). Four 8bpp
+    textured rectangles (GP0 0x64, blended with color 0x808080) sample texpage
+    X=640/768 (ty=0) through CLUT 0x7800 -> VRAM(0,480), drawn across the top of
+    the screen. Designed to run PRELOADED with local/ss_vram.bin (the frozen
+    savestate VRAM: textures + CLUT all in place). The EXACT raw GP0 words are
+    reproduced verbatim from the display list; only the per-frame setup (display
+    mode / draw area / tex window) is reconstructed (those live in GPU regs, not
+    main RAM). Draw area = full panel; texture window = none (full 256x256 page),
+    matching the contiguous U-runs the rects sample.
+
+    Garble onset on HW is screen x~123, which lands INSIDE node1 (pos x=78,
+    w=128) -> node1 LEFT renders clean, node1 RIGHT garbles: an in-sim
+    clean-vs-garbled CONTROL on the SAME primitive.
+    """
+    s = Stream()
+    s.gp1_reset()
+    s.gp1_dispmode(0x00000001)          # 320x240 NTSC, 15bpp
+    s.gp1_dispenable(True)
+    s.gp1_dmadir(0)
+    s.gp1_dispstart(0, 0)
+    s.gp1_hrange(0x200, 0x200 + 320 * 8)
+    s.gp1_vrange(0x10, 0x10 + 240)
+    # draw area covering the whole panel (x 0..511 to be safe, y 0..255)
+    s.draw_area_tl(0, 0)
+    s.draw_area_br(511, 255)
+    s.draw_offset(0, 0)
+    # texture window: none (full page). E2 = 0.
+    s.tex_window(0, 0, 0, 0)
+
+    # The four real rects, verbatim. Each node = E1 (texpage) then 0x64 4-word rect.
+    # (e1word, w0_color, w1_pos, w2_clut_uv, w3_size)  -- exact savestate words.
+    nodes = [
+        (0xe100028a, 0x64808080, 0x00000000, 0x78000032, 0x00cc004e),  # X=640 pos(0,0)   78x204 UV(50,0)
+        (0xe100028a, 0x64808080, 0x0000004e, 0x78000080, 0x00cc0080),  # X=640 pos(78,0) 128x204 UV(128,0)
+        (0xe100028c, 0x64808080, 0x000000ce, 0x78000000, 0x00cc0080),  # X=768 pos(206,0)128x204 UV(0,0)
+        (0xe100028a, 0x64808080, 0x0000014e, 0x78000000, 0x00cc0032),  # X=640 pos(334,0) 50x204 UV(0,0)
+    ]
+    # Each 128x204 8bpp textured rect drains slowly (~4 clk2x/pixel). The replay
+    # tb does NOT honor bus_stall, so we must give the GPU TIME to drain a rect
+    # before injecting the next: advance the clock by a big gap after each rect's
+    # last word. 128*204*2 clk1x (~52k) per rect is comfortable.
+    RECT_DRAIN = 60000
+    for (e1, w0, w1, w2, w3) in nodes:
+        s.gp0(e1, "E1 texpage (8bpp)")
+        s.gp0(w0, "GP0 64 textured rect color")
+        s.gp0(w1)
+        s.gp0(w2)
+        s.gp0(w3)
+        s.t += RECT_DRAIN     # let this rect drain before the next E1/rect
+    return s.dump()
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "demo"
     if which == "demo":
         sys.stdout.write(build_demo())
-    elif which in ("texquad", "bgpanel"):
+    elif which in ("texquad", "bgpanel_texquad"):
         sys.stdout.write(build_texquad())
+    elif which in ("bgpanel", "bgpanel573"):
+        sys.stdout.write(build_bgpanel573())
     elif which == "texrect":
         # optional args: colors(bpp) tx ty  -> e.g. `texrect 0 14 0`
         kw = {}

@@ -92,7 +92,10 @@ else
   echo "== elaborating tb_gpu_replay (PRELOAD_VRAM=$PRELOAD_VRAM SLOWTIMING=$SLOWTIMING) =="
   # NB: NVC string generics take the BARE value (no VHDL quotes); quoting the
   # value embeds literal '"' chars into the string and the file open then fails.
-  $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_gpu_replay --stats \
+  # --no-collapse: keep combinational signals (e.g. texdata_raw / CLUTaddrB /
+  # CLUTDataB / texdata_palette, which NVC would otherwise collapse away) NAMEABLE
+  # so the DBG_TAP8 external-name taps can reach them.
+  $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_gpu_replay --stats --no-collapse \
        -gPRELOAD_VRAM="$PRELOAD_VRAM" -gVRAM_FILE="$VRAM_BASENAME" \
        -gCMD_FILE="cmd_stream.txt" -gSLOWTIMING=$SLOWTIMING \
        -gDRAIN_MS="$DRAIN_MS"
