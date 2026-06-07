@@ -48,6 +48,7 @@ library tb;
 use tb.globals.all;     -- COMMAND_FILE_* (the ddrram_model VRAM-load handshake)
 
 library psx;
+use psx.pGPU.all;        -- div_type (the FIX_POLY_DIV whole-record force aliases)
 
 entity tb_gpu_replay is
    generic
@@ -71,12 +72,41 @@ architecture sim of tb_gpu_replay is
    -- (OUT rows: stage6 x/y/pixelColor) and the CLUT-load handshake (CLUT rows),
    -- to build/tap8.log. Used to pin the hyperbbc bg-panel garble. Read-only
    -- external-name taps into the vendored gpu_pixelpipeline (NO submodule edit).
-   -- The OUT/PIX rows fire for the rect path (gpu_rect); the poly path (gpu_poly,
-   -- GP0 0x2C) does NOT render in this NVC rig -- its divider record-port `.done`
-   -- elaborates as undriven 'U' (see the POLY_DIV(*).DONE init warnings), so the
-   -- poly drawer stalls (proc_idle stays low) and emits no pixels. Use the rect
-   -- path to exercise the SAME 4bpp/8bpp->CLUT pixel pipeline.
+   -- The OUT/PIX rows fire for BOTH the rect path (gpu_rect) AND -- since
+   -- FIX_POLY_DIV (below) -- the POLY path (gpu_poly, GP0 0x2C), so the garble
+   -- quad and its control rect can be tapped head-to-head. (M5 result: with the
+   -- savestate VRAM both resolve CLUT 0x7ac0 correctly -> pixelColor = CLUT[idx],
+   -- NO index<<5 leak; see the rig README "Milestone 5".)
    constant DBG_TAP8 : boolean := false;
+
+   -- RIG FIX gate (ships ON). Makes the POLY path (GP0 0x2C/0x28) render in NVC.
+   -- WHY: gpu.vhd wires the shared dividers through `inout div_type` ports on
+   -- gpu_poly/gpu_line (div1..div6). gpu_poly/gpu_line NEVER assign the read-only
+   -- record fields (.done/.quotient/.remainder), but an `inout` port still creates
+   -- a SOURCE for the whole record. div_type.done is a plain std_logic with no
+   -- default, so under NVC's init-time multi-source resolution that port source is
+   -- 'U' and `resolved('U', real) = 'U'` -> poly_div(i).done = 'U' FOREVER ->
+   -- gpu_poly's state machine (CALCBOUNDARY2/CALCCOLOR3/CALCTEXTURE3 gate on
+   -- div1.done='1') never advances -> the poly drawer stalls, emits 0 pixels.
+   -- (Reproduced: the "POLY_DIV(*).DONE has 2 sources ... 'U' and no driver"
+   -- init warnings; a 0x2C quad draws nothing.) On real silicon there is no init
+   -- 'U' (regs reset to '0' and the divider drives the value), so this is a pure
+   -- NVC-elaboration artifact of the inout-record idiom -- NOT a core bug.
+   -- FIX (tb-side, NO psx/ edit): the *array* signals div_array(i) ARE clean (sole
+   -- driver = the divider instance port), carrying the divider's REAL results. We
+   -- VHDL-2008 `force` the poisoned poly_div(i)/line_div(i) .done/.quotient/
+   -- .remainder to mirror div_array(i) every clk2x. `force` overrides resolution
+   -- (verified: it pins past a 'U' source), so the poly path sees the genuine,
+   -- timing-accurate divider outputs. This changes NOTHING the divider computes;
+   -- it only repairs the NVC fan-out of those outputs to the drawer's read ports.
+   constant FIX_POLY_DIV : boolean := true;
+
+   -- POLY-progress diagnostic tap (ships OFF). Logs gpu_poly's internals
+   -- (div1.done via the whole-record alias, baseStep, denom, xPos/yPos,
+   -- firstPixel, vramLineEna, pipeline_new, done) to find WHERE the poly state
+   -- machine parks. Used to confirm FIX_POLY_DIV unblocks the divider gates and
+   -- to drive the per-pixel quad-vs-rect tap. Read-only external names.
+   constant DBG_POLY : boolean := false;
 
    signal clk1x               : std_logic := '1';
    signal clk2x               : std_logic := '1';
@@ -510,6 +540,87 @@ begin
    -- VRAM read under NVC, while fills/flat-rects render fine). Read-only (report);
    -- ships OFF -- flip DBG_TEX to re-enable the probe.
    -- -----------------------------------------------------------------------
+   -- FIX_POLY_DIV: repair the NVC inout-record 'U' poison on the shared-divider
+   -- read ports so the POLY (and LINE) path renders. See the FIX_POLY_DIV
+   -- constant comment for the root cause.
+   --
+   -- We `force` the WHOLE div_type record on each gpu_poly/gpu_line inout port
+   -- (igpu_poly.divN / igpu_line.divN) to the divider's genuine outputs. Two NVC
+   -- external-name facts forced this exact shape (both verified with minimal
+   -- testcases):
+   --   * Record-FIELD sub-selection in an external name is NOT supported
+   --     (`name X not found` -- ".done" is treated as a sub-region). So we cannot
+   --     name `poly_div(i).done`; we alias the WHOLE record `igpu_poly.divN`
+   --     (type psx.pGPU.div_type, a PACKAGE type -> usable) and write its fields
+   --     in normal VHDL.
+   --   * Array-of-record ELEMENT external names (`poly_div(i)`) also fail to
+   --     resolve, but the gpu_poly/gpu_line PORTS divN are plain scalar-named
+   --     records that DO resolve (and forcing a field of the aliased port IS seen
+   --     by the child process that reads it -- verified).
+   -- Clean source = the divider instance output ports gdividers(i).idivider.*
+   -- (real, uncollapsed; carry the genuine computed quotient/remainder/done).
+   -- gpu.vhd maps div1..div6 -> poly_div(0..5)/line_div(0..5) -> gdividers(0..5).
+   -- We force on clk2x so the drawer sees the true divider result every cycle.
+   -- -----------------------------------------------------------------------
+   fix_div_gen : if FIX_POLY_DIV generate
+      fix_div : process
+         -- clean sources (divider instance output ports)
+         alias s0d is << signal .tb_gpu_replay.igpu.gdividers(0).idivider.done : std_logic >>;
+         alias s0q is << signal .tb_gpu_replay.igpu.gdividers(0).idivider.quotient  : signed(44 downto 0) >>;
+         alias s0r is << signal .tb_gpu_replay.igpu.gdividers(0).idivider.remainder : signed(24 downto 0) >>;
+         alias s1d is << signal .tb_gpu_replay.igpu.gdividers(1).idivider.done : std_logic >>;
+         alias s1q is << signal .tb_gpu_replay.igpu.gdividers(1).idivider.quotient  : signed(44 downto 0) >>;
+         alias s1r is << signal .tb_gpu_replay.igpu.gdividers(1).idivider.remainder : signed(24 downto 0) >>;
+         alias s2d is << signal .tb_gpu_replay.igpu.gdividers(2).idivider.done : std_logic >>;
+         alias s2q is << signal .tb_gpu_replay.igpu.gdividers(2).idivider.quotient  : signed(44 downto 0) >>;
+         alias s2r is << signal .tb_gpu_replay.igpu.gdividers(2).idivider.remainder : signed(24 downto 0) >>;
+         alias s3d is << signal .tb_gpu_replay.igpu.gdividers(3).idivider.done : std_logic >>;
+         alias s3q is << signal .tb_gpu_replay.igpu.gdividers(3).idivider.quotient  : signed(44 downto 0) >>;
+         alias s3r is << signal .tb_gpu_replay.igpu.gdividers(3).idivider.remainder : signed(24 downto 0) >>;
+         alias s4d is << signal .tb_gpu_replay.igpu.gdividers(4).idivider.done : std_logic >>;
+         alias s4q is << signal .tb_gpu_replay.igpu.gdividers(4).idivider.quotient  : signed(44 downto 0) >>;
+         alias s4r is << signal .tb_gpu_replay.igpu.gdividers(4).idivider.remainder : signed(24 downto 0) >>;
+         alias s5d is << signal .tb_gpu_replay.igpu.gdividers(5).idivider.done : std_logic >>;
+         alias s5q is << signal .tb_gpu_replay.igpu.gdividers(5).idivider.quotient  : signed(44 downto 0) >>;
+         alias s5r is << signal .tb_gpu_replay.igpu.gdividers(5).idivider.remainder : signed(24 downto 0) >>;
+         -- poisoned sinks (whole div_type record on each gpu_poly inout port)
+         alias p1 is << signal .tb_gpu_replay.igpu.igpu_poly.div1 : div_type >>;
+         alias p2 is << signal .tb_gpu_replay.igpu.igpu_poly.div2 : div_type >>;
+         alias p3 is << signal .tb_gpu_replay.igpu.igpu_poly.div3 : div_type >>;
+         alias p4 is << signal .tb_gpu_replay.igpu.igpu_poly.div4 : div_type >>;
+         alias p5 is << signal .tb_gpu_replay.igpu.igpu_poly.div5 : div_type >>;
+         alias p6 is << signal .tb_gpu_replay.igpu.igpu_poly.div6 : div_type >>;
+         alias l1 is << signal .tb_gpu_replay.igpu.igpu_line.div1 : div_type >>;
+         alias l2 is << signal .tb_gpu_replay.igpu.igpu_line.div2 : div_type >>;
+         alias l3 is << signal .tb_gpu_replay.igpu.igpu_line.div3 : div_type >>;
+         alias l4 is << signal .tb_gpu_replay.igpu.igpu_line.div4 : div_type >>;
+         alias l5 is << signal .tb_gpu_replay.igpu.igpu_line.div5 : div_type >>;
+         alias l6 is << signal .tb_gpu_replay.igpu.igpu_line.div6 : div_type >>;
+      begin
+         -- COMBINATIONAL force (sensitive to the divider outputs, NOT clk-gated):
+         -- gpu.vhd wires div_array(i).done <= divider.done as a zero-delay wire, and
+         -- gpu_poly registers `if (div1.done='1')` on clk2x. The divider's `done` is
+         -- a SINGLE clk2x pulse; a clk-gated force would register the mirror one
+         -- clk2x late and gpu_poly would miss the one-cycle pulse (observed: it
+         -- parked at CALCBOUNDARY2 with div1.done never seen '1'). Mirroring
+         -- combinationally reproduces the real direct-wire timing so the pulse lands.
+         wait on s0d, s0q, s0r, s1d, s1q, s1r, s2d, s2q, s2r,
+                 s3d, s3q, s3r, s4d, s4q, s4r, s5d, s5q, s5r;
+         p1.done <= force s0d; p1.quotient <= force s0q; p1.remainder <= force s0r;
+         p2.done <= force s1d; p2.quotient <= force s1q; p2.remainder <= force s1r;
+         p3.done <= force s2d; p3.quotient <= force s2q; p3.remainder <= force s2r;
+         p4.done <= force s3d; p4.quotient <= force s3q; p4.remainder <= force s3r;
+         p5.done <= force s4d; p5.quotient <= force s4q; p5.remainder <= force s4r;
+         p6.done <= force s5d; p6.quotient <= force s5q; p6.remainder <= force s5r;
+         l1.done <= force s0d; l1.quotient <= force s0q; l1.remainder <= force s0r;
+         l2.done <= force s1d; l2.quotient <= force s1q; l2.remainder <= force s1r;
+         l3.done <= force s2d; l3.quotient <= force s2q; l3.remainder <= force s2r;
+         l4.done <= force s3d; l4.quotient <= force s3q; l4.remainder <= force s3r;
+         l5.done <= force s4d; l5.quotient <= force s4q; l5.remainder <= force s4r;
+         l6.done <= force s5d; l6.quotient <= force s5q; l6.remainder <= force s5r;
+      end process;
+   end generate;
+
    dbg_gen : if DBG_TEX generate
       dbg_tex : process(clk2x)
          alias pidle  is << signal .tb_gpu_replay.igpu.proc_idle      : std_logic >>;
@@ -528,6 +639,50 @@ begin
                          " pipeline_stall=" & std_logic'image(pstall) &
                          " DDRAM_RD=" & std_logic'image(DDRAM_RD);
                end if;
+            end if;
+         end if;
+      end process;
+   end generate;
+
+   -- -----------------------------------------------------------------------
+   -- DBG_POLY: gpu_poly progress tap. Logs (to build/poly.log) the divider gate
+   -- (div1.done from the whole-record alias), baseStep/denom (divider results
+   -- captured at CALCBOUNDARY2), the rasteriser position (xPos/yPos/firstPixel),
+   -- vramLineEna (='1' only in PROCPIXELS) and pipeline_new/done. Pinpoints where
+   -- the poly state machine parks with FIX_POLY_DIV on vs off.
+   -- -----------------------------------------------------------------------
+   dbg_poly_gen : if DBG_POLY generate
+      alias pd1       is << signal .tb_gpu_replay.igpu.igpu_poly.div1       : div_type >>;
+      alias p_baseStep is << signal .tb_gpu_replay.igpu.igpu_poly.baseStep  : signed(44 downto 0) >>;
+      alias p_denom    is << signal .tb_gpu_replay.igpu.igpu_poly.denom     : integer >>;
+      alias p_xPos     is << signal .tb_gpu_replay.igpu.igpu_poly.xPos      : signed(11 downto 0) >>;
+      alias p_yPos     is << signal .tb_gpu_replay.igpu.igpu_poly.yPos      : signed(10 downto 0) >>;
+      alias p_firstPix is << signal .tb_gpu_replay.igpu.igpu_poly.firstPixel: std_logic >>;
+      alias p_vramLine is << signal .tb_gpu_replay.igpu.poly_vramLineEna    : std_logic >>;
+      alias p_pipenew  is << signal .tb_gpu_replay.igpu.poly_pipeline_new   : std_logic >>;
+      alias p_done     is << signal .tb_gpu_replay.igpu.poly_done           : std_logic >>;
+      function h(v : signed) return string is begin return to_hstring(std_logic_vector(v)); end function;
+   begin
+      dbg_poly : process(clk2x)
+         file fp        : text open write_mode is "poly.log";
+         variable l     : line;
+         variable n     : integer := 0;
+         variable lastd : std_logic := 'Z';
+      begin
+         if rising_edge(clk2x) then
+            n := n + 1;
+            -- log on every div1.done pulse, every pipeline_new (pixel), and periodically
+            if (pd1.done = '1') or (p_pipenew = '1') or (p_done = '1') or (n mod 2000 = 1) then
+               write(l, string'("t=") & integer'image(n) &
+                        " div1.done=" & std_logic'image(pd1.done) &
+                        " baseStep=" & h(p_baseStep) &
+                        " denom=" & integer'image(p_denom) &
+                        " xPos=" & h(p_xPos) & " yPos=" & h(p_yPos) &
+                        " firstPix=" & std_logic'image(p_firstPix) &
+                        " vramLineEna=" & std_logic'image(p_vramLine) &
+                        " pipeNew=" & std_logic'image(p_pipenew) &
+                        " polyDone=" & std_logic'image(p_done));
+               writeline(fp, l);
             end if;
          end if;
       end process;

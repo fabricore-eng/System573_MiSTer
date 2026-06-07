@@ -217,12 +217,110 @@ garble band and confirm `pixelColor == texel_index<<5` (index leak) vs
 `== CLUT[index]` (correct), and whether the poly path's textPalNew CLUT-load
 handshake fires at all for these quads.
 
-## Debug
-`tb_gpu_replay.vhd` has a `DBG_TEX` constant (ships **false**) — internal probe
-(`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/`DDRAM_RD`) for textured-
-draw timing — and a `DBG_TAP8` constant (ships **false**) — the 8bpp CLUT-resolve
-tap (per-pixel `clutAddrB`/`clutDataB`/cache-word + the CLUT-load handshake), written
-to `build/tap8.log`. Both via VHDL-2008 external names (no `psx/` edit). `DBG_TAP8`
-taps the per-`i` combinational arrays at the dpram INSTANCE PORTS
+### Milestone 5 — the POLY PATH RENDERS in NVC; the quad-vs-rect pin, 2026-06-07.
+
+The M4 blocker (the NVC divider `.done` 'U' poison that stalled the poly path) is
+**fixed tb-side** by `FIX_POLY_DIV` (ships **ON**) in `tb_gpu_replay.vhd`. Root
+cause + fix (no `psx/` edit):
+- `gpu.vhd` wires the shared dividers through `inout div_type` ports on
+  `gpu_poly`/`gpu_line`. Those drawers never assign the read-only record fields
+  (`.done/.quotient/.remainder`), but an `inout` port still creates a *source* for
+  the whole record; `div_type.done` is a default-less `std_logic`, so NVC's
+  init-time multi-source resolution makes that source `'U'` and
+  `resolved('U', real) = 'U'` — `poly_div(i).done = 'U'` forever, so gpu_poly's
+  divider-gated states (CALCBOUNDARY2/CALCTEXTURE3…) never advance → 0 pixels.
+  (Pure NVC artifact of the inout-record idiom; on silicon there is no init `'U'`.)
+- Fix: VHDL-2008 `force` the whole `div_type` record on each `igpu_poly.divN` /
+  `igpu_line.divN` port to the divider instance's genuine outputs
+  (`gdividers(i).idivider.{done,quotient,remainder}`), driven **combinationally**
+  (the divider's `done` is a single clk2x pulse; a clk-gated mirror lands one cycle
+  late and the drawer misses it). Two NVC facts shaped this: external-name
+  **record-field** sub-selection is unsupported, and array-of-record **element**
+  names don't resolve — but a whole-record alias of a scalar-named **port**
+  (type `psx.pGPU.div_type`, a package type) does, and a forced field IS seen by
+  the child that reads it (all verified with minimal testcases).
+
+**Proof the poly path now rasterises:** a single 0x2C garble quad (`gen_stream.py
+garbleband`/`cmd_quad74.txt`) over a DEST-CLEARED region writes **600/600 pixels**
+in its screen bbox (vs 0 before the fix); the `DBG_POLY` tap shows `div1.done='1'`,
+`vramLineEna='1'`, `pipeNew='1'`, xPos/yPos sweeping (was parked forever).
+
+**The pin — and it OVERTURNS the M4 attribution.** Replaying the EXACT garble quad
+**#74** (OT@1e1790: GP0 0x2C, 4bpp, texpage 0x1E, CLUT 0x7ac0) over the frozen
+savestate VRAM, `DBG_TAP8` shows the poly path resolves the CLUT **CORRECTLY**:
+`dm=001E mode='0''0'` (drawMode(8)=0 → 15-bit-direct OFF → CLUT path), CLUT loads
+from `reqY=0x1EB` (=491, the right 0x7ac0 row), `clutAddrB`=the 4bpp index,
+`clutDataB=7FF1`=CLUT[1], `pixelColor=7FF1` (blue). **All 600 rendered pixels are
+members of CLUT 0x7ac0; ZERO green index<<5 leak.** The control RECT (same
+texpage/CLUT) resolves identically (`pixelColor=7FF1`). So the established M4 claim
+("the poly path drives the pipeline with drawMode(8)='1', or skips CLUTDataB →
+index leaks") is **DISPROVEN at the signal level** — `drawMode(8)='0'` and
+`clutDataB` IS used, for the quad exactly as for the rect.
+
+**Detector positive-control (the result is a TRUE negative, not a blind rig):**
+`gen_stream.py wrongclut` blits a green index-ramp palette (`entry i = i<<5`) and
+points quad #74's CLUT at it — the SAME pipeline then outputs
+`pixelColor ∈ {0x0020,0x0060,0x00c0,0x0100,0x0120,0x0140,0x0160,0x0180,0x01a0,…}`
+= **pure-green index<<5**, the exact frozen-HW garble signature. So the rig *does*
+reproduce the leak when the live CLUT is a green ramp.
+
+**Conclusion (ground-truth values).** The frozen HW garble band is green index<<5
+(e.g. 0x60,0xc0,0x100,0x120,0x140,0x160 = idx 3,6,8,9,10,11). That can ONLY be
+produced by a CLUT whose entries are an `i<<5` green ramp. The savestate CLUT at
+(0,491)=0x7ac0 is the BLUE/CYAN palette {0x7ff1,0x770e,0x72ed,…}; **no green-ramp
+CLUT exists anywhere in the savestate VRAM**. Our poly path + pixelpipeline, fed
+the real quad over the real VRAM, render the intended blue cityscape. Therefore the
+garble is **NOT an RTL defect in the poly path or the CLUT-lookup pixel pipeline**
+(both faithful); it requires a **WRONG CLUT to be live at draw time** — i.e. the
+green is a stale/incorrect CLUT-cache or a wrong CLUT pointer, NOT an un-looked-up
+index. A static savestate replay cannot see which CLUT was actually resident in the
+GPU's CLUT cache at the live draw, so the exact mis-CLUT source is not yet pinned
+from this data.
+
+**Top RTL candidate (named, NOT confirmed — needs the live cache state).** CLUT-cache
+**coherency gap**: `gpu.vhd:988` clears only `pipeline_clearCacheTexture` (NOT
+`…Palette`) after a fill/cpu2vram/vram2vram, and the pixelpipeline reload condition
+(`gpu_pixelpipeline.vhd:637`) keys the CLUT cache **only on (textPalX,textPalY)**,
+never on whether VRAM at that CLUT row was overwritten. So if the game writes its
+palette (or any VRAM at the cached CLUT row) AFTER the CLUT was cached and then
+draws more same-CLUT-coord primitives, the GPU samples a STALE CLUT. This is a
+plausible, on-path mechanism for "right CLUT pointer, wrong CLUT contents → leak",
+but proving it needs the live GPU CLUT-cache contents at the garble draw (a
+full-system `sim/system573_ssreplay` capture or an on-HW CLUT-cache probe), which
+this GPU-isolated static-VRAM rig does not provide. The disambiguator: capture the
+CLUT-cache word the GPU holds when the quad draws on the real boot — if it is a
+green ramp, the cache-staleness candidate is confirmed; if it is 0x7ac0-blue, the
+leak is elsewhere upstream (a wrong texpage/CLUT word actually reaching the GPU).
+
+Reproduce M5:
+```
+cd sim/gpu_replay
+python3 gen_stream.py garbleband > cmd_garbleband.txt   # 8 band quads + control rect
+python3 -c "import gen_stream as g; open('cmd_quad74.txt','w').write(g.build_garbleband(neighbors=False))"
+./run.sh "$PWD/cmd_quad74.txt"  "$PWD/../../local/ss_vram.bin" 0 "1 ms"   # quad+rect, both clean
+python3 gen_stream.py wrongclut  > cmd_wrongclut.txt     # detector positive-control (leaks)
+./run.sh "$PWD/cmd_wrongclut.txt" "$PWD/../../local/ss_vram.bin" 0 "1 ms"
+# set DBG_TAP8:=true in tb_gpu_replay.vhd to dump build/tap8.log for the per-pixel resolve
+```
+
+## Debug / rig gates
+`tb_gpu_replay.vhd` constants:
+- `FIX_POLY_DIV` (ships **ON**) — the M5 tb-side repair that makes the POLY (and
+  LINE) path render under NVC; see Milestone 5. Without it the poly drawer stalls
+  on the `'U'`-poisoned divider `.done` and emits no pixels. Pure rig fix (forces
+  the `igpu_poly`/`igpu_line` `divN` ports to the real divider outputs); NOT a
+  model of any silicon behaviour, NO `psx/` edit.
+- `DBG_TEX` (ships **false**) — internal probe
+  (`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/`DDRAM_RD`) for textured-
+  draw timing.
+- `DBG_POLY` (ships **false**) — gpu_poly progress tap (`build/poly.log`):
+  `div1.done` (whole-record alias), `baseStep`/`denom`, `xPos`/`yPos`,
+  `firstPixel`, `vramLineEna`, `pipeline_new`, `done`. Pinpoints where the poly
+  state machine parks (used to confirm FIX_POLY_DIV unblocks the divider gates).
+- `DBG_TAP8` (ships **false**) — the CLUT-resolve tap (per-pixel
+  `clutAddrB`/`clutDataB`/cache-word + the CLUT-load handshake), `build/tap8.log`.
+  Fires for BOTH rect and (with FIX_POLY_DIV) poly pixels.
+All via VHDL-2008 external names (no `psx/` edit). `DBG_TAP8` taps the per-`i`
+combinational arrays at the dpram INSTANCE PORTS
 (`gfiltermemmult(0).iclutram.{address_b,q_b}`, `.icache.q_b`) because NVC folds the
 arch-level array signals away; `run.sh` passes `--no-collapse` to keep names live.

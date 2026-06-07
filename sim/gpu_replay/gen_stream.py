@@ -81,6 +81,18 @@ class Stream:
         self.gp0(((y & 0xFFFF) << 16) | (x & 0xFFFF))
         self.gp0(((h & 0xFFFF) << 16) | (w & 0xFFFF))
 
+    def cpu2vram(self, x, y, words16, comment="GP0 A0 CPU->VRAM"):
+        """0xA0: CPU->VRAM blit of a row of 16-bit words at (x,y), 1 row high.
+        words16 = list of 16-bit values; packed two-per-32-bit (low=first)."""
+        n = len(words16)
+        self.gp0(0xA0000000, comment)
+        self.gp0(((y & 0xFFFF) << 16) | (x & 0xFFFF))
+        self.gp0(((1 & 0xFFFF) << 16) | (n & 0xFFFF))   # w=n, h=1
+        for i in range(0, n, 2):
+            lo = words16[i] & 0xFFFF
+            hi = (words16[i + 1] & 0xFFFF) if i + 1 < n else 0
+            self.gp0((hi << 16) | lo)
+
     def quad_tex_4pt(self, color, clut, tpage, verts, raw=False):
         """0x2C/0x2D: 4-point textured opaque quad. raw=True (0x2D, bit24) shows
         the texture UNBLENDED (pure CLUT colors); raw=False (0x2C) blends the
@@ -400,6 +412,125 @@ def build_fullframe573(ram_path=None, heads=(0x1e0b60, 0x1e0c00),
     return s.dump()
 
 
+def build_garbleband(ram_path=None, head=0x1e0c00, pick_ot=0x1e1790,
+                     neighbors=True, quad_drain=120000, with_rect=True):
+    """Render the EXACT hyperbbc GAME-OVER garble 0x2C QUAD(s) that land in the
+    visible band, over the frozen savestate VRAM (local/ss_vram.bin), into a
+    CLEARED display region -- the decisive poly-vs-rect comparison now that the
+    poly path renders (FIX_POLY_DIV in tb_gpu_replay).
+
+    `pick_ot` selects the primary quad (default OT@0x1e1790 = chain idx 74:
+    tpage 0x1E, CLUT 0x7ac0, screen bbox (131,0)-(156,24)) -- it shares the
+    EXACT texpage 0x1E + CLUT 0x7ac0 of the M4 positive-control RECT, so the two
+    can be compared head-to-head. `neighbors` also emits the row of band quads
+    around it. `with_rect` appends the control RECT (0x65 raw, same tp/CLUT).
+
+    Each 0x2C textured quad sampling a 4bpp page costs a lot of clk2x in the GPU
+    draw-timing model; the replay tb does NOT honor bus_stall, so we pace each
+    quad with a big `quad_drain` clk1x gap.
+    """
+    if ram_path is None:
+        ram_path = _SS_RAM
+    with open(ram_path, "rb") as f:
+        ram = f.read()
+    nodes = _walk_ot(ram, head)
+    by_addr = {addr: words for (addr, nwords, words) in nodes}
+
+    s = Stream()
+    s.gp1_reset()
+    s.gp1_dispmode(0x00000001)
+    s.gp1_dispenable(True)
+    s.gp1_dmadir(0)
+    s.gp1_dispstart(0, 0)
+    s.gp1_hrange(0x200, 0x200 + 320 * 8)
+    s.gp1_vrange(0x10, 0x10 + 240)
+    s.draw_area_tl(0, 0)
+    s.draw_area_br(511, 255)
+    s.draw_offset(0, 0)
+    s.tex_window(0, 0, 0, 0)
+    # Clear the band display region to black (x 96..320, y 0..40) WITHOUT touching
+    # the texture pages (x>=896) or the CLUT row (y=491): proves a quad actually
+    # painted (vs preload passthrough).
+    s.fill_vram(0x00, 0x00, 0x00, 96, 0, 256, 48)
+
+    # Which OT nodes to emit: the primary + (optionally) its band-row neighbors.
+    targets = []
+    if neighbors:
+        # the y0..24 band row from the picker: OT 0x1e1768 .. 0x1e18a8
+        for a in (0x1e1768, 0x1e1790, 0x1e17b8, 0x1e17e0, 0x1e1808,
+                  0x1e1830, 0x1e1858, 0x1e1880):
+            if a in by_addr:
+                targets.append(a)
+    if pick_ot not in targets and pick_ot in by_addr:
+        targets.insert(0, pick_ot)
+
+    for a in targets:
+        s.lines.append(f"# garble QUAD OT@{a:06x} (0x2C, tpage 0x1E, CLUT 0x7ac0)")
+        for wd in by_addr[a]:
+            s.gp0(wd)
+        s.t += quad_drain
+
+    if with_rect:
+        # M4 positive control: 0x65 RAW textured rect, SAME texpage 0x1E
+        # (tx=14,ty=1 -> VRAM x=896,y=256), 4bpp, CLUT 0x7ac0, sampling UV(0,0),
+        # drawn into the (now-cleared) band at screen (140,28) 24x24. If the quad
+        # leaks the raw index (green<<5) but THIS resolves to CLUT[index] (blue),
+        # the bug is poly-path-specific (the established M4 result, now in-rig).
+        s.lines.append("# positive-control RECT: 0x65 raw, tpage 0x1E, CLUT 0x7ac0")
+        tp = tpage_attr(tx=14, ty=1, abr=0, colors=0)
+        s.draw_mode(tp)
+        s.tex_window(0, 0, 0, 0)
+        s.rect_tex(0x808080, 0x7ac0, 140, 28, 24, 24, 0, 0, raw=True)
+
+    return s.dump()
+
+
+def build_wrongclut(ram_path=None, head=0x1e0c00, pick_ot=0x1e1790,
+                    clut_row=300, quad_drain=120000):
+    """DETECTOR positive-control: render the EXACT garble quad#74 but point its
+    CLUT at a synthetic GREEN INDEX-RAMP palette (entry i = i<<5 in the green
+    field) we blit into a free VRAM row first. If our pixelpipeline is faithful,
+    the quad must then emit pixelColor == index<<5 (the HW garble signature) --
+    proving the rig WOULD reproduce the leak if the live CLUT were a green ramp,
+    and therefore that the clean (0x7ac0) result is a true negative, not a blind
+    rig that can't show a leak. CLUT attr for row `clut_row`, cx=0:
+      clut = (0 & 0x3F) | (clut_row << 6).
+    """
+    if ram_path is None:
+        ram_path = _SS_RAM
+    with open(ram_path, "rb") as f:
+        ram = f.read()
+    nodes = _walk_ot(ram, head)
+    by_addr = {addr: words for (addr, nwords, words) in nodes}
+    quad = by_addr[pick_ot]
+
+    s = Stream()
+    s.gp1_reset()
+    s.gp1_dispmode(0x00000001)
+    s.gp1_dispenable(True)
+    s.gp1_dmadir(0)
+    s.gp1_dispstart(0, 0)
+    s.gp1_hrange(0x200, 0x200 + 320 * 8)
+    s.gp1_vrange(0x10, 0x10 + 240)
+    s.draw_area_tl(0, 0)
+    s.draw_area_br(511, 255)
+    s.draw_offset(0, 0)
+    s.tex_window(0, 0, 0, 0)
+    s.fill_vram(0x00, 0x00, 0x00, 96, 0, 256, 48)
+    # Blit a 16-entry green index ramp CLUT at (0, clut_row): entry i = i<<5 (green).
+    s.cpu2vram(0, clut_row, [(i << 5) for i in range(16)], "green-ramp CLUT")
+    # Redirect the quad's CLUT (vertex-1 hi16) to clut_row, keep everything else.
+    new_clut = (0 & 0x3F) | ((clut_row & 0x1FF) << 6)
+    q = list(quad)
+    # word index 2 = vertex0's uv word: CLUT<<16 | (v<<8|u). Replace hi16.
+    q[2] = (new_clut << 16) | (q[2] & 0xFFFF)
+    s.lines.append(f"# garble QUAD OT@{pick_ot:06x} with CLUT redirected to green-ramp row {clut_row}")
+    for wd in q:
+        s.gp0(wd)
+    s.t += quad_drain
+    return s.dump()
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "demo"
     if which == "demo":
@@ -412,6 +543,10 @@ if __name__ == "__main__":
         # optional arg: 'rects' or 'quads' to emit only one chain (bisection)
         only = sys.argv[2] if len(sys.argv) > 2 else None
         sys.stdout.write(build_fullframe573(only=only))
+    elif which in ("garbleband", "garble"):
+        sys.stdout.write(build_garbleband())
+    elif which in ("wrongclut", "wrongclut74"):
+        sys.stdout.write(build_wrongclut())
     elif which == "texrect":
         # optional args: colors(bpp) tx ty  -> e.g. `texrect 0 14 0`
         kw = {}
