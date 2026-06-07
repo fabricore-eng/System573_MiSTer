@@ -66,10 +66,16 @@ architecture sim of tb_gpu_replay is
    -- the dbg_tex process (proc_idle / reqVRAMEnable / VRAMIdle / pipeline_stall).
    constant DBG_TEX : boolean := false;
 
-   -- 8bpp-resolve TAP gate (ships OFF). Set true to log the 8bpp CLUT-resolve
-   -- path per textured pixel + the CLUT-load handshake, to a trace file. Used to
-   -- pin the hyperbbc bg-panel garble. Read-only external-name taps into the
-   -- vendored gpu_pixelpipeline (NO submodule edit). Writes build/tap8.log.
+   -- CLUT-resolve TAP gate (ships OFF). Set true to log the per-pixel CLUT
+   -- resolve (PIX rows: cacheWord/clutAddrB/clutDataB), the FINAL output pixel
+   -- (OUT rows: stage6 x/y/pixelColor) and the CLUT-load handshake (CLUT rows),
+   -- to build/tap8.log. Used to pin the hyperbbc bg-panel garble. Read-only
+   -- external-name taps into the vendored gpu_pixelpipeline (NO submodule edit).
+   -- The OUT/PIX rows fire for the rect path (gpu_rect); the poly path (gpu_poly,
+   -- GP0 0x2C) does NOT render in this NVC rig -- its divider record-port `.done`
+   -- elaborates as undriven 'U' (see the POLY_DIV(*).DONE init warnings), so the
+   -- poly drawer stalls (proc_idle stays low) and emits no pixels. Use the rect
+   -- path to exercise the SAME 4bpp/8bpp->CLUT pixel pipeline.
    constant DBG_TAP8 : boolean := false;
 
    signal clk1x               : std_logic := '1';
@@ -568,6 +574,11 @@ begin
       alias t_clutwrdata  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.q_a    : std_logic_vector(63 downto 0) >>;
       alias t_clutwraddrA is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.address_a : std_logic_vector(5 downto 0) >>;
       alias t_vrdout      is << signal .tb_gpu_replay.igpu.vram_DOUT                          : std_logic_vector(63 downto 0) >>;
+      -- FINAL output pixel (color the GPU writes to VRAM) + its coords/valid.
+      alias t_pixcolor    is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.pixelColor       : std_logic_vector(15 downto 0) >>;
+      alias t_s6valid     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage6_valid     : std_logic >>;
+      alias t_s6x         is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage6_x         : unsigned(9 downto 0) >>;
+      alias t_s6y         is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage6_y         : unsigned(8 downto 0) >>;
 
       function h(v : std_logic_vector) return string is begin
          return to_hstring(v);
@@ -592,16 +603,23 @@ begin
                         " vram_DOUT=" & h(t_vrdout));
                writeline(ftap, l);
             end if;
-            -- per textured pixel resolve (stage1 valid + textured): one line.
-            -- texdata_palette(0)==clutDataB for 8bpp; clutAddrB==the index used.
-            if (t_s1valid = '1' and t_s1texture = '1') then
+            -- per stage1-valid pixel resolve (textured OR not): one line. Logs the
+            -- raw texel slice, the CLUT index it forms, and the CLUT color out.
+            if (t_s1valid = '1') then
                npix := npix + 1;
                write(l, string'("PIX x=") & h(t_s1x) & " y=" & h(t_s1y) &
+                        " tex=" & std_logic'image(t_s1texture) &
                         " dm=" & h(t_drawMode) &
                         " mode=" & std_logic'image(t_drawMode(8)) & std_logic'image(t_drawMode(7)) &
                         " cacheWord=" & h(t_cacheq0) &
                         " clutAddrB=" & h(t_clutaddrB0) &
-                        " clutDataB(=palette8bpp)=" & h(t_clutdataB0));
+                        " clutDataB=" & h(t_clutdataB0));
+               writeline(ftap, l);
+            end if;
+            -- FINAL output pixel: the actual color written to VRAM at (x,y).
+            if (t_s6valid = '1') then
+               write(l, string'("OUT x=") & h(t_s6x) & " y=" & h(t_s6y) &
+                        " pixelColor=" & h(t_pixcolor));
                writeline(ftap, l);
             end if;
          end if;

@@ -290,6 +290,116 @@ def build_bgpanel573():
     return s.dump()
 
 
+# ---------------------------------------------------------------------------
+# FULL-FRAME replay: walk the REAL hyperbbc GAME-OVER ordering table (OT) out
+# of local/ss_ram.bin and emit EVERY primitive in draw order, verbatim. This is
+# the decisive scene replay the bgpanel573 (4-rect) experiment did NOT do: the
+# garbled right-half is painted by a chain of 320 0x2C textured quads (CLUT
+# 0x7ac0 -> VRAM(0,491), 4bpp, texpages X=896/960 Y=0/256), NOT by the 4 bg
+# rects (CLUT 0x7800 -> VRAM(0,480), 8bpp) the prior replay tested.
+#
+# OT mechanics (PSX): a node's first word is a TAG = (nwords<<24)|(next24); the
+# `nwords` data words that follow are the raw GP0 packet. The list terminates at
+# a sentinel `next` that points outside the 2 MiB RAM window (this game uses
+# 0x287580). DRAW ORDER = list order (we DO NOT reverse; the game already sorted
+# its OT so list-head is drawn first).
+#
+# ** RIG CAVEAT (2026-06-07): the POLY path does NOT render in this NVC rig. **
+# GP0 0x2C/0x28 (textured + flat quads) draw ZERO pixels here: the vendored
+# divider's record-port `.done` (gpu.vhd gdividers: div_array(i).done is driven
+# by the divider INSTANCE port while sibling record fields are driven by `<=`)
+# elaborates in NVC as a 2-source signal with an undriven 'U' source, resolving
+# done='U' forever -> gpu_poly stalls (proc_idle low), emits no pixel. So a
+# full-frame replay of these 0x2C quads OVER a preloaded VRAM looks like a
+# byte-exact reproduction, but that is a PRELOAD-PASSTHROUGH ARTIFACT (the
+# garble that was already in the preloaded fb shows through unchanged because
+# the quads drew nothing). To exercise the SAME 4bpp/8bpp->CLUT pixel pipeline,
+# use the RECT path (build_texrect / rect_tex, GP0 0x64/0x65) -- it renders.
+# Verify draw actually happened by preloading a DEST-CLEARED VRAM (display fb
+# zeroed, textures+CLUT intact) and checking the band is non-black.
+# ---------------------------------------------------------------------------
+import os, struct
+
+_SS_RAM = os.path.join(os.path.dirname(__file__), "..", "..", "local", "ss_ram.bin")
+
+
+def _walk_ot(ram, head, maxn=4000):
+    """Walk an OT linked list; return [(addr, nwords, [words...]), ...] in order.
+    Stops at a `next` that leaves the RAM window (the game's terminator sentinel),
+    at a revisited node (loop guard), or after maxn nodes."""
+    mask = len(ram) - 1
+    def w(off):
+        return struct.unpack_from("<I", ram, off & mask)[0]
+    addr = head & 0xFFFFFF
+    seen = set(); nodes = []
+    while len(nodes) < maxn:
+        ma = addr & mask
+        if addr != ma:           # next points outside RAM -> terminator sentinel
+            break
+        if ma in seen:           # loop guard
+            break
+        seen.add(ma)
+        tag = w(ma); nwords = (tag >> 24) & 0xFF; nxt = tag & 0xFFFFFF
+        words = [w(ma + 4 + 4 * i) for i in range(nwords)]
+        nodes.append((ma, nwords, words))
+        addr = nxt
+    return nodes
+
+
+def build_fullframe573(ram_path=None, heads=(0x1e0b60, 0x1e0c00),
+                       draw_offx=0, draw_offy=0, quad_drain=30000,
+                       only=None):
+    """Replay the FULL GAME-OVER display list from the savestate main RAM.
+
+    heads      : OT head addresses to walk + emit IN ORDER (default: the 4 bg
+                 rects chain then the 320 0x2C textured-quad chain).
+    draw_offx/y: GP0 E5 draw offset (lives in GPU regs, not RAM; default 0,0 —
+                 the quad coords already land on the visible region with 0,0).
+    only       : if set to 'rects' or 'quads', emit only that chain (bisection).
+    quad_drain : clk1x gap after each textured prim so the GPU drains it (the tb
+                 does not honor bus_stall, so we must pace textured draws).
+
+    Each primitive's own E1/E2 state travels INSIDE the OT packet (the bg rects
+    carry their E1 texpage; the 0x2C quads carry tpage in vertex-2's hi16 and
+    CLUT in vertex-1's hi16), so the per-frame GPU state we must reconstruct is
+    only: display mode, draw area (clip), draw offset, and the texture window.
+    We set a permissive draw area (full VRAM panel), E2=0 (full page), E5=offset.
+    """
+    if ram_path is None:
+        ram_path = _SS_RAM
+    with open(ram_path, "rb") as f:
+        ram = f.read()
+
+    s = Stream()
+    s.gp1_reset()
+    s.gp1_dispmode(0x00000001)          # 320x240 NTSC, 15bpp
+    s.gp1_dispenable(True)
+    s.gp1_dmadir(0)
+    s.gp1_dispstart(0, 0)
+    s.gp1_hrange(0x200, 0x200 + 320 * 8)
+    s.gp1_vrange(0x10, 0x10 + 240)
+    s.draw_area_tl(0, 0)
+    s.draw_area_br(511, 255)            # permissive clip over the panel
+    s.draw_offset(draw_offx, draw_offy)
+    s.tex_window(0, 0, 0, 0)            # full page (no UV mask)
+
+    chains = []
+    if only in (None, "rects"):
+        chains.append(("rects", _walk_ot(ram, heads[0])))
+    if only in (None, "quads"):
+        chains.append(("quads", _walk_ot(ram, heads[1])))
+
+    for name, nodes in chains:
+        s.lines.append(f"# ---- chain {name}: {len(nodes)} primitives (draw order) ----")
+        for (addr, nwords, words) in nodes:
+            s.lines.append(f"# OT@{addr:06x} n={nwords}")
+            for wd in words:
+                s.gp0(wd)
+            # textured prim: pace the FIFO so the GPU drains before the next packet
+            s.t += quad_drain
+    return s.dump()
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "demo"
     if which == "demo":
@@ -298,6 +408,10 @@ if __name__ == "__main__":
         sys.stdout.write(build_texquad())
     elif which in ("bgpanel", "bgpanel573"):
         sys.stdout.write(build_bgpanel573())
+    elif which in ("fullframe", "fullframe573"):
+        # optional arg: 'rects' or 'quads' to emit only one chain (bisection)
+        only = sys.argv[2] if len(sys.argv) > 2 else None
+        sys.stdout.write(build_fullframe573(only=only))
     elif which == "texrect":
         # optional args: colors(bpp) tx ty  -> e.g. `texrect 0 14 0`
         kw = {}

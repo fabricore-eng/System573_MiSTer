@@ -156,6 +156,67 @@ consistent function of texpage-768 indices through any CLUT — each index maps 
 into bucket 0x287580) to find the primitive that actually writes the green, or
 capture the live GPU register/CLUT-cache state at draw time (not in `ss_ram.bin`).
 
+### Milestone 4 — FULL OT trace + the green-painter pinned (forensically), 2026-06-07.
+
+Walked the COMPLETE GAME-OVER display list out of `local/ss_ram.bin`. The 4 bg
+rects (OT head 0x1e0b60) are a 4-node chain; the garbled right-half is painted by
+a SEPARATE **320-node chain of GP0 0x2C textured QUADS** (OT head 0x1e0c00), all
+4bpp, all CLUT **0x7ac0 -> VRAM(0,491)**, texpages X=896/960 Y=0/256, screen bbox
+x[-8..391] y[-80..319] (a warped full-panel grid covering the garble band
+x123..378 y0..203). Both chains terminate at the game's OT sentinel 0x287580
+(outside the 2 MiB RAM window). Generator: `gen_stream.py fullframe [rects|quads]`.
+
+**Two hard, reproduced results:**
+
+1. **The garble is NOT a correct render.** A byte-faithful software 4bpp->CLUT
+   decode of the 320 quads (correct GPU semantics, CLUT 0x7ac0) renders a BLUE/CYAN
+   cityscape (top colors 0x7ff1/0x7b90/0x7fb0...). The frozen HW band is PURE GREEN
+   (only the G channel set). 0/47397 painted px match the correct decode. So HW (and
+   our sim, which is byte-exact to the savestate VRAM) genuinely DIVERGES from the
+   intended image — the green is a real rendering bug, not an artistic green panel.
+
+2. **The green == raw 4bpp texel INDEX in the green channel.** Every garble value is
+   exactly `index<<5`: the band's pure-green set {0x60,0xa0,0xc0,0x100,0x120,0x140,
+   0x160} = indices {3,5,6,8,9,10,11} placed in green bits[9:5], and >>5 yields small
+   integers (23 514 px in the 4bpp range 0..15 vs 349 px in the 8bpp range). The
+   green cycles every ~4 screen px (`...0120 00c0 00a0 0160...`), the signature of a
+   4bpp word's four nibbles emitted as raw indices with NO CLUT lookup. CLUT 0x7ac0
+   itself contains NO green entry (all blue/cyan), so the green can only be the
+   un-looked-up index leaking to output (`texdata_raw` instead of `CLUTDataB`).
+
+**RIG LIMIT — the poly path does not render in NVC (decisive, corrects M3-era hope
+of a full-scene replay).** Feeding the 320 0x2C quads to the rig produced a
+"100.00% byte-exact, SSIM 1.0000" match vs the HW garble — **a FALSE positive**: a
+DEST-CLEARED control (preload the savestate VRAM with the display fb zeroed,
+textures+CLUT intact) shows a single 0x2C quad — AND a flat 0x28 quad, AND the
+demo's 2nd/3rd flat rects — draw ZERO pixels. The "match" was the preloaded garble
+passing through untouched because the poly drawer never emits a pixel. Root cause:
+the vendored divider's record-port `.done` (gpu.vhd `gdividers`) elaborates in NVC
+as a 2-source signal with an undriven 'U' (the `POLY_DIV(*).DONE ... no driver`
+init warnings) -> done='U' forever -> `gpu_poly` stalls (proc_idle low). The RECT
+path (0x64/0x65) DOES render and exercises the SAME pixel pipeline.
+
+**Positive control on the shared pipeline:** a 0x65 RAW textured RECT sampling the
+SAME texpage 0x1E (VRAM 896,256), 4bpp, CLUT 0x7ac0, over the savestate VRAM,
+resolves CORRECTLY: `DBG_TAP8` OUT rows = `pixelColor=7FF1` (= CLUT[1], blue), CLUT
+load reqY=0x1EB(491) byte-exact. So the 4bpp->CLUT resolve in the shared
+pixelpipeline is FAITHFUL when driven by the rect path — i.e. the index-leak, if it
+is an RTL bug, lives in how the **poly path** drives that pipeline (UV/coord/state
+or a CLUT-handshake the poly path skips), NOT in the pipeline's CLUT lookup itself.
+
+**Honest status / disambiguator.** Forensically pinned: garbled region = the
+320-quad chain (0x1e0c00); the green = 4bpp index<<5 (raw index, no CLUT lookup);
+the bug is poly-path-specific (rect path of the same texture+CLUT renders clean
+blue). NOT yet pinned to an exact RTL signal, because this NVC rig cannot render
+0x2C. The decisive next experiment: render these quads through the poly path — by
+fixing the NVC divider `.done` elaboration (a tb-side or elaboration-flag
+workaround that drives the record field, NO psx/ edit) OR via the full-system
+savestate replay (`sim/system573_ssreplay`) which loads the savestate GPU regs and
+can drive gpu_poly from real state — then read the `DBG_TAP8` OUT rows over the
+garble band and confirm `pixelColor == texel_index<<5` (index leak) vs
+`== CLUT[index]` (correct), and whether the poly path's textPalNew CLUT-load
+handshake fires at all for these quads.
+
 ## Debug
 `tb_gpu_replay.vhd` has a `DBG_TEX` constant (ships **false**) — internal probe
 (`proc_idle`/`reqVRAMEnable`/`VRAMIdle`/`pipeline_stall`/`DDRAM_RD`) for textured-
