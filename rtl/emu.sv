@@ -899,6 +899,36 @@ savestate_ui savestate_ui
 );
 defparam savestate_ui.INFO_TIMEOUT_BITS = 25;
 
+// ───────────────────── 573 TOOL: AUTONOMOUS SAVESTATE TRIGGER (DBG_AUTOSS) ─────────────────────
+// Reusable autonomous-capture: the CORE itself fires a savestate on an internal condition (no human
+// hotkey), so an exact internal state is captured to a .ss with NO manual timing. The HPS writes the
+// .ss the same way it does for the FPGA's own Alt+F1 save (savestate_ui.ss_save reaches save_state
+// below), so a core-injected pulse OR'd into the same save_state input should produce a .ss file too
+// -- the one thing that needs HW confirmation on the first DBG_AUTOSS=1 build. Ships '0' (no-op).
+// Rewire `autoss_trigger` to ANY internal event (a GPU draw strobe, a PC match, a signal edge) for
+// event-precise capture. Default trigger = a periodic timer that auto-cycles the 4 save slots, so a
+// looping attract mode is sampled across slots 0..3 with nobody pressing a key.
+localparam        DBG_AUTOSS    = 1'b0;                  // ships OFF (production)
+localparam [31:0] AUTOSS_PERIOD = 32'd118_000_000;       // ~3.5 s @ ~33.8 MHz clk_1x between captures
+reg  [31:0] autoss_cnt  = 0;
+reg  [1:0]  autoss_slot = 0;
+reg         autoss_fire = 1'b0;                          // 1-clk save_state pulse
+wire        autoss_trigger = (autoss_cnt >= AUTOSS_PERIOD);  // <-- REWIRE to any event for precise capture
+always @(posedge clk_1x) begin
+	autoss_fire <= 1'b0;
+	if (DBG_AUTOSS) begin
+		if (autoss_trigger) begin
+			autoss_cnt  <= 32'd0;
+			autoss_fire <= 1'b1;
+			autoss_slot <= autoss_slot + 2'd1;
+		end else begin
+			autoss_cnt  <= autoss_cnt + 32'd1;
+		end
+	end
+end
+wire       ss_save_eff = ss_save | (DBG_AUTOSS & autoss_fire);
+wire [1:0] ss_slot_eff = (DBG_AUTOSS & autoss_fire) ? autoss_slot : ss_slot;
+
 ////////////////////////////  PAD  ///////////////////////////////////
 
 // 0000 -> DualShock
@@ -1376,9 +1406,9 @@ psx
 	.sound_out_right(AUDIO_R),
    //savestates
    .increaseSSHeaderCount (!status[36]),
-   .save_state            (ss_save),
+   .save_state            (ss_save_eff),
    .load_state            (ss_load),
-   .savestate_number      (ss_slot),
+   .savestate_number      (ss_slot_eff),
    .state_loaded          (),
    .validSStates          (validSStates),
    .rewind_on             (0), //(status[27]),
