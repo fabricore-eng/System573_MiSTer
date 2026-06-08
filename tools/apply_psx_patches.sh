@@ -51,7 +51,13 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # (not the palette cache) on VRAM writes (fill/cpu2vram/vram2vram), so a palette
           # uploaded to a cached CLUT row was ignored -> stale CLUT -> the hyperbbc green
           # foreground-quad garble. Asserts pipeline_clearCachePalette too. Production fix.
-          "$ROOT/psx_patches/0013-s573-clut-cache-coherency.patch" )
+          "$ROOT/psx_patches/0013-s573-clut-cache-coherency.patch" \
+          # 0014: EXPERIMENT (bisection). Disables the GPU CLUT palette cache -> every textured
+          # primitive re-fetches its palette from VRAM (never serves a cached one). Tests whether
+          # the hyperbbc garble is a stale/mis-invalidated palette cache (fix) vs a VRAM
+          # write-after-read ordering bug (persists). Gated by DISABLE_CLUT_CACHE in
+          # gpu_pixelpipeline.vhd (set '1' for this build; '0' = no-op normal cache).
+          "$ROOT/psx_patches/0014-s573-disable-clut-cache.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

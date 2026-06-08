@@ -1,0 +1,29 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+index de9266e..462588f 100644
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -157,6 +157,15 @@ architecture arch of gpu_pixelpipeline is
+    -- color) -> stripes came from the texel INDEX/data (texel-side); if they stay STRIPED ->
+    -- the CLUT load/lookup itself is wrong (CLUT-side). Set '0' for production.
+    constant DBG_8BPP_IDX0 : std_logic := '0';   -- ships OFF (production); set '1' only for the CLUT-vs-texel split probe
++   -- 573 EXPERIMENT (0014): DISABLE the CLUT palette cache -> force a fresh VRAM re-fetch
++   -- of the palette for EVERY textured primitive (never serve a cached palette). Bisects the
++   -- hyperbbc garble: board-free analysis proved the wrong (green) palette is NOT in VRAM and
++   -- the renderer resolves the correct blue palette in every cold replay, so the bad palette is
++   -- live only at draw time. If forcing a fresh re-read FIXES the garble -> it was a stale/
++   -- mis-invalidated palette cache (refine the 0013 invalidation). If it PERSISTS -> VRAM row
++   -- 491 itself holds stale data at fetch time (a VRAM write-after-read ordering bug). '1' for
++   -- this experiment build; '0' = no-op (normal cache, constant-folds away).
++   constant DISABLE_CLUT_CACHE : std_logic := '1';
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+@@ -634,7 +643,7 @@ begin
+                SetMask        <= SetMask_in; 
+             end if;
+             
+-            if (textPalInNew = '1' and drawMode_in(8) = '0' and (textPalFetched = '0' or textPalInX /= textPalX or textPalInY /= textPalY or palette8bit /= drawMode_in(7) or textPalReq = '1')) then
++            if (textPalInNew = '1' and drawMode_in(8) = '0' and (DISABLE_CLUT_CACHE = '1' or textPalFetched = '0' or textPalInX /= textPalX or textPalInY /= textPalY or palette8bit /= drawMode_in(7) or textPalReq = '1')) then
+                textPalReq  <= not noTexture;
+                textPalReqX <= textPalInX;
+                textPalReqY <= textPalInY;
