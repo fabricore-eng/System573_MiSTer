@@ -63,7 +63,15 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # entries as 16px colour bands into the framebuffer (which a savestate captures). The
           # wrong (red) palette lives only in the draw-time cache; this is the on-HW way to read
           # it. Gated by DBG_CLUT_STRIPE in gpu_pixelpipeline.vhd ('1' = probe; '0' = no-op).
-          "$ROOT/psx_patches/0015-s573-clut-stripe-probe.patch" )
+          "$ROOT/psx_patches/0015-s573-clut-stripe-probe.patch" \
+          # 0016 is the PRODUCTION FIX: a CLUT-resident interlock. The hyperbbc panel garble is a
+          # consume-before-refill race -- a quad's 2nd triangle + later scanlines bypass gpu_poly IDLE
+          # so their pixels emit before this primitive's CLUT row is loaded and read the PRIOR quad's
+          # resident palette (HW-probe-confirmed: panel read row ~482 not 491). 0016 stalls stage0/1
+          # CLUT-textured pixels until their requested row is resident (and lets the fetch start while
+          # they're parked, to avoid deadlock). Gated by CLUT_INTERLOCK in gpu_pixelpipeline.vhd
+          # ('1' = fix; '0' = no-op). NVC-analyze-clean; HW-A/B is the arbiter (bug is HW-timing-only).
+          "$ROOT/psx_patches/0016-s573-clut-resident-interlock.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
