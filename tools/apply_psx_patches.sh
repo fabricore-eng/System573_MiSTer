@@ -57,7 +57,13 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # the hyperbbc garble is a stale/mis-invalidated palette cache (fix) vs a VRAM
           # write-after-read ordering bug (persists). Gated by DISABLE_CLUT_CACHE in
           # gpu_pixelpipeline.vhd (set '1' for this build; '0' = no-op normal cache).
-          "$ROOT/psx_patches/0014-s573-disable-clut-cache.patch" )
+          "$ROOT/psx_patches/0014-s573-disable-clut-cache.patch" \
+          # 0015 is a PROBE: for the hyperbbc panel's 4bpp CLUT-(0,491) draws it overrides the
+          # CLUT index with the screen-x position so the panel renders the 16 LIVE CLUT-cache
+          # entries as 16px colour bands into the framebuffer (which a savestate captures). The
+          # wrong (red) palette lives only in the draw-time cache; this is the on-HW way to read
+          # it. Gated by DBG_CLUT_STRIPE in gpu_pixelpipeline.vhd ('1' = probe; '0' = no-op).
+          "$ROOT/psx_patches/0015-s573-clut-stripe-probe.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
