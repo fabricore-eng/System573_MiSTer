@@ -25,7 +25,7 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
        
 -      CLUTaddrB(i) <= x"0" & texdata_raw(i)( 3 downto  0) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "00") else
 +      CLUTaddrB(i) <= "0000" & std_logic_vector(stage1_x(7 downto 4))
-+                                                          when (DBG_CLUT_STRIPE = '1' and drawMode(7) = '0' and drawMode(8) = '0' and textPalY = 491 and textPalX = 0) else  -- 573 PROBE (0015): panel CLUT idx <- screen x>>4
++                                                          when (DBG_CLUT_STRIPE = '1' and drawMode(7) = '0' and drawMode(8) = '0') else  -- 573 PROBE (0015v2): ANY 4bpp-CLUT poly idx <- screen x>>4 (gate widened: panel did not fire under textPalY=491)
 +                      x"0" & texdata_raw(i)( 3 downto  0) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "00") else
                        x"0" & texdata_raw(i)( 7 downto  4) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "01") else
                        x"0" & texdata_raw(i)(11 downto  8) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "10") else
