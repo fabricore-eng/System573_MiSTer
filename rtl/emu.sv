@@ -908,7 +908,7 @@ defparam savestate_ui.INFO_TIMEOUT_BITS = 25;
 // Rewire `autoss_trigger` to ANY internal event (a GPU draw strobe, a PC match, a signal edge) for
 // event-precise capture. Default trigger = a periodic timer that auto-cycles the 4 save slots, so a
 // looping attract mode is sampled across slots 0..3 with nobody pressing a key.
-localparam        DBG_AUTOSS    = 1'b0;                  // ships OFF (production)
+localparam        DBG_AUTOSS    = 1'b1;                  // ships OFF (production)
 localparam [31:0] AUTOSS_PERIOD = 32'd118_000_000;       // ~3.5 s @ ~33.8 MHz clk_1x between captures
 reg  [31:0] autoss_cnt  = 0;
 reg  [1:0]  autoss_slot = 0;
