@@ -531,6 +531,84 @@ def build_wrongclut(ram_path=None, head=0x1e0c00, pick_ot=0x1e1790,
     return s.dump()
 
 
+def build_clutrace(neighbor_row=480, panel_row=491, n_panel=4, n_neighbor=1,
+                   quad_drain=4000, raw=True, ox=64, oy=64, qw=128, qh=64,
+                   alternate=False):
+    """CLUT READ-TIMING RACE repro (the task target).
+
+    The hyperbbc panel = many GP0 0x2C textured quads all requesting CLUT
+    0x7ac0 (=row 491, clutX=0, 4bpp), texpage 0x1F (VRAM 960,256). On HW they
+    render through the WRONG (neighbor) palette row because the panel quad's
+    pixels sample the shared iCLUTram BEFORE this quad's own row-491 fetch
+    lands (real VRAM read latency); they read the PRIOR primitive's resident
+    palette. The cold sim renders clean (ideal-timing VRAM). SLOWTIMING adds
+    the read latency.
+
+    This stream loads iCLUTram with a NEIGHBOR row (default 480) via one or
+    more textured quads, THEN draws the panel quad(s) requesting row 491. At
+    SLOWTIMING=0 the panel should resolve row 491; at SLOWTIMING>0 it should
+    resolve the stale neighbor row 480 -> the bug reproduced.
+
+    All quads sample the SAME texpage 0x1F (identical texels); only the CLUT
+    row differs, so the rendered color isolates which palette was read. raw
+    (0x2D) emits pure CLUT colors for trivial numeric decode.
+
+    Designed to run PRELOADED with local/_dc2_vram.bin (the real panel VRAM:
+    texture atlas + CLUT rows 480..509 all present). Coords are ON-SCREEN
+    (positive) to avoid the gpu_poly negative-coord NVC fatal.
+
+    neighbor_row : CLUT row the priming quad(s) request (stale candidate).
+    panel_row    : CLUT row the panel quad(s) request (correct = 491).
+    n_panel      : number of panel quads (each re-requests its CLUT).
+    n_neighbor   : number of neighbor quads drawn first.
+    quad_drain   : clk1x gap after each quad (small = tight FIFO = max race
+                   window; large = generous = ideal-timing reference).
+    alternate    : if True, alternate neighbor/panel quads (stresses the
+                   re-fetch each draw, the rapid-chain HW condition).
+    """
+    TP = 0x1F          # texpage 0x1F: tx=15(x=960) ty=1(y=256) abr=0 4bpp
+    # UV block that lands on a rich index mix (matches the real quad's v=0..93)
+    def quad_verts(u0=0, v0=0, u1=127, v1=63):
+        return [
+            (ox,      oy,      u0, v0),
+            (ox + qw, oy,      u1, v0),
+            (ox,      oy + qh, u0, v1),
+            (ox + qw, oy + qh, u1, v1),
+        ]
+
+    s = Stream()
+    display_setup_320x240(s)
+    # clear display region to black WITHOUT touching the texture page (x>=896)
+    # or the CLUT rows (y>=480). Display quads land at x 64..192, y 64..128.
+    s.fill_vram(0x00, 0x00, 0x00, 0, 0, 384, 240)
+    s.draw_mode(TP)
+    s.tex_window(0, 0, 0, 0)
+
+    clut_neighbor = clut_attr(0, neighbor_row)   # cx=0
+    clut_panel    = clut_attr(0, panel_row)
+
+    if alternate:
+        # neighbor, panel, neighbor, panel ... -- each panel quad is immediately
+        # preceded by a fresh neighbor-CLUT load.
+        for i in range(n_panel):
+            s.lines.append(f"# neighbor quad #{i} CLUT row {neighbor_row}")
+            s.quad_tex_4pt(0x808080, clut_neighbor, TP, quad_verts(), raw=raw)
+            s.t += quad_drain
+            s.lines.append(f"# PANEL quad #{i} CLUT row {panel_row} (should resolve 491)")
+            s.quad_tex_4pt(0x808080, clut_panel, TP, quad_verts(), raw=raw)
+            s.t += quad_drain
+    else:
+        for i in range(n_neighbor):
+            s.lines.append(f"# neighbor quad #{i} CLUT row {neighbor_row} (primes iCLUTram)")
+            s.quad_tex_4pt(0x808080, clut_neighbor, TP, quad_verts(), raw=raw)
+            s.t += quad_drain
+        for i in range(n_panel):
+            s.lines.append(f"# PANEL quad #{i} CLUT row {panel_row} (should resolve 491)")
+            s.quad_tex_4pt(0x808080, clut_panel, TP, quad_verts(), raw=raw)
+            s.t += quad_drain
+    return s.dump()
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "demo"
     if which == "demo":
@@ -547,6 +625,19 @@ if __name__ == "__main__":
         sys.stdout.write(build_garbleband())
     elif which in ("wrongclut", "wrongclut74"):
         sys.stdout.write(build_wrongclut())
+    elif which in ("clutrace", "race"):
+        # optional kwargs: drain N, alt, panel N, neigh N, nrow R
+        kw = {}
+        a = sys.argv[2:]
+        i = 0
+        while i < len(a):
+            if a[i] == "drain": kw["quad_drain"] = int(a[i+1]); i += 2
+            elif a[i] == "alt": kw["alternate"] = True; i += 1
+            elif a[i] == "panel": kw["n_panel"] = int(a[i+1]); i += 2
+            elif a[i] == "neigh": kw["n_neighbor"] = int(a[i+1]); i += 2
+            elif a[i] == "nrow": kw["neighbor_row"] = int(a[i+1]); i += 2
+            else: i += 1
+        sys.stdout.write(build_clutrace(**kw))
     elif which == "texrect":
         # optional args: colors(bpp) tx ty  -> e.g. `texrect 0 14 0`
         kw = {}

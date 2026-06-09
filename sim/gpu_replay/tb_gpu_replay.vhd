@@ -77,7 +77,7 @@ architecture sim of tb_gpu_replay is
    -- quad and its control rect can be tapped head-to-head. (M5 result: with the
    -- savestate VRAM both resolve CLUT 0x7ac0 correctly -> pixelColor = CLUT[idx],
    -- NO index<<5 leak; see the rig README "Milestone 5".)
-   constant DBG_TAP8 : boolean := false;
+   constant DBG_TAP8 : boolean := true;
 
    -- RIG FIX gate (ships ON). Makes the POLY path (GP0 0x2C/0x28) render in NVC.
    -- WHY: gpu.vhd wires the shared dividers through `inout div_type` ports on
@@ -709,6 +709,10 @@ begin
       --   iclutram.q_b        = CLUTDataB(0)  (the color the CLUT returned)
       -- For 8bpp (drawMode(8)='0') texdata_palette(0) == CLUTDataB(0) by line 439.
       alias t_drawMode    is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.drawMode        : unsigned(13 downto 0) >>;
+      -- pixelpipeline INPUT taps: count emits-in vs writes-out, and the per-pixel CLUT-row tag.
+      alias t_pnew_in     is << signal .tb_gpu_replay.igpu.pipeline_new          : std_logic >>;
+      alias t_ptag_in     is << signal .tb_gpu_replay.igpu.pipeline_textPalYTag  : unsigned(8 downto 0) >>;
+      alias t_ptex_in     is << signal .tb_gpu_replay.igpu.pipeline_texture      : std_logic >>;
       alias t_s1valid     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_valid    : std_logic >>;
       alias t_s1texture   is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_texture  : std_logic >>;
       alias t_s1x         is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_x        : unsigned(9 downto 0) >>;
@@ -724,6 +728,13 @@ begin
       alias t_reqsize     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.reqVRAMSize     : unsigned(10 downto 0) >>;
       alias t_texPalReqX  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalReqX     : unsigned(9 downto 0) >>;
       alias t_texPalReqY  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalReqY     : unsigned(8 downto 0) >>;
+      -- 573 RACE TAP: resident CLUT row (textPalY) + the pending request flag.
+      -- A PIX read while textPalY = the STALE neighbor row but textPalReqY = 491
+      -- (request pending, not yet fetched) is the read-timing race.
+      alias t_texPalY     is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalY        : unsigned(8 downto 0) >>;
+      alias t_texPalReq   is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.textPalReq      : std_logic >>;
+      alias t_pstall      is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.pipeline_stall  : std_logic >>;
+      alias t_s1palReqY   is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.stage1_palReqY  : unsigned(8 downto 0) >>;
       -- CLUT-load source word: tap the clut RAM write port A data (vram_DOUT) the
       -- model is streaming in during WAITPALETTE.
       alias t_clutwrdata  is << signal .tb_gpu_replay.igpu.igpu_pixelpipeline.gfiltermemmult(0).iclutram.q_a    : std_logic_vector(63 downto 0) >>;
@@ -746,8 +757,20 @@ begin
          file ftap         : text open write_mode is "tap8.log";
          variable l        : line;
          variable npix     : integer := 0;
+         variable nin480   : integer := 0;
+         variable nin491   : integer := 0;
+         variable nintex   : integer := 0;
       begin
          if rising_edge(clk2x) then
+            -- count textured pixels EMITTED into the pixelpipeline (input), by CLUT-row tag.
+            if (t_pnew_in = '1' and t_ptex_in = '1') then
+               nintex := nintex + 1;
+               if    (t_ptag_in = 480) then nin480 := nin480 + 1;
+               elsif (t_ptag_in = 491) then nin491 := nin491 + 1; end if;
+               write(l, string'("IN tag=") & h(t_ptag_in) & " in480=" & integer'image(nin480) &
+                        " in491=" & integer'image(nin491) & " intex=" & integer'image(nintex));
+               writeline(ftap, l);
+            end if;
             -- CLUT load: log every 64-bit word the CLUT RAM ingests (WAITPALETTE).
             if (t_clutwren = '1') then
                write(l, string'("CLUT wr wraddrA=") & h(t_clutwraddrA) &
@@ -768,7 +791,12 @@ begin
                         " mode=" & std_logic'image(t_drawMode(8)) & std_logic'image(t_drawMode(7)) &
                         " cacheWord=" & h(t_cacheq0) &
                         " clutAddrB=" & h(t_clutaddrB0) &
-                        " clutDataB=" & h(t_clutdataB0));
+                        " clutDataB=" & h(t_clutdataB0) &
+                        " palY=" & h(t_texPalY) &
+                        " s1tag=" & h(t_s1palReqY) &
+                        " palReqY=" & h(t_texPalReqY) &
+                        " palReq=" & std_logic'image(t_texPalReq) &
+                        " pstall=" & std_logic'image(t_pstall));
                writeline(ftap, l);
             end if;
             -- FINAL output pixel: the actual color written to VRAM at (x,y).
