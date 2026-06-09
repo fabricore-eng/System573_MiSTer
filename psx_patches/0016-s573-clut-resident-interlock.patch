@@ -4,7 +4,7 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 @@ -177,6 +177,22 @@
     -- (memory contention / coherency). Reuses the existing pixel->VRAM write path (no new
     -- arbitration). '1' = probe build; '0' = no-op (production, constant-folds away).
-    constant DBG_CLUT_STRIPE : std_logic := '1';
+    constant DBG_CLUT_STRIPE : std_logic := '0';
 +   -- 573 PATCH 0016: CLUT-resident INTERLOCK -- the production fix for the hyperbbc panel garble.
 +   -- Root cause (HW-probe-confirmed + workflow w99ap0f3o): a consume-before-refill race on the shared
 +   -- iCLUTram. A textured QUAD is 2 triangles in ONE GP0 0x2C command; the 2nd triangle (and every
