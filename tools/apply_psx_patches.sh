@@ -84,7 +84,11 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # stall stage0/1 until the RESIDENT row matches the pixel's OWN snapshot + drive the fetch from
           # the parked pixel's row (the shared textPalReqY gets overwritten by the next quad before the
           # panel pixels read). Fixes the HW read-race 0016 could not. Gated CLUT_ROWLOCK ('1'=fix).
-          "$ROOT/psx_patches/0018-s573-clut-rowlock.patch" )
+          "$ROOT/psx_patches/0018-s573-clut-rowlock.patch" \
+          # 0019 = restore stock CLUT cache (DISABLE_CLUT_CACHE=0) + qualify 0013 (palette cache survives
+          # vramFill screen-clears) + turn off the failed CLUT_ROWLOCK (0018). The 320 row-491 menu/panel
+          # quads then fetch the palette ONCE and reuse it instead of re-fetching+racing per quad.
+          "$ROOT/psx_patches/0019-s573-clut-cache-restore.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
