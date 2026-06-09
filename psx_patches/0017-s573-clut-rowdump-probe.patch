@@ -1,7 +1,7 @@
 diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 --- a/rtl/gpu_pixelpipeline.vhd
 +++ b/rtl/gpu_pixelpipeline.vhd
-@@ -191,8 +191,26 @@
+@@ -191,8 +191,34 @@
     -- THIS primitive's requested row is resident, AND let the CLUT fetch start even while those pixels
     -- are parked (else they keep pipeline_busy high and starve the fetch -> deadlock). '1' = fix ON;
     -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
@@ -26,10 +26,18 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 +   constant PROBE_ARM_CYCLES : unsigned(31 downto 0) := x"5F5E1000";  -- ~1.6e9 clk2x edges ≈ 25-30 s
 +   signal   probe_arm_cnt    : unsigned(31 downto 0) := (others => '0');
 +   signal   probe_armed      : std_logic := '0';
++   -- 573 PROBE 0017b: STICKY localizers -- after arming, latch '1' the instant row 491 (the panel's
++   -- 0x7ac0 CLUT) appears at each stage, never clear. Resolves WHERE 491 is lost: at the request
++   -- INPUT (textPalInY), the LATCH (textPalReqY), or the FETCH/resident (textPalY). All three set =>
++   -- 491 IS requested+latched+fetched => bug is purely READ-timing (pixels sample iCLUTram before the
++   -- 491 fetch lands). saw_reqY491=0 => the latch drops it. saw_inY491=0 => upstream mux/poly drops it.
++   signal   saw_inY491       : std_logic := '0';
++   signal   saw_reqY491      : std_logic := '0';
++   signal   saw_y491         : std_logic := '0';
  
     signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
     signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
-@@ -1011,7 +1029,24 @@
+@@ -1011,7 +1037,35 @@
        end if;
     end process; 
     
@@ -41,15 +49,26 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 +         if (reset = '1') then
 +            probe_arm_cnt <= (others => '0');
 +            probe_armed   <= '0';
-+         elsif (probe_arm_cnt < PROBE_ARM_CYCLES) then
-+            probe_arm_cnt <= probe_arm_cnt + 1;
++            saw_inY491    <= '0';
++            saw_reqY491   <= '0';
++            saw_y491      <= '0';
 +         else
-+            probe_armed   <= '1';
++            if (probe_arm_cnt < PROBE_ARM_CYCLES) then
++               probe_arm_cnt <= probe_arm_cnt + 1;
++            else
++               probe_armed   <= '1';
++            end if;
++            if (probe_armed = '1') then  -- sticky: did row 491 reach each stage during attract?
++               if (textPalInNew = '1' and textPalInY = 491) then saw_inY491  <= '1'; end if;
++               if (textPalReqY = 491)                        then saw_reqY491 <= '1'; end if;
++               if (textPalY = 491)                           then saw_y491    <= '1'; end if;
++            end if;
 +         end if;
 +      end if;
 +   end process;
 +
-+   pixelColor  <= ("0111111" & std_logic_vector(textPalY))  -- 573 PROBE 0017: dump fetched CLUT row as raw px value
++   -- 573 PROBE 0017b: marker bits "011" + 3 sticky-491 flags (inY/reqY/y) + live textPalReqY[8:0].
++   pixelColor  <= ('0' & "11" & saw_inY491 & saw_reqY491 & saw_y491 & '0' & std_logic_vector(textPalReqY))
 +                     when (DBG_ROWDUMP = '1' and probe_armed = '1' and drawMode(8) = '0' and drawMode(7) = '0')
 +                  else stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
     pixelColor2 <= "0000000" & stage6_cb(2 downto 0) & stage6_cg(2 downto 0) & stage6_cr(2 downto 0);
