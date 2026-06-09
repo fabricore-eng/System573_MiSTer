@@ -913,7 +913,7 @@ defparam savestate_ui.INFO_TIMEOUT_BITS = 25;
 // DBG_AUTOSS to 1 only for a probe build that needs a headless panel capture; ships '0' (production).
 localparam        DBG_AUTOSS    = 1'b1;                   // PROBE BUILD (0017 row-dump): self-limiting burst
 localparam [31:0] AUTOSS_PERIOD = 32'd168_000_000;       // ~5 s @ ~33.8 MHz clk_1x between captures
-localparam [7:0]  AUTOSS_LIMIT  = 8'd20;                  // total saves, then stop (~100 s of capturing)
+localparam [7:0]  AUTOSS_LIMIT  = 8'd40;                  // total saves, then stop (~200 s; spans boot+attract after the ~25s probe-arm)
 reg  [31:0] autoss_cnt  = 0;
 reg  [1:0]  autoss_slot = 0;
 reg  [7:0]  autoss_num  = 0;                             // how many saves fired so far

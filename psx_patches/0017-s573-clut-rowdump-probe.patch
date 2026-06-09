@@ -1,7 +1,7 @@
 diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 --- a/rtl/gpu_pixelpipeline.vhd
 +++ b/rtl/gpu_pixelpipeline.vhd
-@@ -191,8 +191,18 @@
+@@ -191,8 +191,26 @@
     -- THIS primitive's requested row is resident, AND let the CLUT fetch start even while those pixels
     -- are parked (else they keep pipeline_busy high and starve the fetch -> deadlock). '1' = fix ON;
     -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
@@ -18,16 +18,39 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 +   -- else = the address/latch is wrong (and shows WHICH row, and whether it is one row or many). Also
 +   -- the numeric pass/fail for any fix. '1' = probe; '0' = no-op (constant-folds away, production).
 +   constant DBG_ROWDUMP     : std_logic := '1';
++   -- 573 PROBE (0017) TIME-GATE: the boot "chip check" self-test RENDERS 4bpp text and READS IT
++   -- BACK to verify the GPU; if the probe corrupts those pixels the check FAILS and the game parks
++   -- on the chip-check screen (HW-confirmed: flashing error bar). So keep the probe OFF for the first
++   -- ~25 s (past the one-time chip check) and arm it only afterwards -- during attract, when the
++   -- garbled panel draws -- so the boot passes un-corrupted but the panel still gets row-tagged.
++   constant PROBE_ARM_CYCLES : unsigned(31 downto 0) := x"5F5E1000";  -- ~1.6e9 clk2x edges ≈ 25-30 s
++   signal   probe_arm_cnt    : unsigned(31 downto 0) := (others => '0');
++   signal   probe_armed      : std_logic := '0';
  
     signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
     signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
-@@ -1011,7 +1021,9 @@
+@@ -1011,7 +1029,24 @@
        end if;
     end process; 
     
 -   pixelColor  <= stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
++   -- 573 PROBE 0017: free-running arm counter (clk2x) -- arms the row-dump only after the boot chip check
++   process (clk2x)
++   begin
++      if rising_edge(clk2x) then
++         if (reset = '1') then
++            probe_arm_cnt <= (others => '0');
++            probe_armed   <= '0';
++         elsif (probe_arm_cnt < PROBE_ARM_CYCLES) then
++            probe_arm_cnt <= probe_arm_cnt + 1;
++         else
++            probe_armed   <= '1';
++         end if;
++      end if;
++   end process;
++
 +   pixelColor  <= ("0111111" & std_logic_vector(textPalY))  -- 573 PROBE 0017: dump fetched CLUT row as raw px value
-+                     when (DBG_ROWDUMP = '1' and drawMode(8) = '0' and drawMode(7) = '0')
++                     when (DBG_ROWDUMP = '1' and probe_armed = '1' and drawMode(8) = '0' and drawMode(7) = '0')
 +                  else stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
     pixelColor2 <= "0000000" & stage6_cb(2 downto 0) & stage6_cg(2 downto 0) & stage6_cr(2 downto 0);
     pixelAddr   <= stage6_y & stage6_x & '0';
