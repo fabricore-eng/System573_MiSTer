@@ -79,7 +79,12 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # address/latch is wrong (and shows which row, and one-row vs many). Also turns the failed
           # 0016 interlock OFF (CLUT_INTERLOCK='0'). Gated DBG_ROWDUMP in gpu_pixelpipeline.vhd
           # ('1' = probe; '0' = no-op, constant-folds away). Set '0' for any production rbf.
-          "$ROOT/psx_patches/0017-s573-clut-rowdump-probe.patch" )
+          "$ROOT/psx_patches/0017-s573-clut-rowdump-probe.patch" \
+          # 0018 = the PRODUCTION FIX (CLUT row-lock). Per-pixel snapshot of the required CLUT row +
+          # stall stage0/1 until the RESIDENT row matches the pixel's OWN snapshot + drive the fetch from
+          # the parked pixel's row (the shared textPalReqY gets overwritten by the next quad before the
+          # panel pixels read). Fixes the HW read-race 0016 could not. Gated CLUT_ROWLOCK ('1'=fix).
+          "$ROOT/psx_patches/0018-s573-clut-rowlock.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

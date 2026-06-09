@@ -17,7 +17,7 @@ diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
 +   -- fetched: garble_lib masks &0x1FF -> the row; 491(0x1EB)=correct (bug is downstream/data), anything
 +   -- else = the address/latch is wrong (and shows WHICH row, and whether it is one row or many). Also
 +   -- the numeric pass/fail for any fix. '1' = probe; '0' = no-op (constant-folds away, production).
-+   constant DBG_ROWDUMP     : std_logic := '1';
++   constant DBG_ROWDUMP     : std_logic := '0';
 +   -- 573 PROBE (0017) TIME-GATE: the boot "chip check" self-test RENDERS 4bpp text and READS IT
 +   -- BACK to verify the GPU; if the probe corrupts those pixels the check FAILS and the game parks
 +   -- on the chip-check screen (HW-confirmed: flashing error bar). So keep the probe OFF for the first
