@@ -908,12 +908,17 @@ defparam savestate_ui.INFO_TIMEOUT_BITS = 25;
 // Rewire `autoss_trigger` to ANY internal event (a GPU draw strobe, a PC match, a signal edge) for
 // event-precise capture. Default trigger = a periodic timer that auto-cycles the 4 save slots, so a
 // looping attract mode is sampled across slots 0..3 with nobody pressing a key.
-localparam        DBG_AUTOSS    = 1'b1;                  // ships OFF (production)
-localparam [31:0] AUTOSS_PERIOD = 32'd118_000_000;       // ~3.5 s @ ~33.8 MHz clk_1x between captures
+// SELF-LIMITING capture: fires a bounded BURST (AUTOSS_LIMIT saves cycling the 4 slots) then latches
+// OFF on its own, so the board goes quiet without a reload -- "off until you actually need it". Bump
+// DBG_AUTOSS to 1 only for a probe build that needs a headless panel capture; ships '0' (production).
+localparam        DBG_AUTOSS    = 1'b1;                   // PROBE BUILD (0017 row-dump): self-limiting burst
+localparam [31:0] AUTOSS_PERIOD = 32'd168_000_000;       // ~5 s @ ~33.8 MHz clk_1x between captures
+localparam [7:0]  AUTOSS_LIMIT  = 8'd20;                  // total saves, then stop (~100 s of capturing)
 reg  [31:0] autoss_cnt  = 0;
 reg  [1:0]  autoss_slot = 0;
+reg  [7:0]  autoss_num  = 0;                             // how many saves fired so far
 reg         autoss_fire = 1'b0;                          // 1-clk save_state pulse
-wire        autoss_trigger = (autoss_cnt >= AUTOSS_PERIOD);  // <-- REWIRE to any event for precise capture
+wire        autoss_trigger = (autoss_cnt >= AUTOSS_PERIOD) && (autoss_num < AUTOSS_LIMIT);
 always @(posedge clk_1x) begin
 	autoss_fire <= 1'b0;
 	if (DBG_AUTOSS) begin
@@ -921,7 +926,8 @@ always @(posedge clk_1x) begin
 			autoss_cnt  <= 32'd0;
 			autoss_fire <= 1'b1;
 			autoss_slot <= autoss_slot + 2'd1;
-		end else begin
+			autoss_num  <= autoss_num + 8'd1;
+		end else if (autoss_num < AUTOSS_LIMIT) begin
 			autoss_cnt  <= autoss_cnt + 32'd1;
 		end
 	end

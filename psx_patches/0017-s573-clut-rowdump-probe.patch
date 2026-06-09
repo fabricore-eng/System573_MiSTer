@@ -1,0 +1,34 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -191,8 +191,18 @@
+    -- THIS primitive's requested row is resident, AND let the CLUT fetch start even while those pixels
+    -- are parked (else they keep pipeline_busy high and starve the fetch -> deadlock). '1' = fix ON;
+    -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
+-   constant CLUT_INTERLOCK  : std_logic := '1';
++   constant CLUT_INTERLOCK  : std_logic := '0';
+    signal   clut_notready   : std_logic;
++   -- 573 PROBE (0017): NUMERIC CLUT-row dump for the hyperbbc panel garble. Round-1 + round-2 of the
++   -- DBG_CLUT_STRIPE probe established (a) the panel draws in 4bpp-CLUT mode (round-2 widened gate
++   -- FIRED) yet (b) textPalY /= 491 at render (round-1 gate textPalY=491 FIRED NOWHERE). To read the
++   -- ACTUAL row WITHOUT band-colour inference: for every 4bpp-CLUT textured pixel this OVERRIDES the
++   -- final pixelColor with the raw fetched CLUT row number textPalY (encoded 0x7E00 | textPalY, bit15=0
++   -- so no mask-bit blocking). A savestate of the panel then reads back the exact row(s) the panel
++   -- fetched: garble_lib masks &0x1FF -> the row; 491(0x1EB)=correct (bug is downstream/data), anything
++   -- else = the address/latch is wrong (and shows WHICH row, and whether it is one row or many). Also
++   -- the numeric pass/fail for any fix. '1' = probe; '0' = no-op (constant-folds away, production).
++   constant DBG_ROWDUMP     : std_logic := '1';
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+@@ -1011,7 +1021,9 @@
+       end if;
+    end process; 
+    
+-   pixelColor  <= stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
++   pixelColor  <= ("0111111" & std_logic_vector(textPalY))  -- 573 PROBE 0017: dump fetched CLUT row as raw px value
++                     when (DBG_ROWDUMP = '1' and drawMode(8) = '0' and drawMode(7) = '0')
++                  else stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
+    pixelColor2 <= "0000000" & stage6_cb(2 downto 0) & stage6_cg(2 downto 0) & stage6_cr(2 downto 0);
+    pixelAddr   <= stage6_y & stage6_x & '0';
+    pixelWrite  <= stage6_valid;

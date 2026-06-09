@@ -71,7 +71,15 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # CLUT-textured pixels until their requested row is resident (and lets the fetch start while
           # they're parked, to avoid deadlock). Gated by CLUT_INTERLOCK in gpu_pixelpipeline.vhd
           # ('1' = fix; '0' = no-op). NVC-analyze-clean; HW-A/B is the arbiter (bug is HW-timing-only).
-          "$ROOT/psx_patches/0016-s573-clut-resident-interlock.patch" )
+          "$ROOT/psx_patches/0016-s573-clut-resident-interlock.patch" \
+          # 0017 is a NUMERIC PROBE (decisive, unconfounded): for every 4bpp-CLUT textured pixel it
+          # overrides pixelColor with the RAW fetched CLUT row number textPalY (encoded 0x7E00|row,
+          # bit15=0 so no mask-blocking). A savestate then reads back the EXACT row(s) the hyperbbc
+          # panel fetched -- no band-colour inference. 491(0x1EB)=correct; anything else = the CLUT
+          # address/latch is wrong (and shows which row, and one-row vs many). Also turns the failed
+          # 0016 interlock OFF (CLUT_INTERLOCK='0'). Gated DBG_ROWDUMP in gpu_pixelpipeline.vhd
+          # ('1' = probe; '0' = no-op, constant-folds away). Set '0' for any production rbf.
+          "$ROOT/psx_patches/0017-s573-clut-rowdump-probe.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
