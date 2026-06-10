@@ -70,8 +70,8 @@ done
 [ -n "$EEPROM" ] && { [ -f "$EEPROM" ] || { echo "error: missing eeprom $EEPROM" >&2; exit 1; }; }
 [ -n "$SERIAL" ] && { [ -f "$SERIAL" ] || { echo "error: missing serial $SERIAL" >&2; exit 1; }; }
 
-if ssh -o ConnectTimeout=6 -o BatchMode=yes mister true 2>/dev/null; then
-  SSH=(ssh mister); SCP_HOST=mister
+if ssh -o ConnectTimeout=6 -o BatchMode=yes "${MISTER_ALIAS:-mister}" true 2>/dev/null; then
+  SSH=(ssh "${MISTER_ALIAS:-mister}"); SCP_HOST="${MISTER_ALIAS:-mister}"
 else
   KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}")

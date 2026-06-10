@@ -19,7 +19,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RBF="${1:-$ROOT/output_files/Konami_System_573.rbf}"
-HOST="${MISTER_HOST:-mister}"
+ENVF="$ROOT/local/mister.env"; [ -f "$ENVF" ] && . "$ENVF"
+HOST="${MISTER_ALIAS:-${MISTER_HOST:-mister}}"
 GAMES=/media/fat/games/System573
 CONSOLE=/media/fat/_Console
 

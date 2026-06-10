@@ -18,8 +18,8 @@ SHOT_DIR="${MISTER_SHOT_DIR:-/media/fat/screenshots}"
 OUT="${1:-$ROOT/local/mister_shot_$(date +%s 2>/dev/null || echo latest).png}"
 mkdir -p "$(dirname "$OUT")"
 
-SSH=(ssh mister)
-ssh -o ConnectTimeout=5 -o BatchMode=yes mister true 2>/dev/null || {
+SSH=(ssh "${MISTER_ALIAS:-mister}")
+ssh -o ConnectTimeout=5 -o BatchMode=yes "${MISTER_ALIAS:-mister}" true 2>/dev/null || {
   KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}"); }
 

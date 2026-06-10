@@ -25,8 +25,8 @@ SHOT_DIR="${MISTER_SHOT_DIR:-/media/fat/screenshots}"
 OUT="$ROOT/local"; mkdir -p "$OUT"
 
 # Prefer the `ssh mister` alias; fall back to env (key + host).
-if ssh -o ConnectTimeout=6 -o BatchMode=yes mister true 2>/dev/null; then
-  SSH=(ssh mister)
+if ssh -o ConnectTimeout=6 -o BatchMode=yes "${MISTER_ALIAS:-mister}" true 2>/dev/null; then
+  SSH=(ssh "${MISTER_ALIAS:-mister}")
 else
   KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}")
