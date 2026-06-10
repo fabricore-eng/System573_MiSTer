@@ -88,7 +88,11 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # 0019 = restore stock CLUT cache (DISABLE_CLUT_CACHE=0) + qualify 0013 (palette cache survives
           # vramFill screen-clears) + turn off the failed CLUT_ROWLOCK (0018). The 320 row-491 menu/panel
           # quads then fetch the palette ONCE and reuse it instead of re-fetching+racing per quad.
-          "$ROOT/psx_patches/0019-s573-clut-cache-restore.patch" )
+          "$ROOT/psx_patches/0019-s573-clut-cache-restore.patch" \
+          # 0020 = SDRAM CAS latency 2->3: CL2 @ 101.6 MHz is out of SDR spec; the 573's
+          # continuous flash traffic collects the margin debt as deterministic low-bit
+          # miscapture on GPU-DMA reads (clut 491 -> 480/481). Audit: docs/audits/2026-06-10.
+          "$ROOT/psx_patches/0020-sdram-cas-latency-3.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
