@@ -48,6 +48,27 @@ git push -u origin dbg-signaltap-clut
 The snippet becomes active because it is committed INTO Konami_System_573.qsf
 on the ref that dell builds. Never merge this branch.
 
+## 1b. REQUIRED: expand the .stp into SLD assignments (the actual insertion step)
+
+**Learned the hard way (2026-06-10, one hollow 31-min build):** the compiler
+does NOT read the .stp. `ENABLE_SIGNALTAP` + `USE_SIGNALTAP_FILE` are
+GUI-side pointers; insertion is driven by the `SLD_*` QSF expansion (node
+params + per-signal `CONNECT_TO_SLD_NODE_ENTITY_PORT` + `SLD_FILE` pointing
+at a stripped stp in `db/`). Generate it headlessly ON DELL (the build box,
+so `db/` lands where the compile runs), then commit the expanded QSF:
+
+```sh
+ssh dell 'docker run --rm -v $HOME/System573_MiSTer:/work -w /work raetro/quartus:17.0 \
+  quartus_stp Konami_System_573 --stp_file tools/signaltap_573/clut_race.stp --enable'
+scp dell:System573_MiSTer/Konami_System_573.qsf Konami_System_573.qsf
+git add Konami_System_573.qsf && git commit -m "dbg: SLD expansion" && git push
+```
+
+Sanity before building: `grep -c CONNECT_TO_SLD Konami_System_573.qsf` ≈ 175
+(87 data + 87 trigger + acq_clk) and `SLD_SAMPLE_DEPTH=4096` present.
+A hollow build is detectable WITHOUT deploying: fit.rpt has no
+`auto_signaltap`/`sld_hub` and M10K stays at the ~350 baseline (probe ≈ +42).
+
 ## 2. Build via the hub launcher (ONLY this way)
 
 ```sh
