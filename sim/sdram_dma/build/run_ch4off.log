@@ -1,0 +1,12 @@
+tb: 200 nodes at 0001000, ch4=0 gap=6
+
+== RESULT ==
+nodes          : 200
+dma words      : 2400
+dma mismatches : 0
+signature hits : 0
+ch4 fills      : 0
+ch4 mismatches : 0
+chip refreshes : 21
+VERDICT: CLEAN -- every DMA word and ch4 burst is bit-exact.
+/Users/human/Dev/System573_MiSTer/sim/sdram_dma/tb_sdram_dma.v:501: $finish called at 275190000 (1ps)
