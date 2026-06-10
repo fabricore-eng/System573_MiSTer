@@ -57,6 +57,13 @@ entity tb_gpu_replay is
       PRELOAD_VRAM : std_logic := '0';
       VRAM_FILE    : string  := "vram_init.bin";
       SLOWTIMING   : integer := 0;
+      RANDTIMING   : std_logic := '0';  -- ddrram_model RANDOMTIMING (extra random read latency; needs SLOWTIMING>0)
+      -- VRAM read-ISSUE contention (ddr_contention_shim between GPU and model;
+      -- 0 = pure passthrough = bit-identical to the unshimmed rig):
+      CONT_MODE    : integer := 0;
+      CONT_PERIOD  : integer := 2000;
+      CONT_LEN     : integer := 0;
+      CONT_SEED    : integer := 1;
       DRAIN_MS     : time    := 4 ms
    );
 end entity;
@@ -143,10 +150,15 @@ architecture sim of tb_gpu_replay is
    signal DDRAM_ADDR          : std_logic_vector(28 downto 0);
    signal DDRAM_DOUT          : std_logic_vector(63 downto 0);
    signal DDRAM_DOUT_READY    : std_logic;
-   signal DDRAM_RD            : std_logic;
+   signal DDRAM_RD            : std_logic;   -- GPU-side read request (pre-shim)
    signal DDRAM_DIN           : std_logic_vector(63 downto 0);
    signal DDRAM_BE            : std_logic_vector(7 downto 0);
    signal DDRAM_WE            : std_logic;
+
+   -- VRAM-contention shim (READ-ISSUE path only; see ddr_contention_shim.vhd)
+   signal DDRAM_RD_model      : std_logic;   -- post-shim read request, to the model
+   signal shim_BUSY           : std_logic;   -- shim contention busy
+   signal gpu_vram_BUSY       : std_logic;   -- model BUSY OR shim busy -> GPU vram_BUSY
 
    -- savestate ports tied off (NOT loading a savestate; reset alone soft-resets)
    signal loading_savestate   : std_logic := '0';
@@ -308,7 +320,7 @@ begin
 
       vram_pause           => '0',
       vram_paused          => o_vram_paused,
-      vram_BUSY            => DDRAM_BUSY,
+      vram_BUSY            => gpu_vram_BUSY,
       vram_DOUT            => DDRAM_DOUT,
       vram_DOUT_READY      => DDRAM_DOUT_READY,
       vram_BURSTCNT        => vram_BURSTCNT,
@@ -366,11 +378,41 @@ begin
    DDRAM_ADDR(28 downto 25) <= "0011";
    DDRAM_ADDR(24 downto  0) <= vram_ADDR(27 downto 3);
 
+   -- -----------------------------------------------------------------------
+   -- VRAM-CONTENTION shim, READ-ISSUE path only. Models the real-HW f2sdram
+   -- arbitration (scaler/HPS can hold off the GPU's read issue arbitrarily),
+   -- which the stock ddrram_model never does (it accepts a read the instant
+   -- DDRAM_RD rises and never asserts BUSY for reads). CONT_MODE=0 (default)
+   -- drives shim_BUSY='0' / DDRAM_RD_model<=DDRAM_RD = pure passthrough,
+   -- bit-identical to the pre-shim rig. The GPU's vram_BUSY is the OR of the
+   -- model's write-path BUSY and the shim's contention busy; ADDR/BURSTCNT/
+   -- DIN/BE/WE/DOUT/DOUT_READY stay wired straight through (the WRITE path is
+   -- deliberately NOT gated -- see the limitation note in the shim).
+   -- -----------------------------------------------------------------------
+   gpu_vram_BUSY <= DDRAM_BUSY or shim_BUSY;
+
+   ishim : entity tb.ddr_contention_shim
+   generic map
+   (
+      CONT_MODE   => CONT_MODE,
+      CONT_PERIOD => CONT_PERIOD,
+      CONT_LEN    => CONT_LEN,
+      CONT_SEED   => CONT_SEED
+   )
+   port map
+   (
+      clk      => clk2x,
+      gpu_RD   => DDRAM_RD,
+      gpu_BUSY => shim_BUSY,
+      mem_RD   => DDRAM_RD_model
+   );
+
    iddrram_model : entity tb.ddrram_model
    generic map
    (
-      loadVram   => '0',          -- preload via COMMAND_FILE_START_2 instead
-      SLOWTIMING => SLOWTIMING
+      loadVram     => '0',          -- preload via COMMAND_FILE_START_2 instead
+      SLOWTIMING   => SLOWTIMING,
+      RANDOMTIMING => RANDTIMING
    )
    port map
    (
@@ -380,7 +422,7 @@ begin
       DDRAM_ADDR       => DDRAM_ADDR,
       DDRAM_DOUT       => DDRAM_DOUT,
       DDRAM_DOUT_READY => DDRAM_DOUT_READY,
-      DDRAM_RD         => DDRAM_RD,
+      DDRAM_RD         => DDRAM_RD_model,
       DDRAM_DIN        => DDRAM_DIN,
       DDRAM_BE         => DDRAM_BE,
       DDRAM_WE         => DDRAM_WE

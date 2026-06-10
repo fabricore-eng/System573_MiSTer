@@ -58,16 +58,16 @@ set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu
 # --- pixelpipeline: combinational nets we tap --------------------------------
 # CLUTwrenA (gpu_pixelpipeline.vhd:579), pipeline_busy (:597),
 # pipeline_stall (:456) are concurrent assignments -> KEEP materializes them.
-set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTwrenA"
-set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_busy"
-set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_stall"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTwrenA"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_busy"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_stall"
 
 # --- gpu-level VRAM arbiter (the OR-merge bus, gpu.vhd:1617-1623) ------------
-set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMEnable"
-set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMYPos[*]"
-set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMIdle"
-set_instance_assignment -name KEEP ON -to "*|gpu:igpu|videoout_reqVRAMEnable"
-set_instance_assignment -name KEEP ON -to "*|gpu:igpu|pipeline_reqVRAMEnable"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMEnable"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMYPos[*]"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMIdle"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|videoout_reqVRAMEnable"
+set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|pipeline_reqVRAMEnable"
 # reqVRAMDone is registered in the vram process; preserve its name:
 set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu:igpu|reqVRAMDone"
 # vram_BUSY / vram_pause are gpu input-port nets (driven upstream); they

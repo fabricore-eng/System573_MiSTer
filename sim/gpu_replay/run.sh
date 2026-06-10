@@ -17,8 +17,22 @@
 #     DRAIN_MS   : drain time after last command, NVC time literal (default "4 ms")
 #
 # Env:
-#   REUSE=1   re-run the already-elaborated design (skip analyze/elaborate); the
-#             CMD/VRAM/SLOWTIMING generics are FIXED at the cached build values.
+#   REUSE=1       re-run the already-elaborated design (skip analyze/elaborate);
+#                 ALL generics are FIXED at the cached build values.
+#   BUILD_DIR=dir override the build/output dir (default sim/gpu_replay/build).
+#                 Lets parallel experiments keep separate workdirs.
+#   SKIP_PATCH=1  skip the tools/apply_psx_patches.sh call. REQUIRED when
+#                 several run.sh instances run in parallel: the patcher
+#                 resets+repatches the SHARED psx/ tree and would race another
+#                 instance's analyze. Default 0 (patch, as before).
+#   RANDTIMING=0/1  ddrram_model RANDOMTIMING generic (adds a random extra
+#                 read latency on top of SLOWTIMING; only active if SLOWTIMING>0).
+#   CONT_MODE=0/1/2  ddr_contention_shim mode (VRAM read-ISSUE contention):
+#                 0 = passthrough (default, bit-identical to the unshimmed rig)
+#                 1 = periodic:   BUSY CONT_LEN of every CONT_PERIOD clk2x cycles
+#                 2 = pseudo-random (LFSR, CONT_SEED): gap 1..CONT_PERIOD then
+#                     window 1..CONT_LEN, repeating
+#   CONT_PERIOD=n CONT_LEN=n CONT_SEED=n   shim knobs (clk2x cycles / seed).
 # =============================================================================
 set -euo pipefail
 
@@ -27,13 +41,28 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 PSX="$ROOT/psx"; RTL="$PSX/rtl"
 MEMSRC="$PSX/sim/system/src/mem"; TBSRC="$PSX/sim/system/src/tb"
 NVCDIR="$ROOT/sim/nvc"
-WD="$HERE/build"
+WD="${BUILD_DIR:-$HERE/build}"
 
 CMD_FILE_IN="${1:-$HERE/cmd_fill_demo.txt}"
 VRAM_FILE_IN="${2:-}"
 SLOWTIMING="${3:-0}"
 DRAIN_MS="${4:-4 ms}"
 REUSE="${REUSE:-0}"
+SKIP_PATCH="${SKIP_PATCH:-0}"
+RANDTIMING="${RANDTIMING:-0}"
+CONT_MODE="${CONT_MODE:-0}"
+CONT_PERIOD="${CONT_PERIOD:-2000}"
+CONT_LEN="${CONT_LEN:-0}"
+CONT_SEED="${CONT_SEED:-1}"
+
+# std_logic generics need the VHDL character-literal form INCLUDING the single
+# quotes (-gX="'1'"); bare -gX=1 fails NVC's parse ("failed to parse "1" as
+# type STD_LOGIC"). Integer generics take bare values. (String generics take
+# the bare value WITHOUT quotes -- see the note at the elaborate call.)
+case "$RANDTIMING" in
+  1) RANDTIMING_G="'1'" ;;
+  *) RANDTIMING_G="'0'" ;;
+esac
 
 command -v nvc >/dev/null 2>&1 || { echo "error: nvc not found (brew install nvc)" >&2; exit 1; }
 [ -d "$RTL" ] || { echo "error: psx submodule missing. Run: git submodule update --init psx" >&2; exit 1; }
@@ -56,7 +85,9 @@ if [ "$REUSE" = "1" ]; then
   cp "$CMD_FILE_IN" "$WD/cmd_stream.txt"
   [ -n "$VRAM_FILE_IN" ] && cp "$VRAM_FILE_IN" "$WD/$VRAM_BASENAME"
 else
-  "$ROOT/tools/apply_psx_patches.sh" >/dev/null 2>&1 || true
+  if [ "$SKIP_PATCH" != "1" ]; then
+    "$ROOT/tools/apply_psx_patches.sh" >/dev/null 2>&1 || true
+  fi
   rm -rf "$WD"; mkdir -p "$WD"; cd "$WD"
 
   cp "$CMD_FILE_IN" "$WD/cmd_stream.txt"
@@ -86,10 +117,11 @@ else
   echo "== analyzing tb library (upstream pure-VHDL models) =="
   analyze tb "$TBSRC/globals.vhd" "$TBSRC/ddrram_model.vhd" "$TBSRC/framebuffer.vhd"
 
-  echo "== analyzing tb_gpu_replay =="
+  echo "== analyzing tb_gpu_replay (+ ddr_contention_shim) =="
+  analyze tb "$HERE/ddr_contention_shim.vhd"
   analyze tb "$HERE/tb_gpu_replay.vhd"
 
-  echo "== elaborating tb_gpu_replay (PRELOAD_VRAM=$PRELOAD_VRAM SLOWTIMING=$SLOWTIMING) =="
+  echo "== elaborating tb_gpu_replay (PRELOAD_VRAM=$PRELOAD_VRAM SLOWTIMING=$SLOWTIMING RANDTIMING=$RANDTIMING CONT_MODE=$CONT_MODE CONT_PERIOD=$CONT_PERIOD CONT_LEN=$CONT_LEN CONT_SEED=$CONT_SEED) =="
   # NB: NVC string generics take the BARE value (no VHDL quotes); quoting the
   # value embeds literal '"' chars into the string and the file open then fails.
   # --no-collapse: keep combinational signals (e.g. texdata_raw / CLUTaddrB /
@@ -98,7 +130,10 @@ else
   $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_gpu_replay --stats --no-collapse \
        -gPRELOAD_VRAM="$PRELOAD_VRAM" -gVRAM_FILE="$VRAM_BASENAME" \
        -gCMD_FILE="cmd_stream.txt" -gSLOWTIMING=$SLOWTIMING \
-       -gDRAIN_MS="$DRAIN_MS"
+       -gDRAIN_MS="$DRAIN_MS" \
+       -gRANDTIMING="$RANDTIMING_G" \
+       -gCONT_MODE=$CONT_MODE -gCONT_PERIOD=$CONT_PERIOD \
+       -gCONT_LEN=$CONT_LEN -gCONT_SEED=$CONT_SEED
 fi
 
 echo "== running tb_gpu_replay (SLOWTIMING=$SLOWTIMING) =="
