@@ -1,0 +1,75 @@
+# =============================================================================
+# signaltap.qsf.snippet -- QSF additions for the CLUT-race SignalTap build.
+#
+# HOW IT BECOMES ACTIVE: append this file's contents to Konami_System_573.qsf
+# on a DEBUG branch (e.g. dbg-signaltap-clut, branched off feat-flash-load)
+# and commit it together with tools/signaltap_573/clut_race.stp -- the hub
+# launcher (dell_build.sh <ref>) builds a pushed git ref, so both files must
+# be committed on the ref you build. Example:
+#   git checkout -b dbg-signaltap-clut feat-flash-load
+#   tclsh tools/signaltap_573/clut_race_stp.tcl tools/signaltap_573/clut_race.stp
+#   cat tools/signaltap_573/signaltap.qsf.snippet >> Konami_System_573.qsf
+#   git add -A && git commit -m "dbg: SignalTap CLUT-race probe" && git push
+# NEVER merge this into feat-flash-load/main: debug-build-only.
+#
+# NODE PRESERVATION comes from THESE assignments, not RTL edits (vendored
+# psx/ stays pristine). Two mechanisms:
+#   PRESERVE_REGISTER          -- stops register merging/retiming/renaming
+#   PRESERVE_FANOUT_FREE_NODE  -- stops sweeping of registers with NO readers
+#   KEEP                       -- materializes a named COMBINATIONAL net
+# CRITICAL: with CLUT_ROWLOCK='0' (production config -- the config that
+# exhibits the bug), the rowlock comparators constant-fold away, leaving the
+# patch-0018 tag registers stageS/stage0/stage1_palReqY with ZERO readers;
+# without PRESERVE_FANOUT_FREE_NODE they are swept and the trigger's
+# stage1_palReqY nodes won't exist.
+#
+# Wildcards: "*|entity:instance|signal" is robust against upper-hierarchy
+# renames. VHDL matching is case-insensitive. An assignment that matches
+# NOTHING is silently ignored -- after the first instrumented synthesis,
+# check output_files/Konami_System_573.map.rpt for SignalTap "node not
+# found" warnings and the fit.rpt "Ignored Assignments" section.
+# =============================================================================
+
+# --- enable SignalTap with our pre-authored instance -------------------------
+set_global_assignment -name ENABLE_SIGNALTAP ON
+set_global_assignment -name USE_SIGNALTAP_FILE tools/signaltap_573/clut_race.stp
+
+# --- pixelpipeline: patch-0018 per-pixel CLUT-row tags (NO readers when
+# --- CLUT_ROWLOCK='0' -> must be kept alive explicitly) ----------------------
+set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stageS_palReqY[*]"
+set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stageS_palReqY[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage0_palReqY[*]"
+set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage0_palReqY[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_palReqY[*]"
+set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_palReqY[*]"
+
+# --- pixelpipeline: live registers we tap (preserve names; stop merging) -----
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalY[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalReq"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_valid"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTaddrA[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|reqVRAMXPos[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|reqVRAMYPos[*]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|drawMode[*]"
+# state FSM: default one-hot encoding keeps the state.<NAME> node names; no
+# assignment needed (do NOT force re-encoding -- it would rename the nodes).
+
+# --- pixelpipeline: combinational nets we tap --------------------------------
+# CLUTwrenA (gpu_pixelpipeline.vhd:579), pipeline_busy (:597),
+# pipeline_stall (:456) are concurrent assignments -> KEEP materializes them.
+set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTwrenA"
+set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_busy"
+set_instance_assignment -name KEEP ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_stall"
+
+# --- gpu-level VRAM arbiter (the OR-merge bus, gpu.vhd:1617-1623) ------------
+set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMEnable"
+set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMYPos[*]"
+set_instance_assignment -name KEEP ON -to "*|gpu:igpu|reqVRAMIdle"
+set_instance_assignment -name KEEP ON -to "*|gpu:igpu|videoout_reqVRAMEnable"
+set_instance_assignment -name KEEP ON -to "*|gpu:igpu|pipeline_reqVRAMEnable"
+# reqVRAMDone is registered in the vram process; preserve its name:
+set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu:igpu|reqVRAMDone"
+# vram_BUSY / vram_pause are gpu input-port nets (driven upstream); they
+# normally survive as named nets. If SignalTap reports them unresolved, tap
+# the psx_top-side sources instead (see RUNBOOK troubleshooting).
