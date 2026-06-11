@@ -1,0 +1,1189 @@
+psx_patches/0021: System 573 GPU = 2 MB VRAM (1024 rows) -- widen Y to 10 bits end-to-end.
+
+The 573's CXD8561Q GPU drives 2 MB of VRAM (1024 rows x 1024 x 16bpp); the vendored
+consumer-PSX core implements 1 MB (512 rows) and truncates every Y to 9 bits. Effects
+fixed here (all field conventions cross-checked against MAME psxgpu, gputype 2):
+ 1. Unscissored engines (A0 cpu2vram / 80 vram2vram / C0 vram2cpu / 02 fill) parsed
+    Y/h as fifo_data(24:16): an upload to (x,512..1023) dropped Y bit 9 and WRAPPED
+    onto y-512, overwriting the visible lower half (the boot font-atlas corruption:
+    cols 14-15 of each 16-word block survive, 0-13 get foreign upper-half data).
+    Now: dst/src Y = (25:16) 10-bit, sizes 0x400-defaulting (MAME masks Y & 1023).
+ 2. Scissored renders to y>=512 were culled: E3/E4 drawing-area Y now (19:10) 10-bit
+    (MAME gputype 2: y=(w>>10)&1023), drawer y plumbing + pixel pipeline y 9->10 bit.
+ 3. Texture side: texpage Y-base bit 11 = +512 (MAME: ty=((tp&0x10)<<4)|((tp&0x800)>>2));
+    CLUT row 10-bit, attr bit 31 = CLUT Y bit 9 (MAME: cluty=(attr>>6)&0x3ff). The
+    texture cache TAG gains the new address bit (no aliasing between Y-base halves).
+ 4. Address mapping: VRAM rows 512-1023 live at vram_ADDR(27:20) = x"08" (+8 MB),
+    keeping the existing 9-bit row layout inside the page. Pages 0x01/0x02 (memcards),
+    0x03 (SPU), 0x04-0x07 (videoout framebuffers) stay untouched. EVERY VRAM path
+    applies the mapping at the single composition site in gpu.vhd (engine writes via
+    the +1-bit fifoOut address, all reads via the widened shared reqVRAMYPos).
+ 5. Scanout (videoout) is BIT-IDENTICAL: its 9-bit request Y is zero-padded into the
+    OR-mux, so display fetches stay page-0/page-4 exactly as before. GP1(05) display
+    base Y stays 9-bit (a y>=512 display base is not displayable -- documented limit;
+    the 573 boot/games display from the lower half).
+Savestate compat: drawingArea Top/Bottom move from ss words 4/5 bits (24:16) to
+(25:16); bit 25 was unused in both words, so OLD savestates load unchanged (bit 25
+reads 0). No other savestate field moves. The 480i-framebuffer-hack write heuristics
+are gated to page-0 writes (upper-half writes no longer alias into them). render24
+(consumer 24-bit mode, OFF on the 573) keeps its page-4 second-write behavior.
+--- a/rtl/gpu.vhd
++++ b/rtl/gpu.vhd
+@@ -195,8 +195,8 @@
+       
+    signal drawingAreaLeft           : unsigned(9 downto 0) := (others => '0');
+    signal drawingAreaRight          : unsigned(9 downto 0) := (others => '0');
+-   signal drawingAreaTop            : unsigned(8 downto 0) := (others => '0');
+-   signal drawingAreaBottom         : unsigned(8 downto 0) := (others => '0');
++   signal drawingAreaTop            : unsigned(9 downto 0) := (others => '0');
++   signal drawingAreaBottom         : unsigned(9 downto 0) := (others => '0');
+    signal drawingOffsetX            : signed(10 downto 0) := (others => '0');
+    signal drawingOffsetY            : signed(10 downto 0) := (others => '0');
+    signal interlacedDrawing         : std_logic;
+@@ -220,13 +220,13 @@
+    signal pixelStall                : std_logic;
+    signal pixelColor                : std_logic_vector(15 downto 0);
+    signal pixelColor2               : std_logic_vector(15 downto 0);
+-   signal pixelAddr                 : unsigned(19 downto 0);
++   signal pixelAddr                 : unsigned(20 downto 0);
+    signal pixelWrite                : std_logic;
+       
+    signal pixel64data               : std_logic_vector(63 downto 0) := (others => '0');
+    signal pixel64data2              : std_logic_vector(63 downto 0) := (others => '0');
+    signal pixel64wordEna            : std_logic_vector(3 downto 0) := (others => '0');
+-   signal pixel64addr               : std_logic_vector(16 downto 0) := (others => '0');
++   signal pixel64addr               : std_logic_vector(17 downto 0) := (others => '0');
+    signal pixel64filled             : std_logic := '0';
+    signal pixel64source             : std_logic := '0';
+    signal pixel64timeout            : integer range 0 to 15;
+@@ -239,25 +239,25 @@
+    signal vramFill_done             : std_logic; 
+    --signal vramFill_CmdDone          : std_logic; 
+    signal vramFill_pixelColor       : std_logic_vector(15 downto 0);
+-   signal vramFill_pixelAddr        : unsigned(19 downto 0);
++   signal vramFill_pixelAddr        : unsigned(20 downto 0);
+    signal vramFill_pixelWrite       : std_logic;   
+       
+    signal cpu2vram_requestFifo      : std_logic; 
+    signal cpu2vram_done             : std_logic; 
+    --signal cpu2vram_CmdDone          : std_logic; 
+    signal cpu2vram_pixelColor       : std_logic_vector(15 downto 0);
+-   signal cpu2vram_pixelAddr        : unsigned(19 downto 0);
++   signal cpu2vram_pixelAddr        : unsigned(20 downto 0);
+    signal cpu2vram_pixelWrite       : std_logic;
+       
+    signal vram2vram_requestFifo     : std_logic; 
+    signal vram2vram_done            : std_logic; 
+    --signal vram2vram_CmdDone         : std_logic; 
+    signal vram2vram_pixelColor      : std_logic_vector(15 downto 0);
+-   signal vram2vram_pixelAddr       : unsigned(19 downto 0);
++   signal vram2vram_pixelAddr       : unsigned(20 downto 0);
+    signal vram2vram_pixelWrite      : std_logic;
+    signal vram2vram_reqVRAMEnable   : std_logic;
+    signal vram2vram_reqVRAMXPos     : unsigned(9 downto 0);
+-   signal vram2vram_reqVRAMYPos     : unsigned(8 downto 0);
++   signal vram2vram_reqVRAMYPos     : unsigned(9 downto 0);
+    signal vram2vram_reqVRAMSize     : unsigned(10 downto 0);
+    signal vram2vram_vramLineEna     : std_logic;
+    signal vram2vram_vramLineAddr    : unsigned(9 downto 0);
+@@ -267,7 +267,7 @@
+    --signal vram2cpu_CmdDone          : std_logic; 
+    signal vram2cpu_reqVRAMEnable    : std_logic;
+    signal vram2cpu_reqVRAMXPos      : unsigned(9 downto 0);
+-   signal vram2cpu_reqVRAMYPos      : unsigned(8 downto 0);
++   signal vram2cpu_reqVRAMYPos      : unsigned(9 downto 0);
+    signal vram2cpu_reqVRAMSize      : unsigned(10 downto 0);
+    signal vram2cpu_vramLineEna      : std_logic;
+    signal vram2cpu_vramLineAddr     : unsigned(9 downto 0);
+@@ -283,13 +283,13 @@
+    signal line_pipeline_new         : std_logic;
+    signal line_pipeline_transparent : std_logic;
+    signal line_pipeline_x           : unsigned(9 downto 0);
+-   signal line_pipeline_y           : unsigned(8 downto 0);
++   signal line_pipeline_y           : unsigned(9 downto 0);
+    signal line_pipeline_cr          : unsigned(7 downto 0);
+    signal line_pipeline_cg          : unsigned(7 downto 0);
+    signal line_pipeline_cb          : unsigned(7 downto 0);
+    signal line_reqVRAMEnable        : std_logic;
+    signal line_reqVRAMXPos          : unsigned(9 downto 0);
+-   signal line_reqVRAMYPos          : unsigned(8 downto 0);
++   signal line_reqVRAMYPos          : unsigned(9 downto 0);
+    signal line_reqVRAMSize          : unsigned(10 downto 0);
+    signal line_vramLineEna          : std_logic;
+    signal line_vramLineAddr         : unsigned(9 downto 0);
+@@ -302,7 +302,7 @@
+    signal rect_pipeline_transparent : std_logic;
+    signal rect_pipeline_rawTexture  : std_logic;
+    signal rect_pipeline_x           : unsigned(9 downto 0);
+-   signal rect_pipeline_y           : unsigned(8 downto 0);
++   signal rect_pipeline_y           : unsigned(9 downto 0);
+    signal rect_pipeline_cr          : unsigned(7 downto 0);
+    signal rect_pipeline_cg          : unsigned(7 downto 0);
+    signal rect_pipeline_cb          : unsigned(7 downto 0);
+@@ -310,15 +310,15 @@
+    signal rect_pipeline_v           : unsigned(7 downto 0);
+    signal rect_reqVRAMEnable        : std_logic;
+    signal rect_reqVRAMXPos          : unsigned(9 downto 0);
+-   signal rect_reqVRAMYPos          : unsigned(8 downto 0);
++   signal rect_reqVRAMYPos          : unsigned(9 downto 0);
+    signal rect_reqVRAMSize          : unsigned(10 downto 0);
+    signal rect_vramLineEna          : std_logic;
+    signal rect_vramLineAddr         : unsigned(9 downto 0);
+    signal rect_textPalNew           : std_logic;
+    signal rect_textPalX             : unsigned(9 downto 0);
+-   signal rect_textPalY             : unsigned(8 downto 0);
++   signal rect_textPalY             : unsigned(9 downto 0);
+    signal rect_pipeline_textPalXTag : unsigned(9 downto 0) := (others => '0');
+-   signal rect_pipeline_textPalYTag : unsigned(8 downto 0) := (others => '0');
++   signal rect_pipeline_textPalYTag : unsigned(9 downto 0) := (others => '0');
+ 
+    signal poly_requestFifo          : std_logic; 
+    signal poly_done                 : std_logic;
+@@ -330,7 +330,7 @@
+    signal poly_pipeline_rawTexture  : std_logic;
+    signal poly_pipeline_dithering   : std_logic;
+    signal poly_pipeline_x           : unsigned(9 downto 0);
+-   signal poly_pipeline_y           : unsigned(8 downto 0);
++   signal poly_pipeline_y           : unsigned(9 downto 0);
+    signal poly_pipeline_cr          : unsigned(7 downto 0);
+    signal poly_pipeline_cg          : unsigned(7 downto 0);
+    signal poly_pipeline_cb          : unsigned(7 downto 0);
+@@ -340,7 +340,7 @@
+    signal poly_pipeline_v11         : unsigned(7 downto 0);
+    signal poly_reqVRAMEnable        : std_logic;
+    signal poly_reqVRAMXPos          : unsigned(9 downto 0);
+-   signal poly_reqVRAMYPos          : unsigned(8 downto 0);
++   signal poly_reqVRAMYPos          : unsigned(9 downto 0);
+    signal poly_reqVRAMSize          : unsigned(10 downto 0);
+    signal poly_vramLineEna          : std_logic;
+    signal poly_vramLineAddr         : unsigned(9 downto 0);
+@@ -348,17 +348,17 @@
+    signal poly_drawModeNew          : std_logic;
+    signal poly_textPalNew           : std_logic;
+    signal poly_textPalX             : unsigned(9 downto 0);
+-   signal poly_textPalY             : unsigned(8 downto 0);
++   signal poly_textPalY             : unsigned(9 downto 0);
+    signal poly_pipeline_textPalXTag : unsigned(9 downto 0) := (others => '0');
+-   signal poly_pipeline_textPalYTag : unsigned(8 downto 0) := (others => '0');
++   signal poly_pipeline_textPalYTag : unsigned(9 downto 0) := (others => '0');
+ 
+    signal pipeline_pixelColor       : std_logic_vector(15 downto 0);
+    signal pipeline_pixelColor2      : std_logic_vector(15 downto 0);
+-   signal pipeline_pixelAddr        : unsigned(19 downto 0);
++   signal pipeline_pixelAddr        : unsigned(20 downto 0);
+    signal pipeline_pixelWrite       : std_logic;
+    signal pipeline_reqVRAMEnable    : std_logic;
+    signal pipeline_reqVRAMXPos      : unsigned(9 downto 0);
+-   signal pipeline_reqVRAMYPos      : unsigned(8 downto 0);
++   signal pipeline_reqVRAMYPos      : unsigned(9 downto 0);
+    signal pipeline_reqVRAMSize      : unsigned(10 downto 0);
+    
+    signal pipeline_busy             : std_logic;
+@@ -369,7 +369,7 @@
+    signal pipeline_rawTexture       : std_logic;
+    signal pipeline_dithering        : std_logic;
+    signal pipeline_x                : unsigned(9 downto 0);
+-   signal pipeline_y                : unsigned(8 downto 0);
++   signal pipeline_y                : unsigned(9 downto 0);
+    signal pipeline_cr               : unsigned(7 downto 0);
+    signal pipeline_cg               : unsigned(7 downto 0);
+    signal pipeline_cb               : unsigned(7 downto 0);
+@@ -386,17 +386,17 @@
+    
+    signal pipeline_textPalNew       : std_logic;
+    signal pipeline_textPalX         : unsigned(9 downto 0);
+-   signal pipeline_textPalY         : unsigned(8 downto 0);
++   signal pipeline_textPalY         : unsigned(9 downto 0);
+    signal pipeline_textPalXTag      : unsigned(9 downto 0) := (others => '0');
+-   signal pipeline_textPalYTag      : unsigned(8 downto 0) := (others => '0');
++   signal pipeline_textPalYTag      : unsigned(9 downto 0) := (others => '0');
+ 
+    -- FIFO OUT 
+    signal fifoOut_reset             : std_logic; 
+-   signal fifoOut_Din               : std_logic_vector(85 downto 0);
++   signal fifoOut_Din               : std_logic_vector(86 downto 0);
+    signal fifoOut_Wr                : std_logic; 
+    signal fifoOut_Wr_1              : std_logic; 
+    signal fifoOut_NearFull          : std_logic;
+-   signal fifoOut_Dout              : std_logic_vector(85 downto 0);
++   signal fifoOut_Dout              : std_logic_vector(86 downto 0);
+    signal fifoOut_Rd                : std_logic;
+    signal fifoOut_Empty             : std_logic;
+    signal fifoOut_idle              : std_logic;
+@@ -424,7 +424,7 @@
+    
+    signal reqVRAMEnable             : std_logic;
+    signal reqVRAMXPos               : unsigned(9 downto 0);
+-   signal reqVRAMYPos               : unsigned(8 downto 0);
++   signal reqVRAMYPos               : unsigned(9 downto 0);
+    signal reqVRAMSize               : unsigned(10 downto 0);
+    signal reqVRAMremain             : unsigned(7 downto 0);
+    signal reqVRAMremain2            : unsigned(7 downto 0);
+@@ -436,6 +436,7 @@
+    signal reqVRAMStore              : std_logic := '0';        
+    signal reqVRAMStore2             : std_logic := '0';        
+    signal reqVRAMtwice              : std_logic := '0';        
++   signal reqVRAMpage8              : std_logic := '0';        
+    
+    signal vramLineAddr              : unsigned(9 downto 0);
+    
+@@ -672,10 +673,10 @@
+                               GPUREAD <= x"000" & std_logic_vector(textureWindow);
+                            
+                            when 3 => --Get Draw Area Top Left
+-                              GPUREAD <= x"000" & '0' & std_logic_vector(drawingAreaTop) & std_logic_vector(drawingAreaLeft);
++                              GPUREAD <= x"000" & std_logic_vector(drawingAreaTop) & std_logic_vector(drawingAreaLeft);
+                            
+                            when 4 => --Get Draw Area Bottom Right
+-                              GPUREAD <= x"000" & '0' & std_logic_vector(drawingAreaBottom) & std_logic_vector(drawingAreaRight);
++                              GPUREAD <= x"000" & std_logic_vector(drawingAreaBottom) & std_logic_vector(drawingAreaRight);
+                            
+                            when 5 => --Get Drawing Offset
+                               GPUREAD <= x"00" & "00" & std_logic_vector(drawingOffsetY) & std_logic_vector(drawingOffsetX);
+@@ -697,7 +698,7 @@
+             -- 480i framebuffer logic
+             frameWriteLineY := unsigned(vram_ADDR(19 downto 11)) - videoout_out.DisplayOffsetY;
+             
+-            if (vram_we = '1' and frameVramType = '1') then
++            if (vram_we = '1' and frameVramType = '1' and vram_ADDR(27 downto 20) = x"00") then
+                if (unsigned(vram_ADDR(19 downto 11)) >= videoout_out.DisplayOffsetY) then
+                   if (unsigned(vram_ADDR(19 downto 11)) < (videoout_out.DisplayOffsetY + videoout_out.DisplayHeightReal)) then
+                      
+@@ -851,8 +852,8 @@
+    ss_gpu_out(2)(19 downto 0)   <= std_logic_vector(textureWindow);
+    ss_gpu_out(4)(9 downto 0)    <= std_logic_vector(drawingAreaLeft);  
+    ss_gpu_out(5)(9 downto 0)    <= std_logic_vector(drawingAreaRight); 
+-   ss_gpu_out(4)(24 downto 16)  <= std_logic_vector(drawingAreaTop);   
+-   ss_gpu_out(5)(24 downto 16)  <= std_logic_vector(drawingAreaBottom);
++   ss_gpu_out(4)(25 downto 16)  <= std_logic_vector(drawingAreaTop);   
++   ss_gpu_out(5)(25 downto 16)  <= std_logic_vector(drawingAreaBottom);
+    ss_gpu_out(6)(10 downto 0)   <= std_logic_vector(drawingOffsetX);   
+    ss_gpu_out(6)(26 downto 16)  <= std_logic_vector(drawingOffsetY);   
+    ss_gpu_out(3)(13 downto 0)   <= std_logic_vector(drawMode);         
+@@ -886,8 +887,8 @@
+             
+             drawingAreaLeft         <= unsigned(ss_gpu_in(4)(9 downto 0)); 
+             drawingAreaRight        <= unsigned(ss_gpu_in(5)(9 downto 0)); 
+-            drawingAreaTop          <= unsigned(ss_gpu_in(4)(24 downto 16)); 
+-            drawingAreaBottom       <= unsigned(ss_gpu_in(5)(24 downto 16)); 
++            drawingAreaTop          <= unsigned(ss_gpu_in(4)(25 downto 16)); 
++            drawingAreaBottom       <= unsigned(ss_gpu_in(5)(25 downto 16)); 
+             drawingOffsetX          <= signed(ss_gpu_in(6)(10 downto 0)); 
+             drawingOffsetY          <= signed(ss_gpu_in(6)(26 downto 16)); 
+             
+@@ -959,11 +960,11 @@
+                   
+                elsif (cmdNew = 16#E3#) then -- Set Drawing Area top left (X1,Y1)
+                   drawingAreaLeft <= unsigned(fifoIn_Dout(9 downto 0));
+-                  drawingAreaTop  <= unsigned(fifoIn_Dout(18 downto 10));
++                  drawingAreaTop  <= unsigned(fifoIn_Dout(19 downto 10));
+                   
+                elsif (cmdNew = 16#E4#) then -- Set Drawing Area bottom right (X2,Y2)
+                   drawingAreaRight  <= unsigned(fifoIn_Dout(9 downto 0));
+-                  drawingAreaBottom <= unsigned(fifoIn_Dout(18 downto 10));
++                  drawingAreaBottom <= unsigned(fifoIn_Dout(19 downto 10));
+                   
+                elsif (cmdNew = 16#E5#) then -- Set Drawing Offset (X,Y)
+                   drawingOffsetX <= signed(fifoIn_Dout(10 downto 0));
+@@ -1500,7 +1501,7 @@
+    generic map
+    (
+       SIZE             => 256,
+-      DATAWIDTH        => 64 + 17 + 4 + 1,  -- 64bit data + 17 bit address + 4bit word enable + 1bit source=pipeline
++      DATAWIDTH        => 64 + 18 + 4 + 1,  -- 64bit data + 18 bit address + 4bit word enable + 1bit source=pipeline
+       NEARFULLDISTANCE => 250
+    )
+    port map
+@@ -1556,7 +1557,7 @@
+             if (vramFill_pixelWrite = '1') then
+             
+                fifoOut_Wr    <= '1';
+-               fifoOut_Din   <=  '1' & "1111" & std_logic_vector(vramFill_pixelAddr(19 downto 3)) & vramFill_pixelColor & vramFill_pixelColor & vramFill_pixelColor & vramFill_pixelColor;
++               fifoOut_Din   <=  '1' & "1111" & std_logic_vector(vramFill_pixelAddr(20 downto 3)) & vramFill_pixelColor & vramFill_pixelColor & vramFill_pixelColor & vramFill_pixelColor;
+                pixel64filled <= '0';
+          
+                fifoOut2_Din  <= x"0000000000000000";
+@@ -1565,11 +1566,11 @@
+             
+                pixel64timeout <= 15;
+             
+-               if (pixel64filled = '0' or pixelAddr(19 downto 3) /= unsigned(pixel64Addr)) then
++               if (pixel64filled = '0' or pixelAddr(20 downto 3) /= unsigned(pixel64Addr)) then
+                
+                   fifoOut_Wr <= pixel64filled;
+                
+-                  pixel64Addr <= std_logic_vector(pixelAddr(19 downto 3));
++                  pixel64Addr <= std_logic_vector(pixelAddr(20 downto 3));
+                   case (pixelAddr(2 downto 1)) is
+                      when "00" => pixel64data(15 downto  0) <= pixelColor; pixel64data2(15 downto  0) <= pixelColor2; pixel64wordEna <= "0001";
+                      when "01" => pixel64data(31 downto 16) <= pixelColor; pixel64data2(31 downto 16) <= pixelColor2; pixel64wordEna <= "0010";
+@@ -1619,7 +1620,7 @@
+    
+    reqVRAMEnable <= vram2vram_reqVRAMEnable or vram2cpu_reqVRAMEnable or line_reqVRAMEnable or rect_reqVRAMEnable or poly_reqVRAMEnable or pipeline_reqVRAMEnable or videoout_reqVRAMEnable;
+    reqVRAMXPos   <= vram2vram_reqVRAMXPos   or vram2cpu_reqVRAMXPos   or line_reqVRAMXPos   or rect_reqVRAMXPos   or poly_reqVRAMXPos   or pipeline_reqVRAMXPos   or videoout_reqVRAMXPos  ;  
+-   reqVRAMYPos   <= vram2vram_reqVRAMYPos   or vram2cpu_reqVRAMYPos   or line_reqVRAMYPos   or rect_reqVRAMYPos   or poly_reqVRAMYPos   or pipeline_reqVRAMYPos   or videoout_reqVRAMYPos  ;  
++   reqVRAMYPos   <= vram2vram_reqVRAMYPos   or vram2cpu_reqVRAMYPos   or line_reqVRAMYPos   or rect_reqVRAMYPos   or poly_reqVRAMYPos   or pipeline_reqVRAMYPos   or ('0' & videoout_reqVRAMYPos)  ;  
+    reqVRAMSize   <= vram2vram_reqVRAMSize   or vram2cpu_reqVRAMSize   or line_reqVRAMSize   or rect_reqVRAMSize   or poly_reqVRAMSize   or pipeline_reqVRAMSize   or videoout_reqVRAMSize  ;  
+    
+    vramLineAddr  <= vram2vram_vramLineAddr when vram2vram_vramLineEna else 
+@@ -1686,7 +1687,12 @@
+                         end if;
+                         if (reqVRAMSizeRounded > 1024) then reqVRAMSizeRounded := to_unsigned(1024, 11); end if;
+                         vramState     <= READVRAM;
+-                        vram_ADDR     <= x"00" & std_logic_vector(reqVRAMYPos) & std_logic_vector(reqVRAMXPos(9 downto 2)) & "000";
++                        if (reqVRAMYPos(9) = '1') then    -- row bit 9: upper 1MB lives at DDR page 8
++                           vram_ADDR  <= x"08" & std_logic_vector(reqVRAMYPos(8 downto 0)) & std_logic_vector(reqVRAMXPos(9 downto 2)) & "000";
++                        else
++                           vram_ADDR  <= x"00" & std_logic_vector(reqVRAMYPos(8 downto 0)) & std_logic_vector(reqVRAMXPos(9 downto 2)) & "000";
++                        end if;
++                        reqVRAMpage8  <= reqVRAMYPos(9);
+                         if (videoout_reqVRAMEnable = '1' and videoout_reqRAMMirror = '1') then
+                            vram_ADDR(27 downto 20) <= x"04";
+                         end if;
+@@ -1723,13 +1729,17 @@
+                            vramState   <= WRITESECOND;
+                         end if;
+                         vram_WE         <= '1';
+-                        vram_ADDR       <= x"00" & fifoOut_Dout(80 downto 64) & "000";
+-                        vram_BE         <= fifoOut_Dout(84) & fifoOut_Dout(84) & fifoOut_Dout(83) & fifoOut_Dout(83) & fifoOut_Dout(82) & fifoOut_Dout(82) & fifoOut_Dout(81) & fifoOut_Dout(81);
++                        if (fifoOut_Dout(81) = '1') then  -- row bit 9: upper 1MB lives at DDR page 8 (+8MB; pages 1-7 = memcards/SPU/framebuffers)
++                           vram_ADDR    <= x"08" & fifoOut_Dout(80 downto 64) & "000";
++                        else
++                           vram_ADDR    <= x"00" & fifoOut_Dout(80 downto 64) & "000";
++                        end if;
++                        vram_BE         <= fifoOut_Dout(85) & fifoOut_Dout(85) & fifoOut_Dout(84) & fifoOut_Dout(84) & fifoOut_Dout(83) & fifoOut_Dout(83) & fifoOut_Dout(82) & fifoOut_Dout(82);
+                         vram_DIN        <= fifoOut_Dout(63 downto 0);
+                         vram_BURSTCNT   <= x"01";
+-                        frameVramType   <= fifoOut_Dout(85);
++                        frameVramType   <= fifoOut_Dout(86);
+                         fifoOut2_Dout_1 <= fifoOut2_Dout;
+-                        if (interlacedDrawing = '1' and interlaced480pHack = '1' and videoout_reports.activeLineLSB = fifoOut_Dout(72) and fifoOut_Dout(85) = '1') then
++                        if (interlacedDrawing = '1' and interlaced480pHack = '1' and videoout_reports.activeLineLSB = fifoOut_Dout(72) and fifoOut_Dout(86) = '1') then
+                            vram_WE    <= '0';
+                         end if;
+                      elsif (frameClearRequest = '1' and SS_Idle = '1') then
+@@ -1758,7 +1768,11 @@
+                         vramState               <= READVRAM;
+                         reqVRAMStore2           <= '0';
+                         vram_RD                 <= '1';
+-                        vram_ADDR(27 downto 20) <= x"00";
++                        if (reqVRAMpage8 = '1') then
++                           vram_ADDR(27 downto 20) <= x"08";
++                        else
++                           vram_ADDR(27 downto 20) <= x"00";
++                        end if;
+                      end if;
+                   end if;
+                   
+@@ -2101,7 +2115,7 @@
+             
+                write(line_out, to_integer(pixelAddr(10 downto 1)));
+                write(line_out, string'(" ")); 
+-               write(line_out, to_integer(pixelAddr(19 downto 11)));
++               write(line_out, to_integer(pixelAddr(20 downto 11)));
+                write(line_out, string'(" ")); 
+                write(line_out, to_integer(unsigned(pixelColor)));
+                writeline(outfile, line_out);
+@@ -2110,21 +2124,21 @@
+                if (render24 = '1') then
+                   write(line_out, to_integer(pixelAddr(10 downto 1)));
+                   write(line_out, string'(" ")); 
+-                  write(line_out, to_integer(pixelAddr(19 downto 11)));
++                  write(line_out, to_integer(pixelAddr(20 downto 11)));
+                   write(line_out, string'(" ")); 
+                   write(line_out, to_integer(unsigned(pixelColor(4 downto 0)) & unsigned(pixelColor2(2 downto 0))));
+                   writeline(outfile, line_out);
+                   
+                   write(line_out, to_integer(pixelAddr(10 downto 1)));
+                   write(line_out, string'(" ")); 
+-                  write(line_out, to_integer(pixelAddr(19 downto 11)));
++                  write(line_out, to_integer(pixelAddr(20 downto 11)));
+                   write(line_out, string'(" ")); 
+                   write(line_out, to_integer(unsigned(pixelColor(9 downto 5)) & unsigned(pixelColor2(5 downto 3))));
+                   writeline(outfile, line_out);
+                   
+                   write(line_out, to_integer(pixelAddr(10 downto 1)));
+                   write(line_out, string'(" ")); 
+-                  write(line_out, to_integer(pixelAddr(19 downto 11)));
++                  write(line_out, to_integer(pixelAddr(20 downto 11)));
+                   write(line_out, string'(" ")); 
+                   write(line_out, to_integer(unsigned(pixelColor(14 downto 10)) & unsigned(pixelColor2(8 downto 6))));
+                   writeline(outfile, line_out);
+--- a/rtl/gpu_cpu2vram.vhd
++++ b/rtl/gpu_cpu2vram.vhd
+@@ -24,7 +24,7 @@
+       
+       pixelStall           : in  std_logic;
+       pixelColor           : out std_logic_vector(15 downto 0);
+-      pixelAddr            : out unsigned(19 downto 0);
++      pixelAddr            : out unsigned(20 downto 0);
+       pixelWrite           : out std_logic
+    );
+ end entity;
+@@ -41,12 +41,12 @@
+    signal state : tState := IDLE;
+    
+    signal copyDstX     : unsigned(9 downto 0);
+-   signal copyDstY     : unsigned(8 downto 0);   
++   signal copyDstY     : unsigned(9 downto 0);   
+    signal copySizeX    : unsigned(10 downto 0);
+-   signal copySizeY    : unsigned(9 downto 0);
++   signal copySizeY    : unsigned(10 downto 0);
+                        
+    signal x            : unsigned(10 downto 0);
+-   signal y            : unsigned(9 downto 0);
++   signal y            : unsigned(10 downto 0);
+    
+    signal fifo_Valid_1 : std_logic;
+    signal fifo_data_1  : std_logic_vector(15 downto 0);
+@@ -58,7 +58,7 @@
+                   '0';
+ 
+    process (clk2x)
+-      variable row : unsigned(8 downto 0);
++      variable row : unsigned(9 downto 0);
+       variable col : unsigned(9 downto 0);
+    begin
+       if rising_edge(clk2x) then
+@@ -95,7 +95,7 @@
+                   if (fifo_Valid = '1') then
+                      state    <= REQUESTWORD3;  
+                      copyDstX <= unsigned(fifo_data( 9 downto  0));
+-                     copyDstY <= unsigned(fifo_data(24 downto 16));
++                     copyDstY <= unsigned(fifo_data(25 downto 16));
+                   end if;
+             
+                when REQUESTWORD3 =>
+@@ -103,11 +103,11 @@
+                      CmdDone    <= '1';
+                      state      <= WRITING;
+                      copySizeX  <= '0' & unsigned(fifo_data( 9 downto  0));
+-                     copySizeY  <= '0' & unsigned(fifo_data(24 downto 16));
++                     copySizeY  <= '0' & unsigned(fifo_data(25 downto 16));
+                      x          <= (others => '0');
+                      y          <= (others => '0');
+                      if (unsigned(fifo_data( 9 downto  0)) = 0) then copySizeX <= to_unsigned(16#400#, 11); end if;
+-                     if (unsigned(fifo_data(24 downto 16)) = 0) then copySizeY <= to_unsigned(16#200#, 10); end if;
++                     if (unsigned(fifo_data(25 downto 16)) = 0) then copySizeY <= to_unsigned(16#400#, 11); end if;
+                   end if;
+                   
+                when WRITING => 
+@@ -119,7 +119,7 @@
+                   -- todo: AND/OR masking
+                
+                   if (fifo_Valid = '1' or fifo_Valid_1 = '1') then
+-                     row := copyDstY + y(8 downto 0);
++                     row := copyDstY + y(9 downto 0);
+                      col := copyDstX + x(9 downto 0);
+       
+                      pixelWrite <= '1';
+--- a/rtl/gpu_vram2vram.vhd
++++ b/rtl/gpu_vram2vram.vhd
+@@ -30,7 +30,7 @@
+       fifoOut_idle         : in  std_logic;
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+@@ -42,7 +42,7 @@
+       pixelEmpty           : in  std_logic;
+       pixelStall           : in  std_logic;
+       pixelColor           : out std_logic_vector(15 downto 0);
+-      pixelAddr            : out unsigned(19 downto 0);
++      pixelAddr            : out unsigned(20 downto 0);
+       pixelWrite           : out std_logic
+    );
+ end entity;
+@@ -65,18 +65,18 @@
+    signal state : tState := IDLE;
+    
+    signal srcX         : unsigned(9 downto 0);
+-   signal srcY         : unsigned(8 downto 0);   
++   signal srcY         : unsigned(9 downto 0);   
+    signal dstX         : unsigned(9 downto 0);
+-   signal dstY         : unsigned(8 downto 0);   
++   signal dstY         : unsigned(9 downto 0);   
+    signal widt         : unsigned(10 downto 0);
+-   signal heig         : unsigned(9 downto 0);
++   signal heig         : unsigned(10 downto 0);
+    
+    signal dir          : std_logic;
+                        
+    signal xSrc         : unsigned(9 downto 0);
+    signal xDst         : unsigned(9 downto 0);
+    signal xCnt         : unsigned(10 downto 0);
+-   signal yCnt         : unsigned(9 downto 0);
++   signal yCnt         : unsigned(10 downto 0);
+    
+    signal drawTiming   : unsigned(6 downto 0);
+   
+@@ -139,14 +139,14 @@
+                   if (fifo_Valid = '1') then
+                      state    <= REQUESTWORD3;  
+                      srcX <= unsigned(fifo_data( 9 downto  0));
+-                     srcY <= unsigned(fifo_data(24 downto 16));
++                     srcY <= unsigned(fifo_data(25 downto 16));
+                   end if;
+             
+                when REQUESTWORD3 =>
+                   if (fifo_Valid = '1') then
+                      state    <= REQUESTWORD4;  
+                      dstX <= unsigned(fifo_data( 9 downto  0));
+-                     dstY <= unsigned(fifo_data(24 downto 16));
++                     dstY <= unsigned(fifo_data(25 downto 16));
+                   end if;
+             
+                when REQUESTWORD4 =>
+@@ -161,9 +161,9 @@
+                      CmdDone    <= '1';
+                      state      <= REQUESTFIRST;
+                      widt       <= '0' & unsigned(fifo_data( 9 downto  0));
+-                     heig       <= '0' & unsigned(fifo_data(24 downto 16));
++                     heig       <= '0' & unsigned(fifo_data(25 downto 16));
+                      if (unsigned(fifo_data( 9 downto  0)) = 0) then widt <= to_unsigned(16#400#, 11); end if;
+-                     if (unsigned(fifo_data(24 downto 16)) = 0) then heig <= to_unsigned(16#200#, 10); end if;
++                     if (unsigned(fifo_data(25 downto 16)) = 0) then heig <= to_unsigned(16#400#, 11); end if;
+                   end if;
+                   
+                when REQUESTFIRST =>
+--- a/rtl/gpu_vram2cpu.vhd
++++ b/rtl/gpu_vram2cpu.vhd
+@@ -28,7 +28,7 @@
+       fifoOut_idle         : in  std_logic;
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+@@ -63,14 +63,14 @@
+    signal state : tState := IDLE;
+    
+    signal srcX          : unsigned(9 downto 0);
+-   signal srcY          : unsigned(8 downto 0);     
++   signal srcY          : unsigned(9 downto 0);     
+    signal widt          : unsigned(10 downto 0);
+    signal widtVram      : unsigned(10 downto 0);
+-   signal heig          : unsigned(9 downto 0);
++   signal heig          : unsigned(10 downto 0);
+                         
+    signal xSrc          : unsigned(9 downto 0);
+    signal xCnt          : unsigned(10 downto 0);
+-   signal yCnt          : unsigned(9 downto 0);
++   signal yCnt          : unsigned(10 downto 0);
+    
+    signal drawTiming    : unsigned(6 downto 0);
+    
+@@ -169,7 +169,7 @@
+                   if (fifo_Valid = '1') then
+                      state    <= REQUESTWORD3;  
+                      srcX <= unsigned(fifo_data( 9 downto  0));
+-                     srcY <= unsigned(fifo_data(24 downto 16));
++                     srcY <= unsigned(fifo_data(25 downto 16));
+                   end if;
+             
+                when REQUESTWORD3 =>
+@@ -178,7 +178,7 @@
+                      state      <= REQUESTFIRST;
+                      widt       <= '0' & unsigned(fifo_data( 9 downto  0));
+                      widtVram   <= '0' & unsigned(fifo_data( 9 downto  0));
+-                     heig       <= '0' & unsigned(fifo_data(24 downto 16));
++                     heig       <= '0' & unsigned(fifo_data(25 downto 16));
+                      
+                      if (fifo_data(0) = '1') then
+                         widtVram <= resize(unsigned(fifo_data(9 downto 0)), 11) + 1;
+@@ -188,8 +188,8 @@
+                         widt       <= to_unsigned(16#400#, 11); 
+                         widtVram   <= to_unsigned(16#400#, 11); 
+                      end if;
+-                     if (unsigned(fifo_data(24 downto 16)) = 0) then 
+-                        heig <= to_unsigned(16#200#, 10); 
++                     if (unsigned(fifo_data(25 downto 16)) = 0) then 
++                        heig <= to_unsigned(16#400#, 11); 
+                      end if;
+                   end if;
+                   
+--- a/rtl/gpu_fillVram.vhd
++++ b/rtl/gpu_fillVram.vhd
+@@ -24,7 +24,7 @@
+       
+       pixelStall           : in  std_logic;
+       pixelColor           : out std_logic_vector(15 downto 0);
+-      pixelAddr            : out unsigned(19 downto 0);
++      pixelAddr            : out unsigned(20 downto 0);
+       pixelWrite           : out std_logic
+    );
+ end entity;
+@@ -43,12 +43,12 @@
+       
+    signal color   : std_logic_vector(14 downto 0);
+    signal x1      : unsigned(9 downto 0);
+-   signal y1      : unsigned(8 downto 0);   
++   signal y1      : unsigned(9 downto 0);   
+    signal widt    : unsigned(10 downto 0);
+-   signal heig    : unsigned(8 downto 0);
++   signal heig    : unsigned(9 downto 0);
+    
+    signal x       : unsigned(10 downto 0);
+-   signal y       : unsigned(8 downto 0);
++   signal y       : unsigned(9 downto 0);
+    
+    signal timer   : integer;
+    signal timeCnt : integer;
+@@ -59,7 +59,7 @@
+ 
+    -- fill VRAM
+    process (clk2x)
+-      variable row     : unsigned(8 downto 0);
++      variable row     : unsigned(9 downto 0);
+       variable col     : unsigned(10 downto 0);
+       variable lineEnd : std_logic;
+    begin
+@@ -93,7 +93,7 @@
+                   if (fifo_Valid = '1') then
+                      state <= REQUESTWORD3;  
+                      x1    <= unsigned(fifo_data( 9 downto  4) & x"0");
+-                     y1    <= unsigned(fifo_data(24 downto 16));
++                     y1    <= unsigned(fifo_data(25 downto 16));
+                   end if;
+             
+                when REQUESTWORD3 =>
+@@ -102,10 +102,10 @@
+                      state   <= WRITING;
+                      widt    <= resize(unsigned(fifo_data( 9 downto  0)), 11) + 15;
+                      widt(3 downto 0) <= x"0";
+-                     heig    <= unsigned(fifo_data(24 downto 16));
++                     heig    <= unsigned(fifo_data(25 downto 16));
+                      x       <= (others => '0');
+                      y       <= (others => '0');
+-                     if (unsigned(fifo_data( 9 downto  0)) = 0 or unsigned(fifo_data(24 downto 16)) = 0) then
++                     if (unsigned(fifo_data( 9 downto  0)) = 0 or unsigned(fifo_data(25 downto 16)) = 0) then
+                         state <= IDLE;
+                         done  <= '1';
+                      end if;
+--- a/rtl/gpu_line.vhd
++++ b/rtl/gpu_line.vhd
+@@ -24,8 +24,8 @@
+       drawingOffsetY       : in  signed(10 downto 0);
+       drawingAreaLeft      : in  unsigned(9 downto 0);
+       drawingAreaRight     : in  unsigned(9 downto 0);
+-      drawingAreaTop       : in  unsigned(8 downto 0);
+-      drawingAreaBottom    : in  unsigned(8 downto 0);
++      drawingAreaTop       : in  unsigned(9 downto 0);
++      drawingAreaBottom    : in  unsigned(9 downto 0);
+       
+       div1                 : inout div_type; 
+       div2                 : inout div_type; 
+@@ -40,7 +40,7 @@
+       pipeline_new         : out std_logic := '0';
+       pipeline_transparent : out std_logic := '0';
+       pipeline_x           : out unsigned(9 downto 0) := (others => '0');
+-      pipeline_y           : out unsigned(8 downto 0) := (others => '0');
++      pipeline_y           : out unsigned(9 downto 0) := (others => '0');
+       pipeline_cr          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cg          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cb          : out unsigned(7 downto 0) := (others => '0');
+@@ -54,7 +54,7 @@
+       
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+@@ -160,7 +160,7 @@
+    
+    requestVRAMEnable <= '1'                           when (procstate = PROCREADLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else '0';
+    requestVRAMXPos   <= unsigned(workx(41 downto 32)) when (procstate = PROCREADLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+-   requestVRAMYPos   <= unsigned(worky(40 downto 32)) when (procstate = PROCREADLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
++   requestVRAMYPos   <= unsigned(worky(41 downto 32)) when (procstate = PROCREADLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    requestVRAMSize   <= yPerLine                      when (procstate = PROCREADLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    
+    vramLineEna  <= '1' when (procstate = PROCPIXELS) else '0';
+@@ -516,7 +516,7 @@
+                      nexty := worky + stepDy;
+                      if (pixelCnt >= points) then
+                         procstate <= PROCIDLE;
+-                     elsif ((proc_transparency = '1' or DrawPixelsMask = '1') and nexty(40 downto 32) /= worky(40 downto 32)) then
++                     elsif ((proc_transparency = '1' or DrawPixelsMask = '1') and nexty(41 downto 32) /= worky(41 downto 32)) then
+                         procstate <= PROCREADLINE;
+                      end if;
+                      
+@@ -528,7 +528,7 @@
+                            pipeline_new         <= '1';
+                            pipeline_transparent <= proc_transparency;
+                            pipeline_x           <= unsigned(drawx(9 downto 0));
+-                           pipeline_y           <= unsigned(drawy(8 downto 0));
++                           pipeline_y           <= unsigned(drawy(9 downto 0));
+                            if (proc_shading = '0') then
+                               pipeline_cr       <= unsigned(proc_color1( 7 downto  0));
+                               pipeline_cg       <= unsigned(proc_color1(15 downto  8));
+--- a/rtl/gpu_rect.vhd
++++ b/rtl/gpu_rect.vhd
+@@ -23,8 +23,8 @@
+       drawingOffsetY       : in  signed(10 downto 0);
+       drawingAreaLeft      : in  unsigned(9 downto 0);
+       drawingAreaRight     : in  unsigned(9 downto 0);
+-      drawingAreaTop       : in  unsigned(8 downto 0);
+-      drawingAreaBottom    : in  unsigned(8 downto 0);
++      drawingAreaTop       : in  unsigned(9 downto 0);
++      drawingAreaBottom    : in  unsigned(9 downto 0);
+       
+       fifoOut_idle         : in  std_logic;
+       pipeline_busy        : in  std_logic;
+@@ -34,7 +34,7 @@
+       pipeline_transparent : out std_logic := '0';
+       pipeline_rawTexture  : out std_logic := '0';
+       pipeline_x           : out unsigned(9 downto 0) := (others => '0');
+-      pipeline_y           : out unsigned(8 downto 0) := (others => '0');
++      pipeline_y           : out unsigned(9 downto 0) := (others => '0');
+       pipeline_cr          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cg          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cb          : out unsigned(7 downto 0) := (others => '0');
+@@ -42,7 +42,7 @@
+       pipeline_v           : out unsigned(7 downto 0) := (others => '0');
+       -- 573 patch 0018: per-PIXEL CLUT row+x tag, pulsed with pipeline_new at emit time.
+       pipeline_textPalXTag : out unsigned(9 downto 0) := (others => '0');
+-      pipeline_textPalYTag : out unsigned(8 downto 0) := (others => '0');
++      pipeline_textPalYTag : out unsigned(9 downto 0) := (others => '0');
+ 
+       proc_idle            : in  std_logic;
+       fifo_Valid           : in  std_logic;
+@@ -53,14 +53,14 @@
+       
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+       
+       textPalNew           : out std_logic := '0';
+       textPalX             : out unsigned(9 downto 0) := (others => '0');   
+-      textPalY             : out unsigned(8 downto 0) := (others => '0'); 
++      textPalY             : out unsigned(9 downto 0) := (others => '0'); 
+       
+       vramLineEna          : out std_logic;
+       vramLineAddr         : out unsigned(9 downto 0)
+@@ -96,16 +96,16 @@
+       
+    signal rec_posx            : signed(11 downto 0) := (others => '0');
+    signal rec_sizex           : unsigned(9 downto 0) := (others => '0');   
+-   signal rec_sizey           : unsigned(8 downto 0) := (others => '0');  
++   signal rec_sizey           : unsigned(9 downto 0) := (others => '0');  
+    
+    signal rec_u               : unsigned(7 downto 0) := (others => '0');
+    signal rec_textPalX        : unsigned(9 downto 0) := (others => '0');  -- 573 patch 0018: latch the CLUT row+x for per-pixel tagging
+-   signal rec_textPalY        : unsigned(8 downto 0) := (others => '0');
++   signal rec_textPalY        : unsigned(9 downto 0) := (others => '0');
+ 
+    signal xPos                : signed(11 downto 0) := (others => '0');
+    signal yPos                : signed(11 downto 0) := (others => '0');    
+    signal xCnt                : unsigned(9 downto 0) := (others => '0');   
+-   signal yCnt                : unsigned(8 downto 0) := (others => '0');  
++   signal yCnt                : unsigned(9 downto 0) := (others => '0');  
+    signal uWork               : unsigned(7 downto 0) := (others => '0');   
+    signal vWork               : unsigned(7 downto 0) := (others => '0');  
+ 
+@@ -119,7 +119,7 @@
+    
+    requestVRAMEnable <= '1'                        when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else '0';
+    requestVRAMXPos   <= unsigned(xPos(9 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+-   requestVRAMYPos   <= unsigned(yPos(8 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
++   requestVRAMYPos   <= unsigned(yPos(9 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    requestVRAMSize   <= '0' & rec_sizex            when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    
+    vramLineEna  <= '1' when (state = PROCPIXELS) else '0';
+@@ -206,15 +206,15 @@
+                   case (rec_size) is
+                      when "01" =>
+                         rec_sizex <= to_unsigned(1, 10);
+-                        rec_sizey <= to_unsigned(1, 9);
++                        rec_sizey <= to_unsigned(1, 10);
+                         
+                      when "10" =>
+                         rec_sizex <= to_unsigned(8, 10);
+-                        rec_sizey <= to_unsigned(8, 9);
++                        rec_sizey <= to_unsigned(8, 10);
+                         
+                      when "11" =>
+                         rec_sizex <= to_unsigned(16, 10);
+-                        rec_sizey <= to_unsigned(16, 9);
++                        rec_sizey <= to_unsigned(16, 10);
+                         
+                      when others => null;
+                   end case;
+@@ -241,9 +241,9 @@
+                      vWork         <= unsigned(fifo_data(15 downto  8));
+                      rec_u         <= unsigned(fifo_data( 7 downto  0));
+                      textPalX      <= unsigned(fifo_data(21 downto 16)) & "0000";
+-                     textPalY      <= unsigned(fifo_data(30 downto 22));
++                     textPalY      <= unsigned(fifo_data(31 downto 22));
+                      rec_textPalX  <= unsigned(fifo_data(21 downto 16)) & "0000";  -- 573 patch 0018: latch for per-pixel tag
+-                     rec_textPalY  <= unsigned(fifo_data(30 downto 22));
++                     rec_textPalY  <= unsigned(fifo_data(31 downto 22));
+                      textPalNew    <= '1';
+                      if (rec_size = "00") then
+                         state    <= REQUESTSIZE;  
+@@ -256,7 +256,7 @@
+                when REQUESTSIZE =>
+                   if (fifo_Valid = '1') then
+                      rec_sizex   <= unsigned(fifo_data(9 downto  0));
+-                     rec_sizey   <= unsigned(fifo_data(24 downto 16));
++                     rec_sizey   <= unsigned(fifo_data(25 downto 16));
+                      state       <= CHECKPOS;
+                      CmdDone     <= '1'; 
+                   end if;
+@@ -293,7 +293,7 @@
+                   end if;
+                   yPos      <= yPos + ydiff;
+                   vWork     <= vWork + unsigned(ydiff(7 downto 0));
+-                  rec_sizey <= unsigned(ysize(8 downto 0)); 
++                  rec_sizey <= unsigned(ysize(9 downto 0)); 
+                   
+                   if (xsize < 1 or ysize < 1 or rec_posx > to_integer(drawingAreaRight) or yPos > to_integer(drawingAreaBottom)) then
+                      if (REPRODUCIBLEGPUTIMING = '1') then
+@@ -361,7 +361,7 @@
+                         pipeline_transparent <= rec_transparency;
+                         pipeline_rawTexture  <= rec_rawTexture;
+                         pipeline_x           <= unsigned(xPos(9 downto 0));
+-                        pipeline_y           <= unsigned(yPos(8 downto 0));
++                        pipeline_y           <= unsigned(yPos(9 downto 0));
+                         pipeline_cr          <= unsigned(rec_color( 7 downto  0));
+                         pipeline_cg          <= unsigned(rec_color(15 downto  8));
+                         pipeline_cb          <= unsigned(rec_color(23 downto 16));
+--- a/rtl/gpu_poly.vhd
++++ b/rtl/gpu_poly.vhd
+@@ -27,8 +27,8 @@
+       drawingOffsetY       : in  signed(10 downto 0);
+       drawingAreaLeft      : in  unsigned(9 downto 0);
+       drawingAreaRight     : in  unsigned(9 downto 0);
+-      drawingAreaTop       : in  unsigned(8 downto 0);
+-      drawingAreaBottom    : in  unsigned(8 downto 0);
++      drawingAreaTop       : in  unsigned(9 downto 0);
++      drawingAreaBottom    : in  unsigned(9 downto 0);
+       
+       drawModeRec          : out unsigned(11 downto 0);
+       drawModeNew          : out std_logic := '0';
+@@ -50,7 +50,7 @@
+       pipeline_rawTexture  : out std_logic := '0';
+       pipeline_dithering   : out std_logic := '0';
+       pipeline_x           : out unsigned(9 downto 0) := (others => '0');
+-      pipeline_y           : out unsigned(8 downto 0) := (others => '0');
++      pipeline_y           : out unsigned(9 downto 0) := (others => '0');
+       pipeline_cr          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cg          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_cb          : out unsigned(7 downto 0) := (others => '0');
+@@ -65,7 +65,7 @@
+       -- emitted pixel carries THIS primitive's CLUT row (the shared textPalReqY in the pixelpipeline
+       -- is overwritten by the next quad's decode before these pixels reach their CLUT read).
+       pipeline_textPalXTag : out unsigned(9 downto 0) := (others => '0');
+-      pipeline_textPalYTag : out unsigned(8 downto 0) := (others => '0');
++      pipeline_textPalYTag : out unsigned(9 downto 0) := (others => '0');
+ 
+       proc_idle            : in  std_logic;
+       fifo_Valid           : in  std_logic;
+@@ -76,14 +76,14 @@
+       
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+       
+       textPalNew           : out std_logic := '0';
+       textPalX             : out unsigned(9 downto 0) := (others => '0');   
+-      textPalY             : out unsigned(8 downto 0) := (others => '0'); 
++      textPalY             : out unsigned(9 downto 0) := (others => '0'); 
+       
+       vramLineEna          : out std_logic;
+       vramLineAddr         : out unsigned(9 downto 0)
+@@ -148,7 +148,7 @@
+    signal rec_index           : integer range 0 to 3;
+    
+    signal rec_textPalX        : unsigned(9 downto 0) := (others => '0');   
+-   signal rec_textPalY        : unsigned(8 downto 0) := (others => '0');
++   signal rec_textPalY        : unsigned(9 downto 0) := (others => '0');
+ 
+    signal quadFirst           : std_logic := '0';
+    signal nextQuad            : std_logic := '0';
+@@ -258,7 +258,7 @@
+    
+    requestVRAMEnable <= '1'                        when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else '0';
+    requestVRAMXPos   <= unsigned(xPos(9 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+-   requestVRAMYPos   <= unsigned(yPos(8 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
++   requestVRAMYPos   <= unsigned(yPos(9 downto 0)) when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    requestVRAMSize   <= xSize                      when (state = REQUESTLINE and requestVRAMIdle = '1' and pipeline_stall = '0') else (others => '0');
+    
+    vramLineEna  <= '1' when (state = PROCPIXELS) else '0';
+@@ -534,7 +534,7 @@
+                      rec_vertices(rec_index).v <= unsigned(fifo_data(15 downto  8));
+                      if (rec_index = 0) then
+                         rec_textPalX  <= unsigned(fifo_data(21 downto 16)) & "0000";
+-                        rec_textPalY  <= unsigned(fifo_data(30 downto 22));
++                        rec_textPalY  <= unsigned(fifo_data(31 downto 22));
+                      end if;
+                      if (rec_index = 1) then
+                         drawModeRec   <= unsigned(fifo_data(27 downto 16));
+@@ -1128,7 +1128,7 @@
+                         pipeline_rawTexture  <= rec_rawTexture;
+                         pipeline_dithering   <= rec_dithering;
+                         pipeline_x           <= unsigned(xPos(9 downto 0));
+-                        pipeline_y           <= unsigned(yPos(8 downto 0));
++                        pipeline_y           <= unsigned(yPos(9 downto 0));
+                         pipeline_cr          <= work_R(19 downto 12);
+                         pipeline_cg          <= work_G(19 downto 12);
+                         pipeline_cb          <= work_B(19 downto 12);
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -34,7 +34,7 @@
+       pipeline_rawTexture  : in  std_logic;
+       pipeline_dithering   : in  std_logic;
+       pipeline_x           : in  unsigned(9 downto 0);
+-      pipeline_y           : in  unsigned(8 downto 0);
++      pipeline_y           : in  unsigned(9 downto 0);
+       pipeline_cr          : in  unsigned(7 downto 0);
+       pipeline_cg          : in  unsigned(7 downto 0);
+       pipeline_cb          : in  unsigned(7 downto 0);
+@@ -48,7 +48,7 @@
+       
+       requestVRAMEnable    : out std_logic;
+       requestVRAMXPos      : out unsigned(9 downto 0);
+-      requestVRAMYPos      : out unsigned(8 downto 0);
++      requestVRAMYPos      : out unsigned(9 downto 0);
+       requestVRAMSize      : out unsigned(10 downto 0);
+       requestVRAMIdle      : in  std_logic;
+       requestVRAMDone      : in  std_logic;
+@@ -60,18 +60,18 @@
+       
+       textPalInNew         : in  std_logic;
+       textPalInX           : in  unsigned(9 downto 0);
+-      textPalInY           : in  unsigned(8 downto 0);
++      textPalInY           : in  unsigned(9 downto 0);
+ 
+       -- 573 patch 0018: per-PIXEL CLUT row+x tag, asserted by the drawer alongside pipeline_new.
+       -- Carries THIS pixel's primitive's CLUT row even after the shared textPalReqY is overwritten
+       -- by a later neighbor's command decode. Snapshotted at pixel entry for the row-lock compare.
+       pipeline_textPalXTag : in  unsigned(9 downto 0) := (others => '0');
+-      pipeline_textPalYTag : in  unsigned(8 downto 0) := (others => '0');
++      pipeline_textPalYTag : in  unsigned(9 downto 0) := (others => '0');
+ 
+       pixelStall           : in  std_logic;
+       pixelColor           : out std_logic_vector(15 downto 0);
+       pixelColor2          : out std_logic_vector(15 downto 0);
+-      pixelAddr            : out unsigned(19 downto 0);
++      pixelAddr            : out unsigned(20 downto 0);
+       pixelWrite           : out std_logic
+    );
+ end entity;
+@@ -92,8 +92,11 @@
+    type t_filterarray_u9  is array(0 to 3) of unsigned(8 downto 0);
+    type t_filterarray_u10 is array(0 to 3) of unsigned(9 downto 0);
+    type t_filterarray_u20 is array(0 to 3) of unsigned(19 downto 0);
++   type t_filterarray_u21 is array(0 to 3) of unsigned(20 downto 0);
++   type t_filterarray_u11 is array(0 to 3) of unsigned(10 downto 0);
+    type t_filterarray_b8  is array(0 to 3) of std_logic_vector(7 downto 0);
+    type t_filterarray_b10 is array(0 to 3) of std_logic_vector(9 downto 0);
++   type t_filterarray_b11 is array(0 to 3) of std_logic_vector(10 downto 0);
+    type t_filterarray_b16 is array(0 to 3) of std_logic_vector(15 downto 0);
+    type t_filterarray_b64 is array(0 to 3) of std_logic_vector(63 downto 0);
+    
+@@ -103,13 +106,13 @@
+    signal palette8bit         : std_logic := '0';
+   
+    signal tag_addr            : t_filterarray_u8;
+-   signal tag_data            : t_filterarray_u10;
+-   signal tag_data_1          : t_filterarray_u10;
++   signal tag_data            : t_filterarray_u11;
++   signal tag_data_1          : t_filterarray_u11;
+       
+    signal tag_address_a       : unsigned(7 downto 0) := (others => '0');
+-   signal tag_data_a          : std_logic_vector(9 downto 0) := (others => '0');
++   signal tag_data_a          : std_logic_vector(10 downto 0) := (others => '0');
+    signal tag_wren_a          : std_logic := '0';
+-   signal tag_q_b             : t_filterarray_b10;
++   signal tag_q_b             : t_filterarray_b11;
+       
+    signal tagValid            : std_logic_vector(0 to 255) := (others => '0');
+       
+@@ -130,11 +133,11 @@
+    
+    signal textPalReq          : std_logic := '0';
+    signal textPalReqX         : unsigned(9 downto 0) := (others => '0');  
+-   signal textPalReqY         : unsigned(8 downto 0) := (others => '0'); 
++   signal textPalReqY         : unsigned(9 downto 0) := (others => '0'); 
+   
+    signal textPalFetched      : std_logic := '0';
+    signal textPalX            : unsigned(9 downto 0) := (others => '0');   
+-   signal textPalY            : unsigned(8 downto 0) := (others => '0'); 
++   signal textPalY            : unsigned(9 downto 0) := (others => '0'); 
+    signal textPalFetchNext    : integer range 0 to 3;
+   
+    type tState is
+@@ -223,12 +226,12 @@
+    signal   rowlock_s1      : std_logic;   -- stage1 CLUT pixel needs a row that is not yet resident
+    signal   rowlock_stall   : std_logic;   -- combined stage0/stage1 row-lock stall
+    signal   rowlock_refetch : std_logic;   -- a parked row-locked pixel wants its row fetched
+-   signal   rowlock_refY    : unsigned(8 downto 0);  -- the snapshot row that parked pixel needs
++   signal   rowlock_refY    : unsigned(9 downto 0);  -- the snapshot row that parked pixel needs
+    signal   rowlock_refX    : unsigned(9 downto 0);  -- the snapshot CLUT-X that parked pixel needs
+    -- per-pixel snapshot of the required CLUT row+x, carried alongside the pixel down the pipeline
+-   signal   stageS_palReqY  : unsigned(8 downto 0) := (others => '0');
+-   signal   stage0_palReqY  : unsigned(8 downto 0) := (others => '0');
+-   signal   stage1_palReqY  : unsigned(8 downto 0) := (others => '0');
++   signal   stageS_palReqY  : unsigned(9 downto 0) := (others => '0');
++   signal   stage0_palReqY  : unsigned(9 downto 0) := (others => '0');
++   signal   stage1_palReqY  : unsigned(9 downto 0) := (others => '0');
+    signal   stageS_palReqX  : unsigned(9 downto 0) := (others => '0');
+    signal   stage0_palReqX  : unsigned(9 downto 0) := (others => '0');
+    signal   stage1_palReqX  : unsigned(9 downto 0) := (others => '0');
+@@ -260,7 +263,7 @@
+    signal   saw_y491         : std_logic := '0';
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+-   signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
++   signal reqVRAMYPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMSize         : unsigned(10 downto 0) := (others => '0');
+   
+    signal stageS_valid        : std_logic := '0';
+@@ -269,7 +272,7 @@
+    signal stageS_rawTexture   : std_logic := '0';
+    signal stageS_dithering    : std_logic := '0';
+    signal stageS_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stageS_y            : unsigned(8 downto 0) := (others => '0');
++   signal stageS_y            : unsigned(9 downto 0) := (others => '0');
+    signal stageS_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stageS_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stageS_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -289,7 +292,7 @@
+    signal stage0_rawTexture   : std_logic := '0';
+    signal stage0_dithering    : std_logic := '0';
+    signal stage0_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage0_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage0_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage0_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage0_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage0_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -305,8 +308,8 @@
+    
+    signal stage0_u_array      : t_filterarray_u8;
+    signal stage0_v_array      : t_filterarray_u8;
+-   signal stage0_textaddr     : t_filterarray_u20;
+-   signal stage0_textaddr_1   : t_filterarray_u20;
++   signal stage0_textaddr     : t_filterarray_u21;
++   signal stage0_textaddr_1   : t_filterarray_u21;
+    
+    signal stage1_valid        : std_logic := '0';
+    signal stage1_texture      : std_logic := '0';
+@@ -314,7 +317,7 @@
+    signal stage1_rawTexture   : std_logic := '0';
+    signal stage1_dithering    : std_logic := '0';
+    signal stage1_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage1_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage1_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage1_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage1_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage1_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -334,7 +337,7 @@
+    signal stage2_rawTexture   : std_logic := '0';
+    signal stage2_dithering    : std_logic := '0';
+    signal stage2_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage2_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage2_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage2_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage2_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage2_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -375,7 +378,7 @@
+    signal stage3_rawTexture   : std_logic := '0';
+    signal stage3_dithering    : std_logic := '0';
+    signal stage3_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage3_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage3_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage3_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage3_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage3_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -393,7 +396,7 @@
+    signal stage4_rawTexture   : std_logic := '0';
+    signal stage4_dithering    : std_logic := '0';
+    signal stage4_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage4_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage4_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage4_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage4_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage4_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -411,7 +414,7 @@
+    signal stage5_alphacheck   : std_logic := '0';
+    signal stage5_alphabit     : std_logic := '0';
+    signal stage5_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage5_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage5_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage5_cr           : unsigned(7 downto 0) := (others => '0');
+    signal stage5_cg           : unsigned(7 downto 0) := (others => '0');
+    signal stage5_cb           : unsigned(7 downto 0) := (others => '0');
+@@ -421,7 +424,7 @@
+    signal stage6_valid        : std_logic := '0';
+    signal stage6_alphabit     : std_logic := '0';
+    signal stage6_x            : unsigned(9 downto 0) := (others => '0');
+-   signal stage6_y            : unsigned(8 downto 0) := (others => '0');
++   signal stage6_y            : unsigned(9 downto 0) := (others => '0');
+    signal stage6_cr           : std_logic_vector(7 downto 0) := (others => '0');
+    signal stage6_cg           : std_logic_vector(7 downto 0) := (others => '0');
+    signal stage6_cb           : std_logic_vector(7 downto 0) := (others => '0');
+@@ -476,7 +479,7 @@
+       itagram : entity mem.RamMLAB
+       GENERIC MAP 
+       (
+-         width                               => 10,
++         width                               => 11,
+          widthad                             => 8
+       )
+       PORT MAP (
+@@ -493,10 +496,10 @@
+                   stage0_textaddr(i)(15 downto 11) & stage0_textaddr(i)(5 downto 3);
+       
+       
+-      tag_data(i) <= drawMode(8) & stage0_textaddr(i)(19 downto 17) & stage0_textaddr(i)(10 downto 5) when drawMode(8) = '0' else
+-                     drawMode(8) & stage0_textaddr(i)(19 downto 16) & stage0_textaddr(i)(10 downto 6);
++      tag_data(i) <= drawMode(8) & stage0_textaddr(i)(20 downto 17) & stage0_textaddr(i)(10 downto 5) when drawMode(8) = '0' else
++                     drawMode(8) & stage0_textaddr(i)(20 downto 16) & stage0_textaddr(i)(10 downto 6);
+       
+-      stage0_textaddr(i)(19 downto 11) <= drawMode(4) & stage0_v_array(i);
++      stage0_textaddr(i)(20 downto 11) <= drawMode(11) & drawMode(4) & stage0_v_array(i);
+       stage0_textaddr(i)(0)            <= '0';
+       stage0_textaddr(i)(10 downto 1)  <= (drawMode(3 downto 0) & "000000") + stage0_u_array(i)(7 downto 2) when drawMode(8 downto 7) = "00" else
+                                           (drawMode(3 downto 0) & "000000") + stage0_u_array(i)(7 downto 1) when drawMode(8 downto 7) = "01" else
+@@ -718,7 +721,7 @@
+                      cache_address_a <= tag_addr(0);
+                      
+                      reqVRAMXPos <= stage0_textaddr(0)(10 downto 1);
+-                     reqVRAMYPos <= stage0_textaddr(0)(19 downto 11);
++                     reqVRAMYPos <= stage0_textaddr(0)(20 downto 11);
+                      reqVRAMSize <= to_unsigned(1, 11);
+                   end if;
+                
+@@ -736,7 +739,7 @@
+                   cache_address_a <= tag_addr_1(selectIndex);
+                   
+                   reqVRAMXPos <= stage0_textaddr_1(selectIndex)(10 downto 1);
+-                  reqVRAMYPos <= stage0_textaddr_1(selectIndex)(19 downto 11);
++                  reqVRAMYPos <= stage0_textaddr_1(selectIndex)(20 downto 11);
+                   reqVRAMSize <= to_unsigned(1, 11);  
+                
+                when REQUESTTEXTURE =>
+@@ -1138,7 +1141,7 @@
+    end process;
+ 
+    -- 573 PROBE 0017b: marker bits "011" + 3 sticky-491 flags (inY/reqY/y) + live textPalReqY[8:0].
+-   pixelColor  <= ('0' & "11" & saw_inY491 & saw_reqY491 & saw_y491 & '0' & std_logic_vector(textPalReqY))
++   pixelColor  <= ('0' & "11" & saw_inY491 & saw_reqY491 & saw_y491 & '0' & std_logic_vector(textPalReqY(8 downto 0)))
+                      when (DBG_ROWDUMP = '1' and probe_armed = '1' and drawMode(8) = '0' and drawMode(7) = '0')
+                   else stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
+    pixelColor2 <= "0000000" & stage6_cb(2 downto 0) & stage6_cg(2 downto 0) & stage6_cr(2 downto 0);

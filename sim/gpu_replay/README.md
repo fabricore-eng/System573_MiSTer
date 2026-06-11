@@ -324,3 +324,32 @@ All via VHDL-2008 external names (no `psx/` edit). `DBG_TAP8` taps the per-`i`
 combinational arrays at the dpram INSTANCE PORTS
 (`gfiltermemmult(0).iclutram.{address_b,q_b}`, `.icache.q_b`) because NVC folds the
 arch-level array signals away; `run.sh` passes `--no-collapse` to keep names live.
+
+### Milestone 6 — the 2MB-VRAM red/green proof (psx_patches/0021), 2026-06-10.
+
+The 573's CXD8561Q drives **2 MB of VRAM (1024 rows)**; the vendored core
+implements 1 MB and truncates Y to 9 bits, so the boot's upper-half uploads
+(comic panels at y>=512) WRAP onto y-512 and overwrite the font atlas — the
+write-side "73% never land / cols 14-15 survive" signature. New rig pieces:
+
+- `gen_vram2mb.py` — builds the replay stream from the MAME 2MB dump
+  (`local/mame_gate_hunt/gh_vram_comic.bin`): the 3 boot font uploads (A0
+  (384,0)/(384,64)/(384,128)) + the 2 wrapping panel uploads (A0 (320,512) and
+  (416,512), 92x240) + 3 C0 readbacks (atlas column + both panel homes).
+  Generated stream embeds game data — never commit it.
+- tb_gpu_replay `rb_tap` — always-on tap logging every vram2cpu (GP0 C0) word
+  to `build/vram2cpu_out.log`; the GPU's own read path is the verdict channel.
+- `check_vram2mb.py` — numeric red/green assertions vs the MAME dump (and the
+  real-HW dump `local/glyph_dma/vram_run3.bin`).
+- `run_vram2mb.sh` — drives RED (0001-0020 tree) -> GREEN (0001-0021) -> the
+  do-no-harm byte-identity gate (fill demo + 4bpp CLUT texrect over ss_vram).
+
+Headline numbers (see `docs/audits/2026-06-10-vram-2mb-redgreen.md`): the
+pure-forensic wrap model predicts the real-HW atlas region **8192/8192 px
+(100.00%)** vs 43.74% for the no-bug model; the RED sim reproduces the HW dump
+on **8096/8096** sim-covered cells and corrupts 60.79% of the font cells; the
+GREEN sim is 100.00% correct on every region and the y<512 do-no-harm streams
+are byte-identical across the patch.
+
+NB `DBG_TAP8` now ships **false** (as always documented); its external-name
+aliases are typed at stock 9-bit widths and need re-typing on a 0021 tree.

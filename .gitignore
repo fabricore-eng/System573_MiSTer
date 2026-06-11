@@ -85,3 +85,10 @@ s573_check.qsf
 cfg/
 nvram/
 snap/
+
+# gpu_replay rig outputs: per-experiment build dirs/logs + the generated
+# 2MB-proof stream (embeds MAME game data -- never commit)
+/sim/gpu_replay/build*/
+/sim/gpu_replay/build*.runlog
+/sim/gpu_replay/build_vram2mb_cmd.txt
+/sim/gpu_replay/repro_evidence/

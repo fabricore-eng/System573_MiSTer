@@ -92,7 +92,15 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # 0020 = SDRAM CAS latency 2->3: CL2 @ 101.6 MHz is out of SDR spec; the 573's
           # continuous flash traffic collects the margin debt as deterministic low-bit
           # miscapture on GPU-DMA reads (clut 491 -> 480/481). Audit: docs/audits/2026-06-10.
-          "$ROOT/psx_patches/0020-sdram-cas-latency-3.patch" )
+          "$ROOT/psx_patches/0020-sdram-cas-latency-3.patch" \
+          # 0021 = 2 MB VRAM (the 573's CXD8561Q drives 1024 VRAM rows; the vendored core
+          # implements 512 and truncates Y to 9 bits, so boot-time uploads to y>=512 WRAP
+          # onto y-512 and corrupt the visible half -- the font-atlas/garble root cause).
+          # Widens dst/src/scissor/texpage/CLUT Y to 10 bits per MAME psxgpu (gputype 2)
+          # and maps row-bit-9 to DDR3 page 0x08 (+8MB; clear of memcard/SPU/framebuffer
+          # pages). Scanout untouched (display reads stay bit-identical). Red/green sim
+          # proof: sim/gpu_replay/run_vram2mb.sh + docs/audits/2026-06-10-vram-2mb-redgreen.md.
+          "$ROOT/psx_patches/0021-gpu-2mb-vram-10bit-y.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

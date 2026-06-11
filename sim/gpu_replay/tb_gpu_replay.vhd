@@ -84,7 +84,11 @@ architecture sim of tb_gpu_replay is
    -- quad and its control rect can be tapped head-to-head. (M5 result: with the
    -- savestate VRAM both resolve CLUT 0x7ac0 correctly -> pixelColor = CLUT[idx],
    -- NO index<<5 leak; see the rig README "Milestone 5".)
-   constant DBG_TAP8 : boolean := true;
+   -- NB: ships OFF (matches the README). The aliases below are typed at the
+   -- STOCK (1MB-VRAM, 9-bit-Y) widths; with psx_patches/0021 (2MB VRAM, 10-bit Y)
+   -- applied, several would need width bumps (textPal*/stage*_y -> 9->10 bits).
+   -- Re-type them for whichever tree you are probing before turning this on.
+   constant DBG_TAP8 : boolean := false;
 
    -- RIG FIX gate (ships ON). Makes the POLY path (GP0 0x2C/0x28) render in NVC.
    -- WHY: gpu.vhd wires the shared dividers through `inout div_type` ports on
@@ -850,5 +854,31 @@ begin
          end if;
       end process;
    end generate;
+
+   -- -----------------------------------------------------------------------
+   -- vram2cpu (GP0 C0) READBACK tap -- always on, zero-config. The tb holds
+   -- DMA_GPU_readEna='1', so the GPU's vram2cpu fifo drains continuously; this
+   -- logs every 32-bit word the fifo hands out (one 8-hex word per line) to
+   -- build/vram2cpu_out.log. A command stream that ends in GP0 C0 reads thus
+   -- dumps any VRAM region through the GPU's OWN read path -- the checker for
+   -- the 2MB-VRAM red/green proof (psx_patches/0021) parses this file. When the
+   -- stream has no C0, the file is simply empty. Width-independent (the fifo is
+   -- 32-bit in both the stock and the 0021 tree). Same sample pattern as the
+   -- upstream goutput block in gpu_vram2cpu.vhd (Dout valid while Rd='1' on a
+   -- fall-through fifo).
+   -- -----------------------------------------------------------------------
+   rb_tap : process(clk2x)
+      alias t_rbrd  is << signal .tb_gpu_replay.igpu.vram2cpu_Fifo_Rd   : std_logic >>;
+      alias t_rbdat is << signal .tb_gpu_replay.igpu.vram2cpu_Fifo_Dout : std_logic_vector(31 downto 0) >>;
+      file frb       : text open write_mode is "vram2cpu_out.log";
+      variable l     : line;
+   begin
+      if rising_edge(clk2x) then
+         if (t_rbrd = '1') then
+            write(l, to_hstring(t_rbdat));
+            writeline(frb, l);
+         end if;
+      end if;
+   end process;
 
 end architecture;
