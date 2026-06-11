@@ -63,8 +63,16 @@ cddata:
 	@sh gen_cddata.sh >/dev/null 2>&1 || true
 atapi_cdread: cddata
 
+# Live sim marker (cockpit 'simulating' indicator, hub 4e87e6b): push-not-scrape —
+# the suite self-reports start/stop; trap guarantees stop on crash/^C. Best-effort:
+# a missing hub tool must never break the suite.
+COORD := $(HOME)/Dev/mister-dev-hub/tools/dell_coord.sh
+SIMKEY ?= 573
+
 all:
-	@fail=0; \
+	@[ -x "$(COORD)" ] && "$(COORD)" sim $(SIMKEY) start "iverilog suite ($(words $(TESTS)) tests)" >/dev/null 2>&1 || true; \
+	trap '[ -x "$(COORD)" ] && "$(COORD)" sim $(SIMKEY) stop >/dev/null 2>&1 || true' EXIT INT TERM; \
+	fail=0; \
 	for t in $(TESTS); do \
 	  $(MAKE) -s $$t || fail=1; \
 	done; \
