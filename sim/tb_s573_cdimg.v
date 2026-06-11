@@ -4,10 +4,13 @@
 // Models the MiSTer CUECHD sd-block HOST: when the reader pulses cd_req it ACKs,
 // then streams a synthetic RAW 2352-byte sector (1176 16-bit words) over cd_wr/
 // cd_data, exactly like the upstream PSX cd_top SFETCH state machine receives it.
-// Asserts: (1) the reader requests the LBA atapi handed it; (2) it keeps ONLY the
-// 2048 user-data bytes (raw word index 8..1031, i.e. byte offset 16) in its sector
-// buffer, dropping the 16-byte sync/header AND the 288-byte EDC/ECC tail; (3)
-// sec_ready rises when the sector is buffered.
+// Asserts: (1) the reader requests the LBA atapi handed it CONVERTED to Main's
+// MSF space (sd_lba1 = user LBA + 150: Main's PSX CD service fakes a 150-sector
+// track-1 pregap and serves zeros below it - support/psx/psx.cpp 250828:142-146,
+// 479-481, 517); (2) it keeps ONLY the 2048 user-data bytes (raw word index
+// 8..1031, i.e. byte offset 16) in its sector buffer, dropping the 16-byte
+// sync/header AND the 288-byte EDC/ECC tail; (3) sec_ready rises when the
+// sector is buffered.
 module tb_s573_cdimg;
     reg         clk = 0, rst = 1;
     reg         sec_req = 0;
@@ -41,13 +44,16 @@ module tb_s573_cdimg;
     endfunction
 
     integer w;
-    // Stream one raw sector to the reader, mimicking the HPS handshake.
+    // Stream one raw sector to the reader, mimicking the HPS handshake. The
+    // argument is the EXPECTED MSF-space request (user LBA + 150); content is
+    // served indexed at (lba - 150), exactly like Main's psx_read_cd
+    // (psx.cpp:517 read_lba = lba - 150; zeros below 150 per psx.cpp:479-481).
     task host_serve(input [31:0] lba);
         begin
             // wait for the reader's request
             wait (cd_req === 1'b1);
             if (cd_lba !== lba) begin
-                $display("FAIL: cd_lba = %0d (expected %0d)", cd_lba, lba);
+                $display("FAIL: cd_lba = %0d (expected MSF-space %0d)", cd_lba, lba);
                 errors = errors + 1;
             end
             @(negedge clk); cd_ack = 1'b1;       // accept the request
@@ -55,7 +61,8 @@ module tb_s573_cdimg;
             // stream 1176 words
             for (w = 0; w < 1176; w = w + 1) begin
                 @(negedge clk);
-                cd_data = {raw_byte(lba, 2*w+1), raw_byte(lba, 2*w)};
+                cd_data = (lba < 32'd150) ? 16'h0000
+                        : {raw_byte(lba - 32'd150, 2*w+1), raw_byte(lba - 32'd150, 2*w)};
                 cd_wr   = 1'b1;
                 @(negedge clk);
                 cd_wr   = 1'b0;
@@ -77,12 +84,13 @@ module tb_s573_cdimg;
     initial begin
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; @(negedge clk);
 
-        LBA = 32'd16;            // ISO9660 PVD LBA -- a realistic request
+        LBA = 32'd16;            // ISO9660 PVD LBA (USER space) -- a realistic request
         // kick a fetch
         @(negedge clk); sec_lba = LBA; sec_req = 1'b1;
         @(negedge clk); sec_req = 1'b0;
 
-        host_serve(LBA);
+        // the host must see the request in Main's MSF space: user + 150
+        host_serve(LBA + 32'd150);
 
         // reader should signal the sector is ready
         wait (sec_ready === 1'b1);

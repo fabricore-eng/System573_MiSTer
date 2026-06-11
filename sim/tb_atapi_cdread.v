@@ -14,6 +14,12 @@
 //   * If that fixture is absent, the host BFM synthesises a MODE1/2352 sector whose
 //     user area is a deterministic pattern with the SAME ISO9660 PVD signature at
 //     LBA 16, so the full data path is still exercised and `make` stays green.
+//
+// HOST CONTRACT (support/psx/psx.cpp, Main 250828): sd_lba1 is MSF space (user
+// LBA + 150 - the fake track-1 pregap, psx.cpp:142-146/250). psx_read_cd serves
+// ZEROS for lba < 150 without touching the image (psx.cpp:479-481) and reads the
+// image at read_lba = lba - 150 (psx.cpp:517). The BFM models exactly that; the
+// fixture/synthetic content stays indexed in USER space (sector 16 = the PVD).
 module tb_atapi_cdread;
     reg         clk = 0, rst = 1;
     reg         sel = 0, we = 0, re = 0;
@@ -120,6 +126,8 @@ module tb_atapi_cdread;
     endfunction
 
     // ---- host BFM: serve one raw 2352-byte sector when the reader requests it ----
+    // Main's psx_read_cd: zeros below MSF 150 (psx.cpp:479-481), image content
+    // at (lba - 150) otherwise (psx.cpp:517). cd_lba is expected in MSF space.
     integer w;
     task host_serve_one;
         reg [31:0] lba;
@@ -130,7 +138,8 @@ module tb_atapi_cdread;
             @(negedge clk); cd_ack = 1'b0;
             for (w = 0; w < 1176; w = w + 1) begin
                 @(negedge clk);
-                cd_data = {disc_raw(lba, 2*w+1), disc_raw(lba, 2*w)};
+                cd_data = (lba < 32'd150) ? 16'h0000        // psx.cpp:479-481 zero zone
+                        : {disc_raw(lba - 32'd150, 2*w+1), disc_raw(lba - 32'd150, 2*w)};
                 cd_wr   = 1'b1;
                 @(negedge clk); cd_wr = 1'b0;
             end

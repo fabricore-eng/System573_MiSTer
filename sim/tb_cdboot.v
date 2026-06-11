@@ -35,10 +35,25 @@
 // TOC/READ CAPACITY content comes from the mounted-disc metadata: s573_cdtoc
 // latches the Main 250828 disk_t blob (ioctl index 251: word0 track_count,
 // word1 total_lba, track records at word 4t) and answers atapi.v's track-start
-// queries; the TB feeds it the hypbbc2p fixture (1 track, lead-out 16680) the
-// way emu.sv streams a real download. RED HISTORY: before the s573_cdtoc fix
-// the RTL served a fixed track-01/LBA-0 TOC and a placeholder capacity - the
-// [5]/[8] content checks here were the true-red gate (see git history).
+// queries; the TB feeds it the hypbbc2p fixture the way emu.sv streams a real
+// download. RED HISTORY: before the s573_cdtoc fix the RTL served a fixed
+// track-01/LBA-0 TOC and a placeholder capacity - the [5]/[8] content checks
+// here were the true-red gate (see git history).
+//
+// LBA SPACES (support/psx/psx.cpp, Main 250828 ae6dc92 - audited at source):
+//   * the BIOS/ATAPI world is USER space (MAME ground truth: PVD at LBA 16,
+//     lead-out 16680, READ CAPACITY last-LBA 16679 for hypbbc2p);
+//   * Main's CD service is MSF space = user + 150: load_chd (psx.cpp:142-146)
+//     fakes a 150-sector track-1 pregap (indexes[1]=150, start=150) and
+//     load_cue does the same ("implicit 2 seconds pregap", psx.cpp:250);
+//   * psx_read_cd (psx.cpp:479-481) serves ZEROS for lba < tracks[0].start
+//     (=150) WITHOUT touching the image, and reads the image at
+//     read_lba = lba - 150 (psx.cpp:517);
+//   * disk_t total_lba = table->end (psx.cpp:408) is MSF space (user+150);
+//     track[0].start_lba is FORCED 0 = user space (psx.cpp:413).
+// The host BFM and the disk_t fixture below model EXACTLY that contract, so
+// RTL that forwards user-space LBAs to sd_lba1 unconverted fails here the same
+// way silicon did (PVD reads zeros -> 'CD001' check fails -> -11 CDR BAD).
 module tb_cdboot;
     reg         clk = 0, rst = 1;
     reg         ide_rst = 0;
@@ -50,7 +65,8 @@ module tb_cdboot;
     integer     errors = 0;
 
     // ---- the hypbbc2p disc fixture (MAME adjudication numbers) ----
-    localparam [31:0] LEADOUT_LBA = 32'd16680;   // READ TOC(0xAA) lead-out
+    localparam [31:0] LEADOUT_LBA = 32'd16680;   // READ TOC(0xAA) lead-out (USER space)
+    localparam [31:0] PREGAP      = 32'd150;     // Main's fake track-1 pregap (psx.cpp:142-146)
     localparam [7:0]  TRACK_COUNT = 8'd1;
 
     // atapi <-> cdimg sector interface
@@ -150,21 +166,25 @@ module tb_cdboot;
     endtask
 
     // ---- the cdinfo (ioctl 251) fixture: Main 250828 disk_t for hypbbc2p ----
-    // word0 = track_count | BCD<<8; word1 = total_lba (the lead-out, no pregap
-    // offset - psx.cpp send_cue_and_metadata zeroes track 1's start); track t
-    // at words 4t..4t+3: start_lba, end_lba, {minBCD,secBCD,isAudio<<16}, commit.
+    // Values EXACTLY as send_cue_and_metadata (psx.cpp:390-427) builds them for
+    // the mounted CHD: word0 = track_count | BCD<<8; word1 = total_lba =
+    // table->end = USER lead-out + 150 (MSF space - the fake track-1 pregap,
+    // load_chd psx.cpp:142-156); track t at words 4t..4t+3: start_lba (track 1
+    // FORCED 0 by psx.cpp:413 "i ? start : 0"; tracks 2+ MSF space), end_lba
+    // (MSF space), {minBCD,secBCD,isAudio<<16}, commit. ATAPI must report USER
+    // space (MAME: 16680/16679) -> s573_cdtoc owns the -150 normalization.
     task ti_word(input [8:0] a, input [31:0] d);
         begin @(negedge clk); ti_addr=a; ti_data=d; ti_write=1; @(negedge clk); ti_write=0; end
     endtask
     task load_cdinfo;
         begin
             ti_word(9'd0, {16'h0000, 8'h01, TRACK_COUNT});  // track_count=1 (BCD 01)
-            ti_word(9'd1, LEADOUT_LBA);                     // total_lba = 16680
-            ti_word(9'd2, 32'h00000342);                    // total MSF BCD (3:42) - unused here
+            ti_word(9'd1, LEADOUT_LBA + PREGAP);            // total_lba = 16830 (MSF space)
+            ti_word(9'd2, 32'h00000344);                    // total MSF BCD (3:44 = 16830) - unused here
             ti_word(9'd3, 32'h00000000);                    // libcrypt/region/reset
-            ti_word(9'd4, 32'd0);                           // track 1 start_lba = 0
-            ti_word(9'd5, LEADOUT_LBA - 1);                 // track 1 end_lba
-            ti_word(9'd6, 32'h00000002);                    // MSF BCD, isAudio(bit16)=0 -> data
+            ti_word(9'd4, 32'd0);                           // track 1 start_lba = 0 (Main forces 0)
+            ti_word(9'd5, LEADOUT_LBA + PREGAP - 1);        // track 1 end_lba = 16829 (MSF space)
+            ti_word(9'd6, 32'h00000002);                    // MSF BCD 00:02 (=LBA 150), isAudio(bit16)=0
             ti_word(9'd7, 32'd0);                           // commit track 1
         end
     endtask
@@ -198,6 +218,14 @@ module tb_cdboot;
     endfunction
 
     // ---- host BFM: ms-scale-late sector service ----
+    // Models MAIN'S ACTUAL psx_read_cd contract (psx.cpp, Main 250828):
+    //   * sd_lba1 arrives in MSF space (user + 150);
+    //   * lba < tracks[0].start (=150) -> 2352 ZERO bytes, image NOT touched
+    //     (psx.cpp:479-481);
+    //   * otherwise the image is read at read_lba = lba - 150 (psx.cpp:517).
+    // RED HISTORY: the pre-fix BFM indexed content directly at cd_lba (user
+    // space), which kept sim green while silicon's PVD read (user LBA 16 sent
+    // raw) hit the zero zone -> 'CD001' check failed -> -11 CDR BAD.
     reg host_slow = 1;
     integer hw;
     reg [31:0] hlba;
@@ -209,7 +237,8 @@ module tb_cdboot;
         @(negedge clk); cd_ack = 1'b0;
         for (hw = 0; hw < 1176; hw = hw + 1) begin
             @(negedge clk);
-            cd_data = {raw_byte(hlba, 2*hw+1), raw_byte(hlba, 2*hw)};
+            cd_data = (hlba < PREGAP) ? 16'h0000            // psx.cpp:479-481 zero zone
+                    : {raw_byte(hlba - PREGAP, 2*hw+1), raw_byte(hlba - PREGAP, 2*hw)};
             cd_wr   = 1'b1;
             @(negedge clk); cd_wr = 1'b0;
         end
