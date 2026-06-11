@@ -86,8 +86,11 @@ entity tb_573_ssreplay is
       -- (the model decodes ONLY DDRAM_ADDR(22:0), so the high savestate address
       -- aliases deterministically to this low data[] word -- no VRAM collision.)
       SS_WORD_BASE : integer := 16#800000#;
-      -- 573 has 4 MB RAM; core supports 2 MB ('0') or 8 MB ('1').
+      -- 573 has 4 MB RAM; the core natively decodes 2 MB ('0') or 8 MB ('1').
       RAM8MB      : std_logic := '1';
+      -- 4 MB main-RAM mask on top of the 8 MB decode (psx_patches/0022) -- matches the
+      -- .rbf (emu.sv S573_RAM4MB=1). '0' = the old (wrong) 8 MB linear decode.
+      RAM4MB      : std_logic := '1';
       -- Sim accelerator (TURBO_MEM/COMP/CACHE).
       TURBO       : std_logic := '1';
       -- VRAM (DDR) model read latency in cycles for the GPU path. 0 = near-instant.
@@ -488,6 +491,7 @@ begin
       exe_stackpointer      => exe_stackpointer,
       fastboot              => '0',
       ram8mb                => RAM8MB,
+      ram4mb                => RAM4MB,
       TURBO_MEM             => TURBO,
       TURBO_COMP            => TURBO,
       TURBO_CACHE           => TURBO,

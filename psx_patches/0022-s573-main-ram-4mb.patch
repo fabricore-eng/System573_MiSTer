@@ -1,0 +1,91 @@
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -30,6 +30,7 @@
+       exe_stackpointer      : in  unsigned(31 downto 0);
+       fastboot              : in  std_logic;
+       ram8mb                : in  std_logic;
++      ram4mb                : in  std_logic := '0'; -- s573 (psx_patches/0022): 4 MB main RAM -- mask RAM-region address bit 22 (CPU + DMA) on top of the 8 MB decode
+       TURBO_MEM             : in  std_logic;
+       TURBO_COMP            : in  std_logic;
+       TURBO_CACHE           : in  std_logic;
+@@ -447,7 +448,8 @@
+    signal mem_tagvalids          : std_logic_vector(3 downto 0);
+    
+    signal ram_next_cpu           : std_logic;
+-   
++   signal ram_Adr_pre            : std_logic_vector(24 downto 0); -- s573 (psx_patches/0022): pre-4MB-mask ram address
++
+    signal ram_cpu_dataWrite      : std_logic_vector(31 downto 0);
+    signal ram_cpu_Adr            : std_logic_vector(24 downto 0);
+    signal ram_cpu_be             : std_logic_vector(3 downto 0);
+@@ -1272,6 +1274,7 @@
+       TURBO                => TURBO_COMP,
+       TURBO_CACHE          => TURBO_CACHE,
+       ram8mb               => ram8mb,
++      ram4mb               => ram4mb,
+       ignoreCDTiming       => ignoreDMACDTiming,
+       
+       canDMA               => canDMA,
+@@ -1350,10 +1353,21 @@
+    ram_dma       <= '1'                when (cpuPaused = '1') else '0';      
+    ram_cache     <= '0'                when (cpuPaused = '1') else ram_cpu_cache;    
+    
+-   ram_Adr       <=   "00" & ram_dma_Adr(22 downto 0) when (cpuPaused = '1' and ram8mb = '1') else 
+-                    "0000" & ram_dma_Adr(20 downto 0) when (cpuPaused = '1' and ram8mb = '0') else 
++   ram_Adr_pre   <=   "00" & ram_dma_Adr(22 downto 0) when (cpuPaused = '1' and ram8mb = '1') else
++                    "0000" & ram_dma_Adr(20 downto 0) when (cpuPaused = '1' and ram8mb = '0') else
+                     ram_cpu_Adr(24 downto 23) &        ram_cpu_Adr(22 downto 0) when (ram8mb = '1') else
+                     ram_cpu_Adr(24 downto 23) & "00" & ram_cpu_Adr(20 downto 0);
++
++   -- s573 (psx_patches/0022): ram4mb masks RAM-region (24:23 = "00") address bit 22 on
++   -- top of the 8 MB decode -> 4 MB main RAM, +4MB accesses alias the base image. This
++   -- is the single chokepoint for CPU loads/stores, icache fills and DMA reads; DMA
++   -- write-back is masked at the dma.vhd fifoOut insert. Matches MAME's per-access DMA
++   -- mask n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp); MAME bus-errors CPU
++   -- accesses above the 4 MB RAM_SIZE window (psx.cpp update_ram_config case 0xc) --
++   -- no bus-error machinery here, so they alias instead (same compromise the core
++   -- already makes for consumer 2 MB, ram8mb = '0'). BIOS "01" / EXE "10" untouched.
++   ram_Adr       <= ram_Adr_pre(24 downto 23) & '0' & ram_Adr_pre(21 downto 0) when (ram4mb = '1' and ram_Adr_pre(24 downto 23) = "00") else
++                    ram_Adr_pre;
+    
+    process (clk1x)
+    begin
+--- a/rtl/psx_mister.vhd
++++ b/rtl/psx_mister.vhd
+@@ -26,6 +26,7 @@
+       exe_stackpointer      : in  unsigned(31 downto 0);
+       fastboot              : in  std_logic;
+       ram8mb                : in  std_logic;
++      ram4mb                : in  std_logic := '0'; -- s573 (psx_patches/0022): 4 MB main RAM -- mask RAM-region address bit 22 (CPU + DMA) on top of the 8 MB decode
+       TURBO_MEM             : in  std_logic;
+       TURBO_COMP            : in  std_logic;
+       TURBO_CACHE           : in  std_logic;
+@@ -335,6 +336,7 @@
+       exe_stackpointer      => exe_stackpointer,
+       fastboot              => fastboot,
+       ram8mb                => ram8mb,
++      ram4mb                => ram4mb,
+       TURBO_MEM             => TURBO_MEM,
+       TURBO_COMP            => TURBO_COMP,
+       TURBO_CACHE           => TURBO_CACHE,
+--- a/rtl/dma.vhd
++++ b/rtl/dma.vhd
+@@ -20,6 +20,7 @@
+       TURBO                : in  std_logic;
+       TURBO_CACHE          : in  std_logic;
+       ram8mb               : in  std_logic;
++      ram4mb               : in  std_logic := '0'; -- s573 (psx_patches/0022): mask RAM writes to 4 MB (n_adrmask 0x3fffff) on top of the 8 MB decode
+       ignoreCDTiming       : in  std_logic;
+       
+       canDMA               : in  std_logic;
+@@ -739,6 +740,10 @@
+                      
+                      if (ram8mb = '0') then
+                         fifoOut_Din(52 downto 51) <= "00";
++                     elsif (ram4mb = '1') then
++                        -- s573 (psx_patches/0022): 4 MB main RAM -- DMA write-back wraps at
++                        -- 4 MB like MAME's n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp)
++                        fifoOut_Din(52) <= '0';
+                      end if;
+                      
+                      if (directionNeg = '1')  then 

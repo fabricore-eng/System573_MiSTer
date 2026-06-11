@@ -54,8 +54,12 @@ entity tb_system573 is
       EXE_OFFSET       : integer   := 16#40800#;    -- EXE body file offset (after 0x800 header)
       EXE_SIZE         : integer   := 16#11000#;    -- EXE body bytes
       EXE_TARGET       : integer   := 16#3C0000#;   -- main-RAM (region 0) dest byte (=0x803c0000)
-      -- 573 has 4 MB RAM; core supports 2 MB ('0') or 8 MB ('1'). Overridable from run.sh.
+      -- 573 has 4 MB RAM; the core natively decodes 2 MB ('0') or 8 MB ('1'). Overridable
+      -- from run.sh. The shipping config is RAM8MB='1' + RAM4MB='1' (below).
       RAM8MB      : std_logic := '1';
+      -- 4 MB main-RAM mask on top of the 8 MB decode (psx_patches/0022) -- matches the
+      -- .rbf (emu.sv S573_RAM4MB=1). '0' = the old (wrong) 8 MB linear decode.
+      RAM4MB      : std_logic := '1';
       -- Sim accelerator (TURBO_MEM/COMP/CACHE). '1' speeds bring-up; set '0' (TURBO=0 in
       -- run.sh) to confirm the integration under realistic memory/cache/DMA timing.
       TURBO       : std_logic := '1';
@@ -96,7 +100,19 @@ entity tb_system573 is
       -- observe whether the integrated IRQ10/ISR path services the drive check. Default '0'
       -- (legacy: ATAPI reads return 0). With INJECT=1 this is ignored (INJECT owns
       -- exp_irq10). Sim-only; the .rbf uses the real atapi.v.
-      ATAPI_EMU    : std_logic := '0'
+      ATAPI_EMU    : std_logic := '0';
+      -- MIRRORTEST ('1'): 4 MB main-RAM mirror red/green checker (psx_patches/0022).
+      -- The 573 has 4 MB main RAM (MAME ksys573.cpp "4M"); MAME masks every DMA RAM
+      -- access with n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp) and the BIOS
+      -- RAM_SIZE config 0xC gives the CPU a 4 MB window (psx.cpp update_ram_config).
+      -- Run with a tiny probe ROM (sim/system573/run_ram_mirror.sh generates it; NOT
+      -- the Konami BIOS) that (a) CPU-writes through the +4 MB alias 0xA0400000 and
+      -- reads back at base, (b) CPU-reads through the alias what was written at base,
+      -- (c) runs an OTC DMA (ch6) clear with MADR pointed at the alias -- then stores
+      -- the three observed values to RAM 0x100/0x104/0x108 and a done flag to 0x10C.
+      -- The checker spies those stores on the ram bus and FAILS the sim unless all
+      -- three round-tripped through the 4 MB mask. Sim-only; never in the .rbf.
+      MIRRORTEST   : std_logic := '0'
    );
 end entity;
 
@@ -660,6 +676,63 @@ begin
    end process;
 
    -- -----------------------------------------------------------------------
+   -- MIRRORTEST checker (generic-gated; see the MIRRORTEST generic comment).
+   -- Spies CPU stores on the ram bus (region "00" = main RAM) for the probe
+   -- ROM's three result cells + done flag, then renders a PASS/FAIL verdict:
+   --   0x100 expect 0x3C3C7E7E  (CPU write via +4MB alias, read back at base)
+   --   0x104 expect 0x12348765  (CPU write at base, read back via the alias)
+   --   0x108 expect 0x00FFFFFF  (OTC DMA end marker, MADR pointed at the alias)
+   -- On the unfixed 8 MB-linear decode (ram8mb=1, no 4 MB mask) the alias
+   -- accesses land at SDRAM 0x4xxxxx instead, so 0x100 reads back the base
+   -- sentinel 0xAAAA5555 and 0x104/0x108 read zero-init RAM -> FAIL (RED).
+   -- -----------------------------------------------------------------------
+   gmirror : if MIRRORTEST = '1' generate
+      signal mirror_done : std_logic := '0';
+   begin
+      mirror_check : process(clk1x)
+         variable r1, r2, r3 : std_logic_vector(31 downto 0) := (others => '0');
+         variable adr        : integer;
+      begin
+         if rising_edge(clk1x) then
+            if ram_ena = '1' and ram_rnw = '0' and ram_Adr(24 downto 23) = "00" then
+               adr := to_integer(unsigned(ram_Adr(22 downto 0)));
+               case adr is
+                  when 16#100# => r1 := ram_dataWrite;
+                  when 16#104# => r2 := ram_dataWrite;
+                  when 16#108# => r3 := ram_dataWrite;
+                  when 16#10C# =>
+                     mirror_done <= '1';
+                     report "MIRRORTEST results: cpu_wr_via_alias=0x" & to_hstring(r1) &
+                            " cpu_rd_via_alias=0x" & to_hstring(r2) &
+                            " otc_dma_via_alias=0x" & to_hstring(r3);
+                     if r1 = x"3C3C7E7E" and r2 = x"12348765" and r3 = x"00FFFFFF" then
+                        report "MIRRORTEST PASS: 4 MB main-RAM mirror active (CPU + DMA mask 0x3fffff)";
+                        std.env.finish;
+                     else
+                        assert false
+                           report "MIRRORTEST FAIL: 4 MB mirror NOT active " &
+                                  "(expected 0x3C3C7E7E/0x12348765/0x00FFFFFF; " &
+                                  "got 0x" & to_hstring(r1) & "/0x" & to_hstring(r2) &
+                                  "/0x" & to_hstring(r3) & ")"
+                           severity failure;
+                     end if;
+                  when others => null;
+               end case;
+            end if;
+         end if;
+      end process;
+
+      mirror_watchdog : process
+      begin
+         wait for 400 us;
+         assert mirror_done = '1'
+            report "MIRRORTEST TIMEOUT: probe ROM never wrote the done flag (0x10C)"
+            severity failure;
+         wait;
+      end process;
+   end generate;
+
+   -- -----------------------------------------------------------------------
    -- DUT: vendored patched PSX core. Tie-offs copied verbatim from the
    -- upstream tb.vhd ipsx_mister, plus the widened EXP1 ports and the full
    -- generic list this psx_mister revision exposes.
@@ -699,6 +772,7 @@ begin
       exe_stackpointer      => exe_stackpointer,
       fastboot              => '0',     -- SCPH-specific patch; OFF for Konami BIOS
       ram8mb                => RAM8MB,
+      ram4mb                => RAM4MB,
       TURBO_MEM             => TURBO, -- sim accelerators (bring-up); TURBO generic, the
       TURBO_COMP            => TURBO, -- .rbf never uses these. Note: these mainly help
       TURBO_CACHE           => TURBO, -- CACHED accesses; the BIOS boot is largely uncached

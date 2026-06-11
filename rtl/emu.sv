@@ -708,6 +708,18 @@ localparam BIOS_START = 8388608;
 // word; SDRAM byte address = FLASH_START + (word << 1).
 localparam [26:0] FLASH_START = 27'h0100_0000;
 
+// S573 main RAM is 4 MB (8x KM48V514; MAME mame0288 ksys573.cpp L2600 ram "4M"), but the
+// vendored core natively decodes only 2 MB (ram8mb=0) or 8 MB linear (ram8mb=1) -- so on
+// ram8mb=1 any access at KUSEG 0x00400000+ silently hit the WRONG SDRAM cells (and MAME
+// masks every DMA RAM access with n_adrmask = ramsize-1 = 0x3fffff, cpu/psx/dma.cpp).
+// psx_patches/0022 adds ram4mb: on top of the 8 MB decode it masks RAM-region address
+// bit 22 (CPU + icache + DMA) so +4MB accesses alias the 4 MB image. MAME bus-errors CPU
+// accesses above the 4 MB RAM_SIZE window (psx.cpp update_ram_config case 0xc, the 0xC
+// nibble the Konami BIOS programs); we alias instead (no bus-error machinery) -- the same
+// compromise the core makes for consumer 2 MB. Red/green: sim/system573/run_ram_mirror.sh.
+// Set 1'b0 to restore the old (wrong) 8 MB linear behavior if a regression is suspected.
+localparam S573_RAM4MB = 1'b1;
+
 reg [26:0] ramdownload_wraddr;
 reg [31:0] ramdownload_wrdata;
 reg        ramdownload_wr;
@@ -1181,7 +1193,8 @@ psx
    .exe_file_size(exe_file_size),
    .exe_stackpointer(exe_stackpointer),
    .fastboot(1'b0),        // S573: Konami BIOS is not an SCPH BIOS -- fastboot patch OFF
-   .ram8mb(1'b1),          // S573: 4 MB main RAM (matches the NVC boot sim)
+   .ram8mb(1'b1),          // 8 MB window decode (the core's only full-width mode) ...
+   .ram4mb(S573_RAM4MB),   // ... masked to the 573's true 4 MB RAM (psx_patches/0022; see S573_RAM4MB)
    .TURBO_MEM(TURBO_MEM),
    .TURBO_COMP(TURBO_COMP),
    .TURBO_CACHE(TURBO_CACHE),

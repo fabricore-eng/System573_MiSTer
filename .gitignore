@@ -54,6 +54,7 @@ sim/system/out/
 # NVC sim build artifacts
 sim/nvc/build/
 sim/system573/build/
+sim/system573/build_mirror/
 sim/system573_ssreplay/build/
 sim/gpu_replay/build/
 sim/gpu_replay/__pycache__/

@@ -100,7 +100,16 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # and maps row-bit-9 to DDR3 page 0x08 (+8MB; clear of memcard/SPU/framebuffer
           # pages). Scanout untouched (display reads stay bit-identical). Red/green sim
           # proof: sim/gpu_replay/run_vram2mb.sh + docs/audits/2026-06-10-vram-2mb-redgreen.md.
-          "$ROOT/psx_patches/0021-gpu-2mb-vram-10bit-y.patch" )
+          "$ROOT/psx_patches/0021-gpu-2mb-vram-10bit-y.patch" \
+          # 0022: 4 MB main-RAM decode (PLATFORM.md Main RAM row, constants-class bug #3).
+          # The 573 has 4 MB RAM (MAME ksys573.cpp "4M"); the pristine core decodes only
+          # 2 MB (ram8mb=0) or 8 MB linear (ram8mb=1), so +4MB accesses silently hit the
+          # wrong SDRAM cells. Adds an opt-in ram4mb port (default '0' = pristine
+          # behavior): masks RAM-region address bit 22 at the psx_top ram_Adr chokepoint
+          # (CPU + icache + DMA reads) and at the dma.vhd write-back fifo insert --
+          # matching MAME's DMA n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp).
+          # emu.sv enables it via S573_RAM4MB. Red/green: sim/system573/run_ram_mirror.sh.
+          "$ROOT/psx_patches/0022-s573-main-ram-4mb.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
