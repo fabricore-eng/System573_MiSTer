@@ -5,9 +5,15 @@
   device set to CD-ROM, the BIOS runs the CD installer which re-programs the (now
   WRITABLE) onboard flash from the disc and writes an "installed" signature to NVRAM.
 
-  hypbbc2p does NOT check its X76F100 security cassette (same Bishi-Bashi family as
-  hyperbbc, whose cassette lines are repurposed as lamp strobes), and our x76f100.v
-  already presents the correct blank chip -- so NO .u1 (ioctl index 4) is loaded.
+  hypbbc2p DOES run an in-game X76F100 security check (game fn 0x80036ec4, disassembled
+  in workflow w135q1s92): it reads the cassette with the plaintext read password
+  e9 34 df 40 7a d1 a7 ff and checks data[0:2]=="JA" + data[4]==~(d0+d1)&0xff. A blank
+  chip (read pw = 0) NAKs -> the game returns -3 = the on-screen "-3N INCORRECT SECURITY
+  CASSETTE" wall. We therefore load a SYNTHESIZED X76F100 .u1 (tools/gen_seccart_u1.py;
+  132 B, region JAA) on ioctl index 4 (= seceep per emu.sv:693; a 132-B image latches as
+  X76F100 per the >=560 ZS01 / >=256 F041 / else F100 size tiers). The .u1 is a token
+  reconstructed entirely from plaintext the game itself carries -- not a copyrighted dump
+  (the real gx908ja.u1 is BAD_DUMP and irrelevant).
 
   TEST PROCEDURE (de-confounded: warm-reboot the MiSTer, /proc/uptime < 60s, then ONE
   load via this .mgl):
@@ -29,6 +35,7 @@
   <file delay="1" type="f" index="0" path="/media/fat/games/System573/573bios.bin"/>
   <file delay="1" type="f" index="2" path="/media/fat/games/System573/flash16m_blank.bin"/>
   <file delay="1" type="f" index="3" path="/media/fat/games/System573/nvram8k_blank.bin"/>
+  <file delay="1" type="f" index="4" path="/media/fat/games/System573/hypbbc2p.u1"/>
   <file delay="2" type="s" index="1" path="/media/fat/games/System573/hypbbc2p.chd"/>
   <reset delay="1"/>
 </mistergamedescription>

@@ -102,7 +102,13 @@ module s573_seccart #(
     x76f100 #(.READ_PASSWORD(READ_PASSWORD), .WRITE_PASSWORD(WRITE_PASSWORD)) eeprom100 (
         .clk(clk), .rst(rst),
         .cs((sel041 || sel_zs01) ? 1'b1 : eeprom_cs), .sec_rst(d_q[3]),
-        .scl(d_q[1]), .sda_i(d_q[0]), .sda_o(sda100_o)
+        .scl(d_q[1]), .sda_i(d_q[0]), .sda_o(sda100_o),
+        // All three models are loaded unconditionally (cart_type may still be settling
+        // as the image streams in); each consumes only the bytes it understands. The
+        // x76f100 image is <=132 B so it takes the low 10 addr bits; higher addresses
+        // (a 548-B F041 / 4116-B ZS01 .u1) wrap harmlessly into its unused body and the
+        // read-back mux ignores eeprom100 anyway for those cart types.
+        .load_we(load_eep_we), .load_addr(load_eep_addr[9:0]), .load_data(load_eep_data)
     );
 
     x76f041 eeprom041 (
