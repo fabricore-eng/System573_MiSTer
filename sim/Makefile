@@ -71,7 +71,7 @@ COORD := $(HOME)/Dev/mister-dev-hub/tools/dell_coord.sh
 SIMKEY ?= 573
 
 # Progress marker (control-room contract §1c, cockpit f339e46): after EACH test, push
-# '<start-ISO>\tiverilog suite\t<pct>\t<eta_s>\t<done>/<total> <last-test>' to
+# '<start-ISO>\tiverilog suite\t<pct>\t<eta_s>\t<done>/<total> last=<test>' to
 # dell:~/mister-shared/state/progress/$(SIMKEY) so the dashboard bar tracks the suite live.
 # One short ssh per test (~0.5 s x $(words $(TESTS)) — acceptable); SIMPROGRESS=0 opts out.
 # Best-effort like the sim marker: a dead ssh must never break the suite. The trap below
@@ -89,7 +89,7 @@ all:
 	  n=$$((n+1)); \
 	  if [ "$(SIMPROGRESS)" != 0 ]; then \
 	    el=$$(( $$(date +%s) - t0 )); pct=$$((100*n/total)); eta=$$((el*(total-n)/n)); \
-	    printf '%s\tiverilog suite\t%s\t%s\t%s/%s %s\n' "$$start_iso" "$$pct" "$$eta" "$$n" "$$total" "$$t" | \
+	    printf '%s\tiverilog suite\t%s\t%s\t%s/%s last=%s\n' "$$start_iso" "$$pct" "$$eta" "$$n" "$$total" "$$t" | \
 	      $(PROG_SSH) "mkdir -p ~/mister-shared/state/progress && cat > ~/$(PROG_FILE)" >/dev/null 2>&1 || true; \
 	  fi; \
 	done; \
