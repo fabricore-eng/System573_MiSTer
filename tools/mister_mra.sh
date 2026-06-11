@@ -114,6 +114,7 @@ cat > "$WD/$NAME.mra" <<MRA
 	<rom index="0" zip="$NAME.zip"><part name="bios.bin" crc="$CB"/></rom>
 	<rom index="2" zip="$NAME.zip"><part name="flash.bin" crc="$CF"/></rom>
 	<rom index="3" zip="$NAME.zip"><part name="nvram.bin" crc="$CN"/></rom>
+	<nvram index="3" size="8192"/>
 ${SEC_ROWS}</misterromdescription>
 MRA
 

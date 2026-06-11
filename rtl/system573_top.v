@@ -62,6 +62,15 @@ module system573_top #(
     input  wire [12:0] nvram_addr,
     input  wire [7:0]  nvram_din,
 
+    // M48T58 NVRAM image SAVE-BACK (hps_io ioctl upload -> config/nvram/*.nvm).
+    // Read port into the timekeeper (write-port idle cycles, 1-cycle latency,
+    // sav_rd_ok=0 -> the saver retries) + a "game wrote the timekeeper" strobe
+    // for emu.sv's dirty flag -> ioctl_upload_req (OSD autosave request).
+    input  wire [12:0] nvram_sav_addr,
+    output wire [7:0]  nvram_sav_dout,
+    output wire        nvram_sav_rd_ok,
+    output wire        nvram_written,
+
     // Security-cartridge image load (e.g. pnchmn2 gqa09ja.u1 / .u6), streamed in at
     // reset. cart_type selects the EEPROM model: 0 = X76F100, 1 = X76F041.
     input  wire [1:0]  sec_cart_type,
@@ -248,8 +257,15 @@ module system573_top #(
         .din(exp1_wdata[7:0]),
         .we(sel_rtc & exp1_we),
         .dout(rtc_dout),
-        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din)
+        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din),
+        .sav_addr(nvram_sav_addr), .sav_dout(nvram_sav_dout), .sav_rd_ok(nvram_sav_rd_ok)
     );
+
+    // Dirty strobe for the SD save-back: any game-side write into the timekeeper
+    // (NVRAM array or clock registers -- both belong to the persisted 8 KB image).
+    // The ioctl image LOAD (nvram_we) deliberately does NOT count: restoring the
+    // .nvm at boot must not mark the content dirty.
+    assign nvram_written = sel_rtc & exp1_we;
 
     // --- Konami ASIC I/O ---
     wire [15:0] asic_dout;

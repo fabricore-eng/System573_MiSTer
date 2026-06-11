@@ -9,6 +9,14 @@
 	<rom index="2" zip="hyperbbc573.zip"><part name="flash.bin" crc="638e1e54"/></rom>
 	<rom index="3" zip="hyperbbc573.zip"><part name="nvram.bin" crc="8e11d196"/></rom>
 
+	<!-- M48T58 NVRAM persistence (high scores / bookkeeping / install state).
+	     Load: AFTER the factory nvram.bin above, Main overlays config/nvram/
+	     hyperbbc573.nvm (if present) as a normal index-3 download; tag order
+	     matters, keep this below the <rom index="3"> row. Save: OSD "Save
+	     settings", or automatically on the next OSD-main-menu visit after the
+	     game writes the timekeeper (the core asserts ioctl_upload_req). -->
+	<nvram index="3" size="8192"/>
+
 	<!-- Button names + default mapping, in the core's J1 joystick-button order, relabelled
 	     to the System 573 JAMMA functions our s573_io reads (matches the corrected emu.sv
 	     mapping; deploys WITH the build that lands those RTL fixes):

@@ -525,6 +525,12 @@ wire [15:0] ioctl_dout;
 wire        ioctl_wr;
 wire  [7:0] ioctl_index;
 reg         ioctl_wait = 0;
+// ioctl UPLOAD (Main arcade_nvm_save -> .mra <nvram index="3">): hps_io reads
+// ioctl_din words FROM the core (M48T58 save-back). See s573_nvram_saver below
+// + docs/audits/2026-06-11-nvram-saveback-gate0.md for the protocol audit.
+wire        ioctl_upload;
+wire [15:0] ioctl_din;
+reg         nvram_dirty = 0;   // game wrote the timekeeper -> request an OSD save
 
 wire [19:0] joy;
 wire [19:0] joy_unmod;
@@ -594,6 +600,15 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(4), .BLKSZ(3)) hps_io
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(ioctl_wait),
 
+	// M48T58 NVRAM save-back (upload, index 3). ioctl_upload_req is EDGE-latched
+	// by hps_io and the latch is cleared when Main polls UIO_CHK_UPLOAD (OSD main
+	// menu, arcade path) -> a level'd dirty flag triggers at most one autosave per
+	// re-arm, no "Saving..." spam (gate-0 audit facts 1.7/2.6).
+	.ioctl_upload(ioctl_upload),
+	.ioctl_din(ioctl_din),
+	.ioctl_upload_req(nvram_dirty),
+	.ioctl_upload_index(8'd3),
+
 	.sd_lba('{sd_lba0, sd_lba1, sd_lba2, sd_lba3}),
 	.sd_blk_cnt('{0,0, 0, 0}),
 	.sd_rd(sd_rd),
@@ -653,6 +668,7 @@ hps_ext hps_ext
 reg bios_download, exe_download, cdinfo_download, code_download;
 reg flash_download, nvram_download;
 reg seceep_download, secser_download;
+reg nvram_upload;
 always @(posedge clk_1x) begin
 	bios_download    <= ioctl_download & (ioctl_index[5:0] == 0);
 	exe_download     <= ioctl_download & (ioctl_index == 1);
@@ -662,6 +678,7 @@ always @(posedge clk_1x) begin
 	secser_download  <= ioctl_download & (ioctl_index == 5);   // security cart DS2401 serial (.u6: 8 B)
 	cdinfo_download  <= ioctl_download & (ioctl_index == 251);
 	code_download    <= ioctl_download & (ioctl_index == 255);
+	nvram_upload     <= ioctl_upload   & (ioctl_index == 3);   // 573 M48T58 NVRAM save-back (8 KB)
 end
 
 reg cart_loaded = 0;
@@ -1501,6 +1518,41 @@ s573_nvram_loader nvram_loader (
    .nv_hi      (nvram_nv_hi)
 );
 
+// 573 M48T58 NVRAM image SAVE-BACK (ioctl upload, index 3 -> config/nvram/
+// <mra>.nvm via the .mra <nvram index="3" size="8192"> tag). The WIDE(1) inverse
+// of the loader above: hps_io latches ioctl_din = {file[2k+1], file[2k]} AT each
+// FIO_FILE_TX_DAT strobe while ioctl_addr==2k, then advances the addr by 2.
+// s573_nvram_saver free-runs a 4-cycle even/odd byte fetch out of the m48t58
+// write-port idle cycles and commits coherent words atomically, so the game-side
+// RTC/NVRAM read port is never disturbed. Protocol + citations:
+// docs/audits/2026-06-11-nvram-saveback-gate0.md.
+wire [12:0] nvram_sav_addr;
+wire [7:0]  nvram_sav_dout;
+wire        nvram_sav_rd_ok;
+wire        nvram_written;
+s573_nvram_saver nvram_saver (
+   .clk        (clk_1x),
+   .save_en    (nvram_upload),
+   .ioctl_addr (ioctl_addr[12:0]),
+   .ioctl_din  (ioctl_din),
+   .sav_addr   (nvram_sav_addr),
+   .sav_dout   (nvram_sav_dout),
+   .sav_rd_ok  (nvram_sav_rd_ok)
+);
+
+// Dirty flag -> hps_io ioctl_upload_req: ask Main for an autosave (it fires on
+// the next OSD-main-menu visit, with Main's own "Saving..." splash). Set on any
+// game write into the timekeeper; cleared when the upload STARTS (a write racing
+// the snapshot simply re-arms the flag -> a later save picks it up). The ioctl
+// image load (held in reset) never sets it: nvram_written is an EXP1 bus strobe
+// and the CPU is in reset for the whole download.
+reg nvram_upload_d = 0;
+always @(posedge clk_1x) begin
+   nvram_upload_d <= nvram_upload;
+   if (nvram_written & ~reset)            nvram_dirty <= 1'b1;
+   else if (nvram_upload & ~nvram_upload_d) nvram_dirty <= 1'b0;
+end
+
 // -----------------------------------------------------------------------------
 // 573 SECURITY CARTRIDGE image load (Feature A). Two WIDE(1) ioctl channels:
 //   index 4 = EEPROM image (.u1): the X76F041 (548 B) / X76F100 (112 B) / ZS01
@@ -1776,6 +1828,10 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
    .nvram_din      (nvram_din),
+   .nvram_sav_addr (nvram_sav_addr),
+   .nvram_sav_dout (nvram_sav_dout),
+   .nvram_sav_rd_ok(nvram_sav_rd_ok),
+   .nvram_written  (nvram_written),
    .sec_cart_type  (sec_cart_type),
    .sec_eep_we     (sec_eep_we),
    .sec_eep_addr   (sec_eep_addr),

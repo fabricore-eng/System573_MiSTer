@@ -44,7 +44,19 @@ module m48t58 #(
     // coincides with the download.
     input  wire        nvram_we,
     input  wire [12:0] nvram_addr,
-    input  wire [7:0]  nvram_din
+    input  wire [7:0]  nvram_din,
+    // NVRAM image SAVE-BACK read port (hps_io ioctl upload -> config/nvram/*.nvm).
+    // Shares the ram[] WRITE port's idle cycles (single-port read-or-write template,
+    // see the write block below), so the game-side read port (addr/dout) and all
+    // write behaviour are completely untouched. sav_dout is a registered (1-cycle)
+    // read of sav_addr; sav_rd_ok=1 in the data cycle iff no bus/loader write stole
+    // that port cycle (the saver retries on 0). Addresses >= RTC_BASE return the
+    // LIVE clock registers so the uploaded 8 KB image carries the full timekeeper
+    // layout (MAME .nvm-compatible); on restore the loader drops those 8 bytes and
+    // the RTC simply re-runs from reset -- documented, accepted.
+    input  wire [12:0] sav_addr,
+    output wire [7:0]  sav_dout,
+    output reg         sav_rd_ok
 );
     localparam [12:0] RTC_BASE = 13'd8184;
     localparam integer DIVMAX  = (CLK_FREQ_HZ > 1) ? CLK_FREQ_HZ - 1 : 0;
@@ -106,12 +118,46 @@ module m48t58 #(
     // its "GQ876..1998EAA" signature compare (M48T58 @ 0x1f620000), set status bit 0x40,
     // and hung on the red "NG". Loading regardless of rst fixes it. (The flash/BIOS loads
     // worked on HW because their ramdownload path is not gated by the core reset.)
+    //
+    // SAVE-BACK: when no write is pending, this port READS sav_addr instead (the
+    // classic single-port "if(we) write else read" template -- still one M10K port,
+    // so Quartus keeps the true-dual-port mapping: port A = write/save-read, port
+    // B = the game-side ram_q read below). A write and a save-read in the same
+    // cycle: the write wins, sav_rd_ok flags the lost cycle and the saver retries.
+    // Writes are sporadic (EXP1 bus cycles take many clks; the ioctl loader never
+    // runs during an upload -- Main is single-threaded), so the retry always lands.
+    wire busw = !rst && we && !addr_is_rtc;            // bus write to lower NVRAM
+    wire ldw  = nvram_we && (nvram_addr < RTC_BASE);   // ioctl image-load write
+    wire        a_wr   = busw || ldw;
+    wire [12:0] a_addr = busw ? addr : ldw ? nvram_addr : sav_addr;
+    wire [7:0]  a_din  = busw ? din  : nvram_din;
+
+    reg [7:0]  sav_ram_q;
+    reg [12:0] sav_addr_q;
     always @(posedge clk) begin
-        if (!rst && we && !addr_is_rtc)
-            ram[addr] <= din;                   // bus write to lower NVRAM (post-reset)
-        else if (nvram_we && nvram_addr < RTC_BASE)
-            ram[nvram_addr] <= nvram_din;        // ioctl image load (any rst state)
+        if (a_wr) ram[a_addr] <= a_din;
+        else      sav_ram_q   <= ram[a_addr];
+        sav_rd_ok  <= ~a_wr;
+        sav_addr_q <= sav_addr;
     end
+
+    // Save-back data mux: lower 8184 bytes from the array, top 8 from the LIVE
+    // clock registers (sav_addr_q is the registered address, aligned with the
+    // 1-cycle ram read so both sources present in the same data cycle).
+    reg [7:0] sav_rtc;
+    always @(*) begin
+        case (sav_addr_q[2:0])
+            3'd0: sav_rtc = ctrl;
+            3'd1: sav_rtc = tsec;
+            3'd2: sav_rtc = tmin;
+            3'd3: sav_rtc = thour;
+            3'd4: sav_rtc = tdow;
+            3'd5: sav_rtc = tdom;
+            3'd6: sav_rtc = tmonth;
+            3'd7: sav_rtc = tyear;
+        endcase
+    end
+    assign sav_dout = (sav_addr_q >= RTC_BASE) ? sav_rtc : sav_ram_q;
 
     // Read mux (snapshot when READ freeze is active).
     always @(*) begin
