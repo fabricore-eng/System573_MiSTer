@@ -75,3 +75,12 @@ If keyboard keys ever stop registering, the same script's GAMEPAD mode is the
 fallback: dpad = ABS_X/ABS_Y (extend with axis presses), face buttons
 `b1..b4`/`start`/`coin` already work (`python3 /tmp/mister_press.py b3` = A).
 MENU treats gamepad A as ENTER, B as back.
+
+## UPDATE (2026-06-11 night): load_core of a .mgl IS the primary headless path
+Contrary to the earlier session's finding, `echo "load_core /media/fat/_Console/x.mgl" \
+> /dev/MiSTer_cmd` DOES process the .mgl <file> loads on the de10's installed Main
+(proven: CORENAME flip + screenshots named after the mgl's last file + the 573 BIOS
+on screen). The key-nav sequence above FAILED on re-test (keys delivered, Main opened
+the device, no CORENAME flip) — treat key-nav as the unreliable fallback and
+load_core-of-mgl as the deterministic headless launch. May be Main-version-dependent;
+re-verify per board.

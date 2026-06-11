@@ -343,7 +343,23 @@ always @(posedge clk_1x) begin : ffwd
 	fast_forward <= (FFrequest | ff_latch);
 end
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | cdDownloadReset;
+// 573 download-settle reset hold: a .mgl/console launch delivers SEVERAL sequential
+// ioctl downloads (boot.rom autoload + F0 bios + F2 flash + F3 nvram) with ~1s gaps;
+// the per-download reset terms below deassert in every gap, so the CPU boots against
+// PARTIAL flash mid-sequence and those doomed boots run concurrently with later
+// downloads (SDRAM write collisions can corrupt the flash image for the whole
+// session). Hold reset for SETTLE after EVERY download so one clean boot happens
+// after the LAST file. The .mra path pays the same one-time delay (harmless).
+localparam DOWNLOAD_SETTLE_TICKS = 28'd101_606_400;  // 3.0 s @ clk_1x 33.8688 MHz
+wire any_game_download = bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download;
+reg [27:0] settle_cnt = 28'd0;
+always @(posedge clk_1x) begin
+	if (any_game_download)      settle_cnt <= DOWNLOAD_SETTLE_TICKS;
+	else if (settle_cnt != 0)   settle_cnt <= settle_cnt - 1'd1;
+end
+wire download_settle_hold = (settle_cnt != 0);
+
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
