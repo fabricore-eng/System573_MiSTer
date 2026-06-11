@@ -3,6 +3,8 @@
 # mister_press.sh -- Mac-side wrapper: headless button press on the de10 board.
 #
 # Usage: tools/mister_press.sh <test|service|coin|start|b1..b4|0xNNN> [extra args]
+#        tools/mister_press.sh key <combo>     # KEYBOARD mode, e.g. key alt+f1
+#                                              # (MiSTer savestate-write hotkey)
 # Extra args pass through to mister_press.py (--hold MS --pre S --post S).
 #
 # Pushes tools/mister_press.py to the board if missing/stale, then runs it.
@@ -14,7 +16,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LOCAL_PY="$HERE/mister_press.py"
 REMOTE_PY=/tmp/mister_press.py
 
-[ $# -ge 1 ] || { echo "usage: $0 <test|service|coin|start|b1..b4|0xNNN> [--hold MS --pre S --post S]" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "usage: $0 <test|service|coin|start|b1..b4|0xNNN|key COMBO> [--hold MS --pre S --post S]" >&2; exit 2; }
 
 # push if missing or different
 LOCAL_SUM=$(shasum -a 256 "$LOCAL_PY" | cut -d' ' -f1)
