@@ -78,24 +78,37 @@ module s573_seccart #(
     // CART_TYPE param is non-zero (sim-configured), fall back to the param.
     wire [1:0] eff_type = (cart_type != 2'd0) ? cart_type : CART_TYPE[1:0];
 
+    // ----- 0x1f6a0000 OUTPUT LATCH (MAME ksys573 security_w semantics) -----
+    // The cassette pins see the REGISTERED latch, captured only on latch_we.
+    // system573_top wires d_latch straight from the LIVE exp1_wdata, so without
+    // this register ANY EXP1-region write (e.g. the 0x1f5c0000 watchdog kick)
+    // would rewrite CS/SCL/SDA/RST mid-transaction. Hardening per the OQ3 MAME
+    // run (tools/trace/sec_wd_tap.lua): the BIOS does NOT kick inside an X76
+    // transaction, but the latch is the correct hardware model regardless.
+    reg [7:0] d_q;
+    always @(posedge clk) begin
+        if (rst)           d_q <= 8'h00;
+        else if (latch_we) d_q <= d_latch;
+    end
+
     // ----- EEPROM on D0..D3 : one of X76F100 / X76F041 / ZS01, gated by eff_type -----
     // All three EEPROM models are instantiated; only the selected one's chip-select is
     // driven (the others held deselected, cs=1) and the read-back SDA is muxed.
     wire sda100_o, sda041_o, sda_zs01_o;
-    wire eeprom_cs = d_latch[2];
+    wire eeprom_cs = d_q[2];
     wire sel041    = (eff_type == 2'd1);
     wire sel_zs01  = (eff_type == 2'd2);
 
     x76f100 #(.READ_PASSWORD(READ_PASSWORD), .WRITE_PASSWORD(WRITE_PASSWORD)) eeprom100 (
         .clk(clk), .rst(rst),
-        .cs((sel041 || sel_zs01) ? 1'b1 : eeprom_cs), .sec_rst(d_latch[3]),
-        .scl(d_latch[1]), .sda_i(d_latch[0]), .sda_o(sda100_o)
+        .cs((sel041 || sel_zs01) ? 1'b1 : eeprom_cs), .sec_rst(d_q[3]),
+        .scl(d_q[1]), .sda_i(d_q[0]), .sda_o(sda100_o)
     );
 
     x76f041 eeprom041 (
         .clk(clk), .rst(rst),
-        .cs(sel041 ? eeprom_cs : 1'b1), .sec_rst(d_latch[3]),
-        .scl(d_latch[1]), .sda_i(d_latch[0]), .sda_o(sda041_o),
+        .cs(sel041 ? eeprom_cs : 1'b1), .sec_rst(d_q[3]),
+        .scl(d_q[1]), .sda_i(d_q[0]), .sda_o(sda041_o),
         // All three models are loaded unconditionally (cart_type may still be settling
         // as the image streams in); each only consumes the bytes it understands. The
         // x76f041 takes the low 10 addr bits (its image is <=548 B); for a ZS01 .u1
@@ -109,8 +122,8 @@ module s573_seccart #(
     wire zs01_sda_i = ~io0_dir;   // control bit 6 is active-low -> released(1) when bit=0
     zs01 eeprom_zs01 (
         .clk(clk), .rst(rst),
-        .cs(sel_zs01 ? eeprom_cs : 1'b1), .sec_rst(d_latch[3]),
-        .scl(d_latch[1]), .sda_i(zs01_sda_i), .sda_o(sda_zs01_o),
+        .cs(sel_zs01 ? eeprom_cs : 1'b1), .sec_rst(d_q[3]),
+        .scl(d_q[1]), .sda_i(zs01_sda_i), .sda_o(sda_zs01_o),
         .load_we(load_eep_we), .load_addr(load_eep_addr), .load_data(load_eep_data),
         // the same .u6 serial feeds the ZS01's internal DS2401 (0xFC/0xFD reads)
         .load_ds_we(load_ser_we), .load_ds_addr(load_ser_addr), .load_ds_data(load_ser_data)
@@ -120,7 +133,7 @@ module s573_seccart #(
 
     // ----- board DS2401 on D4 (open-drain, pulled up) -----
     wire ds_pd;
-    wire ds_line = ~(d_latch[4] | ds_pd);    // D4=1 pulls the 1-wire line low
+    wire ds_line = ~(d_q[4] | ds_pd);         // D4=1 pulls the 1-wire line low
     ds2401 #(.SERIAL(DS_SERIAL), .CLK_FREQ_HZ(DS_CLK_HZ)) board_id (
         .clk(clk), .rst(rst), .dq_in(ds_line), .dq_pd(ds_pd),
         .load_we(load_ser_we), .load_addr(load_ser_addr), .load_data(load_ser_data)
