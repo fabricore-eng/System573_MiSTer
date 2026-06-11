@@ -119,7 +119,11 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # psx_mister -> emu.sv -> system573_top/atapi.v. readEna is ce-qualified
           # (the 573 fabric free-runs on clk1x). Device->RAM only (CHCR bit0 forced 0).
           # Red/green: sim/tb_cdboot.v (BIOS ch5 contract BFM, 32-word chopped bursts).
-          "$ROOT/psx_patches/0023-s573-dma-ch5-atapi.patch" )
+          "$ROOT/psx_patches/0023-s573-dma-ch5-atapi.patch" \
+          # 0024 = SIO1 DSR cassette presence: the BIOS leaf 0x80038A28 polls SIO1_STAT
+          # (0x1F801054) bit 7 (DSR); every real security cassette asserts slot DSR
+          # (local/seccart_presence/) show ZERO SIO1 writes, so no IRQ work is needed.
+          "$ROOT/psx_patches/0024-s573-sio1-dsr-presence.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2
