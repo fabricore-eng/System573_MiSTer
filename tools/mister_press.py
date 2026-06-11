@@ -18,11 +18,19 @@
 #                                                # (hold modifiers, tap last key)
 #                                                # e.g. alt+f1 = MiSTer "write
 #                                                # savestate slot 1" hotkey
+#   python3 /tmp/mister_press.py key f12         # single key works too
+#   python3 /tmp/mister_press.py key down,down,enter
+#                                                # SEQUENCE: comma-separated
+#                                                # combos pressed in order on
+#                                                # ONE keyboard (one enumeration
+#                                                # wait total, --gap between
+#                                                # presses) -- MENU navigation
 # Options:
 #   --hold MS    press duration in ms        (default 150)
 #   --pre  SEC   wait after create, before press -- MiSTer enumeration
 #                time (default 6.0)
 #   --post SEC   wait after release, before destroy (default 1.5)
+#   --gap  SEC   wait between sequence presses in key mode (default 0.8)
 #   --name NAME  uinput device name (default "MiSTer-573 VirtualPad")
 #
 # 573 MRA map: names="Button 1,Button 2,Button 3,Button 4,Coin,Start,
@@ -63,16 +71,25 @@ KEY = {
     "up": 103, "down": 108, "left": 105, "right": 106,
     "f1": 59, "f2": 60, "f3": 61, "f4": 62, "f5": 63, "f6": 64,
     "f7": 65, "f8": 66, "f9": 67, "f10": 68, "f11": 87, "f12": 88,
+    # navigation cluster (MENU file browser: HOME=top, PGUP/PGDN page)
+    "home": 102, "end": 107, "pgup": 104, "pageup": 104,
+    "pgdn": 109, "pagedown": 109, "delete": 111, "del": 111,
+    # letters + digits (MENU browser letter-jump: press 'h' -> first H entry)
+    "a": 30, "b": 48, "c": 46, "d": 32, "e": 18, "f": 33, "g": 34,
+    "h": 35, "i": 23, "j": 36, "k": 37, "l": 38, "m": 50, "n": 49,
+    "o": 24, "p": 25, "q": 16, "r": 19, "s": 31, "t": 20, "u": 22,
+    "v": 47, "w": 17, "x": 45, "y": 21, "z": 44,
+    "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9,
+    "9": 10, "0": 11,
 }
 
 def emit(fd, etype, code, value):
     # struct input_event (armv7): timeval(2 x u32) + u16 type + u16 code + s32 value = 16B
     os.write(fd, struct.pack("<2IHHi", 0, 0, etype, code, value))
 
-def key_combo(args):
-    """Keyboard mode: create a uinput KEYBOARD (EV_KEY only, no ABS), hold the
-    modifiers, tap the final key, release in reverse. Combo like 'alt+f1'."""
-    parts = [p.strip().lower() for p in args.combo.split("+") if p.strip()]
+def parse_combo(combo):
+    """'alt+f1' -> [56, 59]; single key 'f12' -> [88]. Raw 0xNN/decimal OK."""
+    parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
     if not parts:
         sys.exit("key mode: empty combo (want e.g. alt+f1)")
     codes = []
@@ -84,6 +101,16 @@ def key_combo(args):
             except ValueError:
                 sys.exit("key mode: unknown key '%s'" % p)
         codes.append(c)
+    return parts, codes
+
+def key_combo(args):
+    """Keyboard mode: create a uinput KEYBOARD (EV_KEY only, no ABS) ONCE,
+    then press each comma-separated combo in order ('f12' or 'alt+f1' or
+    'down,down,enter'), --gap seconds apart. Within a combo: hold the
+    modifiers, tap the final key, release in reverse."""
+    seq = [parse_combo(c) for c in args.combo.split(",") if c.strip()]
+    if not seq:
+        sys.exit("key mode: empty sequence (want e.g. f12 or down,down,enter)")
 
     name = args.name if args.name != DEFAULT_PAD_NAME else "MiSTer-573 VirtualKbd"
     fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
@@ -103,22 +130,26 @@ def key_combo(args):
               % (name, args.pre))
         time.sleep(args.pre)
 
-        names = "+".join(parts)
-        print("combo %s (codes %s): hold %d modifier(s), tap %d for %dms"
-              % (names, codes, len(codes) - 1, codes[-1], args.hold))
-        for c in codes[:-1]:                      # hold modifiers, in order
-            emit(fd, EV_KEY, c, 1)
+        for i, (parts, codes) in enumerate(seq):
+            if i:
+                time.sleep(args.gap)
+            names = "+".join(parts)
+            print("[%d/%d] combo %s (codes %s): hold %d modifier(s), tap %d for %dms"
+                  % (i + 1, len(seq), names, codes, len(codes) - 1, codes[-1],
+                     args.hold))
+            for c in codes[:-1]:                      # hold modifiers, in order
+                emit(fd, EV_KEY, c, 1)
+                emit(fd, EV_SYN, 0, 0)
+                time.sleep(0.05)
+            emit(fd, EV_KEY, codes[-1], 1)            # tap the final key
             emit(fd, EV_SYN, 0, 0)
-            time.sleep(0.05)
-        emit(fd, EV_KEY, codes[-1], 1)            # tap the final key
-        emit(fd, EV_SYN, 0, 0)
-        time.sleep(args.hold / 1000.0)
-        emit(fd, EV_KEY, codes[-1], 0)
-        emit(fd, EV_SYN, 0, 0)
-        for c in reversed(codes[:-1]):            # release modifiers, reverse
-            time.sleep(0.05)
-            emit(fd, EV_KEY, c, 0)
+            time.sleep(args.hold / 1000.0)
+            emit(fd, EV_KEY, codes[-1], 0)
             emit(fd, EV_SYN, 0, 0)
+            for c in reversed(codes[:-1]):            # release modifiers, reverse
+                time.sleep(0.05)
+                emit(fd, EV_KEY, c, 0)
+                emit(fd, EV_SYN, 0, 0)
         time.sleep(args.post)
         fcntl.ioctl(fd, UI_DEV_DESTROY)
         print("done")
@@ -132,10 +163,13 @@ def main():
     ap.add_argument("button", help="test|service|coin|start|b1..b4, raw code like 0x137, "
                                    "or 'key' for keyboard mode (then give a combo)")
     ap.add_argument("combo", nargs="?", default=None,
-                    help="keyboard combo for 'key' mode, e.g. alt+f1")
+                    help="keyboard combo/sequence for 'key' mode, e.g. alt+f1 "
+                         "or f12 or down,down,enter")
     ap.add_argument("--hold", type=int, default=150, help="press duration ms")
     ap.add_argument("--pre",  type=float, default=6.0, help="enumeration wait s")
     ap.add_argument("--post", type=float, default=1.5, help="post-release wait s")
+    ap.add_argument("--gap",  type=float, default=0.8,
+                    help="key mode: seconds between sequence presses")
     ap.add_argument("--name", default=DEFAULT_PAD_NAME)
     args = ap.parse_args()
 
