@@ -6,6 +6,24 @@
 //          IO0, and a DS2401 Read-ROM through D4 / I0 (param-configured serial),
 //          proving the security devices work through the bus glue unchanged.
 //
+//  Part 0 (CART_TYPE 0, X76F100):  replays the disassembled BIOS cart-type-IDENTIFY
+//          waveform VERBATIM from the MAME differential trace
+//          (local/seccart_presence/sectapA_trace.txt, BIOS leaf 0x800377xx):
+//          latch writes 0,4,0 then 3 rounds of [RST pulse 8,A,8,0 + 32x
+//          (write 2 / sample the IN1-visible sec_io0 / write 0)] then 4, each
+//          round accumulating the response-to-reset LSB-first == 32'h1900AA55
+//          (X76F100 type-2, our hardcoded RtR). This predicts the post-DSR-fix
+//          silicon screen (the -11N-class state). Uses REAL latch semantics: one
+//          latch_we pulse per value, latch_we low between writes.
+//
+//  Part 0b (OQ3 d_latch hardening): a WATCHDOG KICK (CPU store to 0x1f5c0000 --
+//          d_latch input wiggles while latch_we=0, exactly what system573_top's
+//          live exp1_wdata wiring produces) lands inside the RTR read loop. The
+//          cassette pins must HOLD the latched value (MAME ksys573 security_w
+//          semantics): pre-fix the combinational follow yanks SCL low mid-bit ->
+//          a spurious RTR shift -> byte0 reads 0x09 not 0x19 (RED); post-fix the
+//          registered latch holds and byte0 == 0x19 (GREEN).
+//
 //  Part 2 (CART_TYPE 1, X76F041):  loads the REAL Punch Mania 2 (pnchmn2) security
 //          cart dumps -- gqa09ja.u1 (548-byte X76F041 image) and gqa09ja.u6 (8-byte
 //          DS2401 serial) -- through the new boot-time load ports, then:
@@ -50,10 +68,12 @@ module tb_s573_seccart;
     wire       sec_io0_2, sec_irdy_2, sec_drdy_2;
     wire [7:0] sec_in_2;
 
+    // latch_we held HIGH: every dl2 change is an INTENDED latch write (the
+    // registered d_latch then follows one clk later, inside the >=3-clk task pacing).
     s573_seccart #(.DS_CLK_HZ(1_000_000)) dut2 (
         .clk(clk), .rst(rst),
         .cart_type(2'd1),                 // X76F041
-        .latch_we(1'b0), .d_latch(dl2), .io0_dir(1'b0),
+        .latch_we(1'b1), .d_latch(dl2), .io0_dir(1'b0),
         .load_eep_we(e_load_we), .load_eep_addr(e_load_addr), .load_eep_data(e_load_data),
         .load_ser_we(s_load_we), .load_ser_addr(s_load_addr), .load_ser_data(s_load_data),
         .sec_io0(sec_io0_2), .sec_in(sec_in_2), .sec_drdy(sec_drdy_2), .sec_irdy(sec_irdy_2)
@@ -72,7 +92,7 @@ module tb_s573_seccart;
     s573_seccart #(.DS_CLK_HZ(1_000_000)) dut3 (
         .clk(clk), .rst(rst),
         .cart_type(2'd2),                 // ZS01
-        .latch_we(1'b0), .d_latch(dl3), .io0_dir(io0_3),
+        .latch_we(1'b1), .d_latch(dl3), .io0_dir(io0_3),
         .load_eep_we(e3_we), .load_eep_addr(e3_addr), .load_eep_data(e3_data),
         .load_ser_we(s3_we), .load_ser_addr(s3_addr), .load_ser_data(s3_data),
         .sec_io0(sec_io0_3), .sec_in(sec_in_3), .sec_drdy(sec_drdy_3), .sec_irdy(sec_irdy_3)
@@ -82,6 +102,26 @@ module tb_s573_seccart;
     task tk; begin repeat (3) @(posedge clk); end endtask
     task wait_us(input integer n); begin repeat (n) @(posedge clk); end endtask
     task setb(input integer b, input v); begin @(negedge clk); dl[b] = v; latch_we = 1; @(negedge clk); latch_we = 0; end endtask
+
+    // ---- Part 0 primitives: REAL latch semantics ----
+    // One CPU store to 0x1f6a0000 = one latch_we pulse with the full byte
+    // (latch_we = sel_seclatch & exp1_we for one cycle, low between writes).
+    task bios_w(input [7:0] v); begin
+        @(negedge clk); dl = v; latch_we = 1;
+        @(negedge clk); latch_we = 0;
+        repeat (2) @(posedge clk);
+    end endtask
+    // A watchdog kick mid-transaction: the CPU stores to 0x1f5c0000, so the EXP1
+    // write data bus (which system573_top wires STRAIGHT into d_latch) carries the
+    // kick value while latch_we stays LOW. The cassette pins must not see it.
+    task wdog_kick_bus(input [7:0] busdata);
+        reg [7:0] save; begin
+        save = dl;
+        @(negedge clk); dl = busdata;   // latch_we NOT asserted (not our select)
+        repeat (3) @(posedge clk);
+        @(negedge clk); dl = save;      // the bus moves on
+        repeat (3) @(posedge clk);
+    end endtask
 
     // =====================================================================
     // Part 1 primitives (X76F100 over dut: D0=SDA, D1=SCL, D2=CS, D3=RST, IO0)
@@ -325,6 +365,71 @@ module tb_s573_seccart;
         end
 
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; tk;
+
+        // =====================================================================
+        // Part 0: the BIOS cart-type-IDENTIFY waveform, replayed verbatim from
+        // the MAME trace (local/seccart_presence/sectapA_trace.txt @5.06483s):
+        //   0,4,0 then 3x [8,A,8,0 + 32x(2,sample,0)] then 4.
+        // CS = d_latch[2] (LOW = selected); RST pulse enters response-to-reset;
+        // the A->8 falling SCL edge inside the pulse shifts out RTR bit 0, each
+        // loop's trailing write-0 shifts the next. The BIOS samples the
+        // IN1-visible bit (s573_io r_status[2] = sec_io0) while SCL is high and
+        // accumulates LSB-first -> the X76F100 type-2 signature 0x1900AA55.
+        // =====================================================================
+        begin : bios_identify
+            integer round, k;
+            reg [31:0] rtr;
+            bios_w(8'h00); bios_w(8'h04); bios_w(8'h00);
+            for (round = 0; round < 3; round = round + 1) begin
+                bios_w(8'h08); bios_w(8'h0A); bios_w(8'h08); bios_w(8'h00);
+                rtr = 32'h0;
+                for (k = 0; k < 32; k = k + 1) begin
+                    bios_w(8'h02);                 // SCL high
+                    rtr[k] = sec_io0;              // the IN1 bit-2 sample
+                    bios_w(8'h00);                 // SCL low -> next RTR bit
+                end
+                if ({rtr[7:0], rtr[15:8], rtr[23:16], rtr[31:24]} !== 32'h1900AA55) begin
+                    $display("FAIL: identify round %0d RTR=%02h%02h%02h%02h (want 1900AA55, X76F100 type-2)",
+                             round, rtr[7:0], rtr[15:8], rtr[23:16], rtr[31:24]);
+                    errors = errors + 1;
+                end
+            end
+            bios_w(8'h04);                          // deselect, as the BIOS does
+        end
+
+        // =====================================================================
+        // Part 0b: d_latch hold-through-watchdog-kick (MAME security_w latch
+        // semantics). A kick (store of 0x0000 to 0x1f5c0000) lands inside the
+        // RTR read loop, between the SCL-high write and the sample. Pre-fix the
+        // combinational d_latch follows the live bus: SCL is yanked low mid-bit,
+        // the X76F100 shifts a SPURIOUS bit, and byte0 accumulates 0x09 (RED).
+        // Post-fix the registered latch holds: byte0 == 0x19 (GREEN).
+        // =====================================================================
+        begin : wdog_glitch
+            integer k;
+            reg [7:0] b;
+            bios_w(8'h00);
+            bios_w(8'h08); bios_w(8'h0A); bios_w(8'h08); bios_w(8'h00);  // RST pulse
+            b = 8'h00;
+            for (k = 0; k < 8; k = k + 1) begin
+                bios_w(8'h02);                     // SCL high
+                if (k == 3) wdog_kick_bus(8'h00);  // the watchdog kick, mid-bit
+                b[k] = sec_io0;
+                bios_w(8'h00);                     // SCL low
+            end
+            if (b !== 8'h19) begin
+                $display("FAIL: watchdog kick GLITCHED the X76 read: RTR byte0=%02h (want 19) -- d_latch followed the live EXP1 bus",
+                         b);
+                errors = errors + 1;
+            end
+            bios_w(8'h04);                          // deselect
+        end
+
+        // From here on the legacy parts change dl bit-at-a-time: hold latch_we
+        // HIGH so every dl change is an intended latch write (the registered
+        // latch follows one clk later, inside every task's >=3-clk pacing).
+        @(negedge clk); dl = 8'b0000_0101; latch_we = 1;
+        tk; tk;
 
         // =====================================================================
         // Part 1: X76F100 + param DS2401 through dut (unchanged regression)
