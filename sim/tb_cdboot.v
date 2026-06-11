@@ -1,45 +1,57 @@
 `timescale 1ns/1ps
-// tb_cdboot.v - the BIOS CD-boot ATAPI/DMA-ch5 contract replay (red-green gate).
+// tb_cdboot.v - the GX700 BIOS CD-boot replay, MAME-EXACT (the trace is the spec).
 //
-// The disassembled 573 BIOS (dumps/bios/573.bin) is the spec:
-//   * CD-init (0x803cb9e0): SET FEATURES 0xEF, wait IRQ, fail (-1) if STATUS.ERR.
-//   * Sector reads (reader 0x803cc9f0 -> 0x803cc2b0, mode byte 0x803d228f = 2):
-//     PACKET + READ(12), then the ISR data-phase dispatcher (0x803cb418) arms DMA
-//     channel 5 per data IRQ (helper 0x803cddb8): DPCR|=0x00800000, MADR5=buf,
-//     BCR5=latched_bytecount>>2 (plain word count, BA=0), CHCR5=0x11050100 --
-//     trigger(28)+start(24)+chopping(8), chop window 32 words, syncmode 0. There
-//     is NO PIO sector fallback in the BIOS (the only PIO sector loop, 0x803cb284,
-//     requires mode==1 which no sector-read caller selects).
-//   * The ISR does per-IRQ remaining-byte accounting and errors (-8) if the
-//     completion phase arrives while remaining != 0.
+// The spec is local/cd_adjudication/atapi_trace.txt: a register-level MAME trace
+// of the REAL 573 BIOS CD-booting hypbbc2p. The full traced sequence, replayed
+// here verbatim (every CDB byte, including the BIOS's stack-garbage bytes):
 //
-// This TB drives ONLY bus-visible behavior (no DUT internals): task-file register
-// reads/writes, INTRQ, and the ch5 dma_req/dma_rd/dma_dout port contract. The ch5
-// DMA engine is a Verilog BFM faithful to the PATCHED psx/rtl/dma.vhd (the suite
-// is iverilog-only; the VHDL core cannot co-simulate here -- it is gated by NVC
-// elaboration + the boot harness): per data IRQ it "arms" BCR=bc>>2 32-bit words
-// and drains them as 32-word chopped bursts -- dma_rd high for 64 consecutive
-// ce-rate cycles (one 16-bit halfword per cycle, LOW half first, exactly the
-// SPU-pattern accumulate the patch clones), then a chop-pause gap (the bit28
-// re-trigger window), then the next burst.
+//   IDE reset (0x1f560000 0->1)  -> ATAPI signature (ireason 01, lba 01, 0xEB14)
+//   IDENTIFY PACKET DEVICE 0xA1  -> 256 words, word0 masks (w0&0xDF00)==0x8500,
+//                                   (w0&0x60) in {0,0x40}
+//   TEST UNIT READY              -> non-data completion
+//   REQUEST SENSE (alloc 16)     -> 16 bytes, resp code 0x70, sense key 0
+//   READ TOC (start 0, alloc 12) -> header len 0x0012, first/last 01/01,
+//                                   descriptor: ADR/CTRL 0x14 track 01 LBA 0
+//   READ TOC (start 0xAA)        -> descriptor: track 0xAA (lead-out), LBA 16680
+//                                   (the hypbbc2p fixture) <- TOC CONTENT gate
+//   READ TOC (start 0) again
+//   MODE SENSE(10) page 0x0E (alloc 24)
+//   READ CAPACITY                -> last LBA 16679 (= lead-out - 1), block 2048
+//   READ(12) LBA16    x1         -> the ISO9660 PVD sector: buf[0]==1 && "CD001"
+//   READ(12) LBA18    x1         -> CDB stack-garbage bytes 1/10/11 = 64/3D/80
+//   READ(12) LBA20    x4         -> multi-sector, garbage bytes 64/../3F/80
+//   READ(12) LBA16405 x1         -> the boot-binary region
+//   READ(12) LBA16406 x124       -> the boot binary burst (replayed in full)
 //
-// The MiSTer HPS sector fetch is ms-scale: the host BFM delays HOST_DELAY clks
-// before serving every sector, proving the drive holds BSY (DRQ clear, no IRQ)
-// until the sector is REALLY buffered -- the pre-fix RTL raised DRQ+INTRQ on the
-// dispatch cycle and a ch5 drain would have pulled stale BRAM.
+// NOT in the sequence: SET FEATURES 0xEF - the adjudication trace proves it is
+// NOT on the CD-boot path (it remains in the RTL + a supplementary check below).
 //
-// RED (pre-fix RTL): compile with -DPREFIX_RTL against the OLD rtl/atapi.v (no
-// sec_ready/dma ports; PIO drain). Records the three failure modes: 0xEF abort,
-// instant-DRQ stale-data window, completion-with-remaining!=0 (-8).
-// GREEN: the fixed RTL passes every check below.
+// Every sector read is mode 2 (DMA): the BIOS's ONLY sector data path is DMA
+// channel 5 (ISR helper 0x803cddb8: DPCR|=0x00800000, MADR5=buf, BCR5=bc>>2,
+// CHCR5=0x11050100 - 32-word chopping). The ch5 BFM below follows the PATCHED
+// psx/rtl/dma.vhd - and that BFM is itself validated against the REAL VHDL
+// engine by sim/nvc/run_dma_ch5.sh (tb_dma_ch5: the S1 discriminator, PASS).
+//
+// TOC/READ CAPACITY content comes from the mounted-disc metadata: s573_cdtoc
+// latches the Main 250828 disk_t blob (ioctl index 251: word0 track_count,
+// word1 total_lba, track records at word 4t) and answers atapi.v's track-start
+// queries; the TB feeds it the hypbbc2p fixture (1 track, lead-out 16680) the
+// way emu.sv streams a real download. RED HISTORY: before the s573_cdtoc fix
+// the RTL served a fixed track-01/LBA-0 TOC and a placeholder capacity - the
+// [5]/[8] content checks here were the true-red gate (see git history).
 module tb_cdboot;
     reg         clk = 0, rst = 1;
+    reg         ide_rst = 0;
     reg         sel = 0, we = 0, re = 0;
     reg  [3:0]  addr = 0;
     reg  [15:0] din = 0;
     wire [15:0] dout;
     wire        intrq;
     integer     errors = 0;
+
+    // ---- the hypbbc2p disc fixture (MAME adjudication numbers) ----
+    localparam [31:0] LEADOUT_LBA = 32'd16680;   // READ TOC(0xAA) lead-out
+    localparam [7:0]  TRACK_COUNT = 8'd1;
 
     // atapi <-> cdimg sector interface
     wire        sec_req;
@@ -57,21 +69,8 @@ module tb_cdboot;
     wire [15:0] dma_dout;
     wire        dma_req;
 
-`ifdef PREFIX_RTL
-    // pre-fix RTL: no sec_ready / dma ports
     atapi dut (
-        .clk(clk), .rst(rst), .ide_rst(1'b0),
-        .sel(sel), .addr(addr), .we(we), .re(re),
-        .din(din), .dout(dout), .intrq(intrq),
-        .cd_attached(1'b1),
-        .sec_req(sec_req), .sec_lba(sec_lba),
-        .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q)
-    );
-    assign dma_dout = 16'h0000;
-    assign dma_req  = 1'b0;
-`else
-    atapi dut (
-        .clk(clk), .rst(rst), .ide_rst(1'b0),
+        .clk(clk), .rst(rst), .ide_rst(ide_rst),
         .sel(sel), .addr(addr), .we(we), .re(re),
         .din(din), .dout(dout), .intrq(intrq),
         .cd_attached(1'b1),
@@ -80,7 +79,6 @@ module tb_cdboot;
         .sec_ready(sec_ready),
         .dma_req(dma_req), .dma_rd(dma_rd), .dma_dout(dma_dout)
     );
-`endif
 
     s573_cdimg cdimg (
         .clk(clk), .rst(rst),
@@ -94,12 +92,9 @@ module tb_cdboot;
     always #5 clk = ~clk;
 
     // ---- timing model ----
-    // HOST_DELAY models the ms-scale HPS sd-block latency (a real ms at 33.8688 MHz
-    // is ~33869 clk1x; 20000 keeps the sim quick while being 4 orders of magnitude
-    // beyond the pre-fix same-cycle stale window). PACE_NS asserts the ~4096-clk1x
-    // inter-sector data-IRQ floor (10 ns/clk): 4000 clks allows for the ~10-cycle
-    // slop between the DUT's floor start (the last consume) and where this TB can
-    // observe it (after the BFM's chop-pause tail).
+    // HOST_DELAY models the ms-scale HPS sd-block latency on the FIRST sector
+    // (proves the BSY data-ready gate); the boot-binary burst then runs with the
+    // host at stream speed so the DUT's ~4096-clk1x pace floor is the limiter.
     localparam integer HOST_DELAY = 20000;
     localparam integer PACE_NS    = 4000 * 10;
 
@@ -146,7 +141,7 @@ module tb_cdboot;
                     default: b = (u + 8'h5a) & 8'hff;
                 endcase
             end else
-                b = (u + 8'h10*lba) & 8'hff;
+                b = (u + 8'h10*lba + (lba >> 8)) & 8'hff;
             user_byte = b;
         end
     endfunction
@@ -163,10 +158,6 @@ module tb_cdboot;
     endfunction
 
     // ---- host BFM: ms-scale-late sector service ----
-    // host_slow=1: every sector waits HOST_DELAY (proves the BSY data-ready gate).
-    // host_slow=0: served at stream speed (~2.4k clks < the 4096-clk pace floor),
-    // so in the multi-sector test the DUT's PACING is the inter-IRQ limiter and
-    // the floor assertion below actually bites.
     reg host_slow = 1;
     integer hw;
     reg [31:0] hlba;
@@ -185,18 +176,23 @@ module tb_cdboot;
     end
 
     // ---- ch5 DMA BFM: drain one 512-word sector per the patched dma.vhd ----
-    // BCR=0x200 words, CHCR=0x11050100: 32-word chop bursts. Each 32-bit word =
-    // 2 back-to-back dma_rd cycles (low halfword consumed first -- the cycle the
-    // patch latches DMA_ATA_read_accu -- then the high half written to the fifo).
-    // Between bursts dma_rd drops for the chop-pause (bit28 re-trigger) window.
+    // BCR=0x200 words, CHCR=0x11050100: 32-word chop bursts, one 16-bit halfword
+    // per dma_rd cycle (LOW half first - the SPU-pattern accumulate), chop-pause
+    // gaps between bursts. This BFM is validated cycle-for-cycle against the
+    // REAL patched dma.vhd by sim/nvc/tb_dma_ch5.vhd (S1 discriminator: PASS).
     integer db, dw;
     reg [15:0] dlo, dhi;
+    reg [15:0] pvd_w [0:3];          // first 4 words of the last-drained sector
     task dma_drain_sector(input [31:0] lba);
         begin
             for (db = 0; db < 16; db = db + 1) begin        // 16 bursts x 32 words
                 for (dw = 0; dw < 32; dw = dw + 1) begin
                     @(negedge clk); dma_rd = 1'b1; #1 dlo = dma_dout;   // low half
                     @(negedge clk);                #1 dhi = dma_dout;   // high half
+                    if (db == 0 && dw < 2) begin
+                        pvd_w[dw*2]   = dlo;
+                        pvd_w[dw*2+1] = dhi;
+                    end
                     chk(dlo, {user_byte(lba, (db*32+dw)*4 + 1), user_byte(lba, (db*32+dw)*4)},
                         "DMA word low half");
                     chk(dhi, {user_byte(lba, (db*32+dw)*4 + 3), user_byte(lba, (db*32+dw)*4 + 2)},
@@ -208,7 +204,7 @@ module tb_cdboot;
         end
     endtask
 
-    // ---- PIO drain of one sector (the fallback path; also the PREFIX drain) ----
+    // ---- PIO drain of one sector (the fallback path) ----
     integer pw;
     reg [15:0] pv;
     task pio_drain_sector(input [31:0] lba);
@@ -220,8 +216,8 @@ module tb_cdboot;
         end
     endtask
 
-    // ---- PACKET + READ(12) dispatch (features=0, bc limit 0x0800 -- BIOS order) ----
-    task read12_dispatch(input [31:0] lba, input [7:0] nsec);
+    // ---- PACKET dispatch prologue (features=0, bc limit 0x0800 - BIOS order) ----
+    task packet_prologue;
         reg [15:0] v;
         begin
             io_write(4'd1, 16'h0000);                  // features = 0
@@ -230,12 +226,56 @@ module tb_cdboot;
             io_write(4'd7, 16'h00A0);                  // PACKET
             io_read (4'd7, v); chk(v & 16'h00ff, 16'h0008, "PACKET DRQ");
             io_read (4'd2, v); chk(v & 16'h00ff, 16'h0001, "PACKET ireason C/D");
-            io_write(4'd0, {8'h00, 8'hA8});            // pkt[0]=0xA8 READ(12)
+        end
+    endtask
+
+    // READ(12) - MAME-exact CDB option: the BIOS's reader leaves stack garbage in
+    // CDB bytes 1/10/11 (trace: 0x64 / 0x3D / 0x80); the drive must ignore them.
+    task read12_dispatch(input [31:0] lba, input [7:0] nsec, input integer garbage);
+        begin
+            packet_prologue;
+            io_write(4'd0, garbage ? 16'h64A8 : {8'h00, 8'hA8});  // pkt[0]=A8, pkt[1]=garbage
             io_write(4'd0, {lba[23:16], lba[31:24]});  // pkt[2],pkt[3]
             io_write(4'd0, {lba[7:0],   lba[15:8]});   // pkt[4],pkt[5]
             io_write(4'd0, 16'h0000);                  // pkt[6],pkt[7] (len[31:16]=0)
             io_write(4'd0, {nsec, 8'h00});             // pkt[8]=0, pkt[9]=len lo
-            io_write(4'd0, 16'h0000);                  // pkt[10..11] -> dispatch
+            io_write(4'd0, garbage ? 16'h803D : 16'h0000);        // pkt[10],pkt[11]
+        end
+    endtask
+
+    // fixed-response data-in PACKET command: send CDB, wait the data IRQ, check
+    // byte count, return (drain + completion handled by the caller)
+    task packet_send6(input [15:0] w0, input [15:0] w1, input [15:0] w2,
+                      input [15:0] w3, input [15:0] w4, input [15:0] w5);
+        begin
+            packet_prologue;
+            io_write(4'd0, w0); io_write(4'd0, w1); io_write(4'd0, w2);
+            io_write(4'd0, w3); io_write(4'd0, w4); io_write(4'd0, w5);
+        end
+    endtask
+
+    task expect_datain(input [7:0] bc_lo, input [7:0] bc_hi, input [255:0] what);
+        reg [15:0] v;
+        begin
+            wait_irq(20000, what);
+            io_read(4'd7, v); chk(v & 16'h0088, 16'h0008, what);          // DRQ, not BSY
+            io_read(4'd2, v); chk(v & 16'h00ff, 16'h0002, "data ireason IO");
+            io_read(4'd4, v); chk(v & 16'h00ff, {8'h00, bc_lo}, "data bc lo");
+            io_read(4'd5, v); chk(v & 16'h00ff, {8'h00, bc_hi}, "data bc hi");
+        end
+    endtask
+
+    task expect_completion(input [255:0] what);
+        reg [15:0] v;
+        begin
+            wait_irq(20000, what);
+            io_read(4'd7, v);
+            if ((v & 16'h0089) !== 16'h0000) begin   // BSY/DRQ/ERR all clear
+                $display("FAIL: %0s completion status=%02h (BSY/DRQ/ERR)", what, v[7:0]);
+                errors = errors + 1;
+            end
+            io_read(4'd2, v); chk(v & 16'h00ff, 16'h0003, "completion ireason CD|IO");
+            io_read(4'd1, v); chk(v & 16'h00ff, 16'h0000, "completion error=0");
         end
     endtask
 
@@ -246,10 +286,11 @@ module tb_cdboot;
     reg [31:0] rd_lba;
     reg [15:0] v;
     realtime   t_consumed;      // when the previous sector finished draining
-    task read12_run(input [31:0] lba0, input [7:0] nsec, input integer use_dma);
+    task read12_run(input [31:0] lba0, input [7:0] nsec, input integer use_dma,
+                    input integer garbage);
         integer guard;
         begin
-            read12_dispatch(lba0, nsec);
+            read12_dispatch(lba0, nsec, garbage);
             remaining  = nsec * 2048;
             secs_done  = 0;
             rd_lba     = lba0;
@@ -260,13 +301,11 @@ module tb_cdboot;
                 wait_irq(HOST_DELAY + 200000, "data/completion phase");
                 io_read(4'd7, v);                       // ISR latches STATUS (clears INTRQ)
                 if ((v & 16'h0008) === 16'h0008) begin  // DRQ: a data phase
-`ifndef PREFIX_RTL
                     // pacing floor: sector N+1's data IRQ never tailgates sector N
                     if (secs_done > 0 && ($realtime - t_consumed) < PACE_NS) begin
                         $display("FAIL: data IRQ pacing %g ns < %0d ns", $realtime - t_consumed, PACE_NS);
                         errors = errors + 1;
                     end
-`endif
                     io_read(4'd2, v); chk(v & 16'h00ff, 16'h0002, "data ireason IO");
                     io_read(4'd4, v); chk(v & 16'h00ff, 16'h0000, "data bc lo");
                     io_read(4'd5, v); chk(v & 16'h00ff, 16'h0008, "data bc hi (0x0800)");
@@ -300,26 +339,123 @@ module tb_cdboot;
     initial begin
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; @(negedge clk);
 
-        // ===== [1] SET FEATURES 0xEF: the BIOS CD-init gate (0x803cb9e0) =====
-        io_write(4'd1, 16'h0003);                  // features: set transfer mode
-        io_write(4'd2, 16'h0021);                  // sector count: mode value
-        io_write(4'd7, 16'h00EF);
-        wait_irq(1000, "SET FEATURES");
-        io_read(4'd7, v);
-        if (v[0] !== 1'b0) begin
-            $display("FAIL: SET FEATURES aborted (STATUS=%02h ERR set -> BIOS returns -1)", v[7:0]);
-            errors = errors + 1;
-        end
-        if ((v & 16'h0040) !== 16'h0040) begin
-            $display("FAIL: SET FEATURES status DRDY clear (%02h)", v[7:0]);
-            errors = errors + 1;
-        end
+        // ===== [0] IDE reset (WRST 0x1f560000 0->1) -> ATAPI signature =====
+        $display("===== [0] IDE reset + ATAPI signature =====");
+        @(negedge clk); ide_rst = 1;
+        repeat (8) @(negedge clk); ide_rst = 0;
+        repeat (4) @(negedge clk);
+        io_read(4'd2, v); chk(v & 16'h00ff, 16'h0001, "signature ireason");
+        io_read(4'd3, v); chk(v & 16'h00ff, 16'h0001, "signature lba low");
+        io_read(4'd4, v); chk(v & 16'h00ff, 16'h0014, "signature bc lo (0x14)");
+        io_read(4'd5, v); chk(v & 16'h00ff, 16'h00EB, "signature bc hi (0xEB)");
+        io_read(4'd7, v); chk(v & 16'h0089, 16'h0000, "signature status idle");
 
-        // ===== [2] data-ready gating: DRQ/IRQ must NOT fire before sec_ready =====
-        // The host BFM sits on the request for HOST_DELAY clks; right after
-        // dispatch the drive must show BSY with DRQ clear and no INTRQ. (Pre-fix:
-        // DRQ+INTRQ on the dispatch write -> ch5 would drain stale BRAM.)
-        read12_dispatch(32'd16, 8'd1);
+        // ===== [1] IDENTIFY PACKET DEVICE (0xA1): word0 masks =====
+        $display("===== [1] IDENTIFY PACKET DEVICE =====");
+        io_write(4'd6, 16'h00A0);                  // drive select (trace pc 803cc7a0)
+        io_write(4'd8, 16'h0008);                  // device control (trace Wc 0x08)
+        io_write(4'd1, 16'h0000);                  // features = 0
+        io_write(4'd4, 16'h0000);                  // bc limit 0x0800
+        io_write(4'd5, 16'h0008);
+        io_write(4'd7, 16'h00A1);
+        io_read (4'd7, v); chk(v & 16'h00ff, 16'h0048, "IDENTIFY status DRDY|DRQ");
+        io_read (4'd2, v); chk(v & 16'h00ff, 16'h0002, "IDENTIFY ireason IO");
+        io_read (4'd4, v); chk(v & 16'h00ff, 16'h0000, "IDENTIFY bc lo");
+        io_read (4'd5, v); chk(v & 16'h00ff, 16'h0002, "IDENTIFY bc hi (0x0200)");
+        io_read (4'd0, w0);                        // word 0: general configuration
+        if ((w0 & 16'hDF00) !== 16'h8500) begin    // ATAPI, CD-ROM, 12-byte packet
+            $display("FAIL: IDENTIFY word0=%04h ((w0&DF00)!=8500)", w0);
+            errors = errors + 1;
+        end
+        if ((w0 & 16'h0060) !== 16'h0000 && (w0 & 16'h0060) !== 16'h0040) begin
+            $display("FAIL: IDENTIFY word0=%04h (DRQ-type bits %02h not in {0,40})", w0, w0 & 16'h60);
+            errors = errors + 1;
+        end
+        for (k = 1; k < 49; k = k + 1) io_read(4'd0, w0);
+        io_read(4'd0, w0);                         // word 49: capabilities
+        if ((w0 & 16'h0400) !== 16'h0400) begin
+            $display("FAIL: IDENTIFY word49=%04h (DMA-supported bit clear)", w0);
+            errors = errors + 1;
+        end
+        for (k = 50; k < 256; k = k + 1) io_read(4'd0, w0);
+        io_read(4'd7, v); chk(v & 16'h0089, 16'h0000, "IDENTIFY done status");
+
+        // ===== [2] TEST UNIT READY (no 0xEF on the CD-boot path!) =====
+        $display("===== [2] TEST UNIT READY =====");
+        packet_send6(16'h0000, 16'h0000, 16'h0000, 16'h0000, 16'h0000, 16'h0000);
+        expect_completion("TUR");
+
+        // ===== [3] REQUEST SENSE (alloc 16) =====
+        $display("===== [3] REQUEST SENSE =====");
+        packet_send6(16'h0003, 16'h0000, 16'h0010, 16'h0000, 16'h0000, 16'h0000);
+        expect_datain(8'h10, 8'h00, "REQUEST SENSE data phase");
+        io_read(4'd0, w0); chk(w0 & 16'h00ff, 16'h0070, "sense resp code 0x70");
+        io_read(4'd0, w0); chk(w0 & 16'h00ff, 16'h0000, "sense key 0 (ready)");
+        for (k = 2; k < 8; k = k + 1) io_read(4'd0, w0);
+        expect_completion("REQUEST SENSE");
+
+        // ===== [4] READ TOC (start 0) - trace CDB 43 00 00 00 00 00 00 00 0C =====
+        $display("===== [4] READ TOC (start track 0) =====");
+        packet_send6(16'h0043, 16'h0000, 16'h0000, 16'h0000, 16'h000C, 16'h0000);
+        expect_datain(8'h0C, 8'h00, "READ TOC(0) data phase");
+        io_read(4'd0, w0); chk(w0, 16'h1200, "TOC(0) length 0x0012");
+        io_read(4'd0, w0); chk(w0, 16'h0101, "TOC(0) first/last 01/01");
+        io_read(4'd0, w0); chk(w0, 16'h1400, "TOC(0) ADR/CTRL 0x14");
+        io_read(4'd0, w0); chk(w0, 16'h0001, "TOC(0) track 01");
+        io_read(4'd0, w0); chk(w0, 16'h0000, "TOC(0) LBA hi");
+        io_read(4'd0, w0); chk(w0, 16'h0000, "TOC(0) LBA lo (track 1 at 0)");
+        expect_completion("READ TOC(0)");
+
+        // ===== [5] READ TOC (start 0xAA): the LEAD-OUT - the TOC content gate ====
+        // MAME (the spec): descriptor track 0xAA, LBA 16680. Pre-fix RTL served a
+        // fixed track-01/LBA-0 TOC -> this was the true-red content assertion.
+        $display("===== [5] READ TOC (start track 0xAA, lead-out) =====");
+        packet_send6(16'h0043, 16'h0000, 16'h0000, 16'h00AA, 16'h000C, 16'h0000);
+        expect_datain(8'h0C, 8'h00, "READ TOC(AA) data phase");
+        io_read(4'd0, w0); chk(w0, 16'h0A00, "TOC(AA) length 0x000A");
+        io_read(4'd0, w0); chk(w0, 16'h0101, "TOC(AA) first/last 01/01");
+        io_read(4'd0, w0); chk(w0, 16'h1400, "TOC(AA) ADR/CTRL 0x14");
+        io_read(4'd0, w0); chk(w0, 16'h00AA, "TOC(AA) track 0xAA (lead-out)");
+        // LBA 16680 = 0x4128 big-endian in bytes 8..11 -> words {b9,b8}, {b11,b10}
+        io_read(4'd0, w0); chk(w0, {LEADOUT_LBA[23:16], LEADOUT_LBA[31:24]}, "TOC(AA) LBA hi");
+        io_read(4'd0, w0); chk(w0, {LEADOUT_LBA[7:0],  LEADOUT_LBA[15:8]},  "TOC(AA) LBA 16680");
+        expect_completion("READ TOC(AA)");
+
+        // ===== [6] READ TOC (start 0) again - trace repeats it =====
+        $display("===== [6] READ TOC (start track 0) again =====");
+        packet_send6(16'h0043, 16'h0000, 16'h0000, 16'h0000, 16'h000C, 16'h0000);
+        expect_datain(8'h0C, 8'h00, "READ TOC(0) #2 data phase");
+        io_read(4'd0, w0); chk(w0, 16'h1200, "TOC(0)#2 length");
+        io_read(4'd0, w0); chk(w0, 16'h0101, "TOC(0)#2 first/last");
+        for (k = 2; k < 6; k = k + 1) io_read(4'd0, w0);
+        expect_completion("READ TOC(0) #2");
+
+        // ===== [7] MODE SENSE(10) page 0x0E (alloc 24) =====
+        $display("===== [7] MODE SENSE(10) page 0x0E =====");
+        packet_send6(16'h005A, 16'h000E, 16'h0000, 16'h0000, 16'h0018, 16'h0000);
+        expect_datain(8'h18, 8'h00, "MODE SENSE data phase");
+        io_read(4'd0, w0); chk(w0, 16'h1600, "MODE SENSE data length 0x0016");
+        for (k = 1; k < 12; k = k + 1) io_read(4'd0, w0);
+        expect_completion("MODE SENSE");
+
+        // ===== [8] READ CAPACITY: last LBA = lead-out - 1, block 2048 =====
+        // MAME (the spec): 16679 / 0x800. Pre-fix RTL served a placeholder LBA.
+        $display("===== [8] READ CAPACITY =====");
+        packet_send6(16'h0025, 16'h0000, 16'h0000, 16'h0000, 16'h0000, 16'h0000);
+        expect_datain(8'h08, 8'h00, "READ CAPACITY data phase");
+        io_read(4'd0, w0); chk(w0, 16'h0000, "CAPACITY last-LBA bytes 0,1");
+        io_read(4'd0, w0); chk(w0, {(LEADOUT_LBA[7:0]-8'd1), LEADOUT_LBA[15:8]},
+                               "CAPACITY last-LBA 16679");
+        io_read(4'd0, w0); chk(w0, 16'h0000, "CAPACITY blklen bytes 0,1");
+        io_read(4'd0, w0); chk(w0, 16'h0008, "CAPACITY blklen 0x0800");
+        expect_completion("READ CAPACITY");
+
+        // ===== [9] READ(12) LBA16 x1: the ISO9660 PVD sector (ch5 DMA) =====
+        // First sector: the host BFM is ms-late -> proves the BSY data-ready gate
+        // (DRQ clear, no INTRQ until sec_ready; pre-fix RTL raised DRQ at dispatch
+        // and ch5 would have drained stale BRAM).
+        $display("===== [9] READ(12) LBA 16 (PVD) =====");
+        read12_dispatch(32'd16, 8'd1, 0);
         io_read(4'd7, v);
         if ((v & 16'h0088) !== 16'h0080) begin
             $display("FAIL: post-dispatch STATUS=%02h (want BSY=1,DRQ=0: stale-data window)", v[7:0]);
@@ -329,15 +465,10 @@ module tb_cdboot;
             $display("FAIL: INTRQ before sec_ready (stale-data window)");
             errors = errors + 1;
         end
-        // now run the BIOS ISR loop on it (1 sector, DMA drain on the green build)
-        remaining = 2048; secs_done = 0; rd_lba = 32'd16; t_consumed = $realtime;
         wait_irq(HOST_DELAY + 200000, "LBA16 data phase");
         io_read(4'd7, v); chk(v & 16'h00ff, 16'h0048, "LBA16 data status DRDY|DRQ");
         io_read(4'd4, v); chk(v & 16'h00ff, 16'h0000, "LBA16 bc lo");
         io_read(4'd5, v); chk(v & 16'h00ff, 16'h0008, "LBA16 bc hi");
-`ifdef PREFIX_RTL
-        pio_drain_sector(32'd16);
-`else
         if (dma_req !== 1'b1) begin
             $display("FAIL: dma_req not asserted in the data phase");
             errors = errors + 1;
@@ -347,59 +478,60 @@ module tb_cdboot;
             $display("FAIL: dma_req still asserted after the sector drained");
             errors = errors + 1;
         end
-`endif
+        // the GX700 PVD check: buf[0]==1 && buf[1..5]=="CD001"
+        chk(pvd_w[0], 16'h4301, "PVD word0 (0x01,'C')");
+        chk(pvd_w[1], 16'h3044, "PVD word1 ('D','0')");
+        chk(pvd_w[2], 16'h3130, "PVD word2 ('0','1')");
         wait_irq(200000, "LBA16 completion");
         io_read(4'd7, v); chk(v & 16'h00ff, 16'h0050, "LBA16 completion status");
         io_read(4'd2, v); chk(v & 16'h00ff, 16'h0003, "LBA16 completion ireason");
 
-        // ===== [3] multi-sector READ(12) x3 + remaining-byte accounting (-8) =====
-        // fast host: the DUT's pace floor becomes the inter-IRQ limiter (measured)
+        // ===== [10] READ(12) LBA18 x1 - CDB stack-garbage bytes 64/3D/80 =====
+        $display("===== [10] READ(12) LBA 18 (garbage CDB bytes) =====");
         host_slow = 0;
-`ifdef PREFIX_RTL
-        read12_run(32'd16, 8'd3, 0);
-`else
-        read12_run(32'd16, 8'd3, 1);
-`endif
+        read12_run(32'd18, 8'd1, 1, 1);
 
-        // ===== [4] zero-length READ(12) -> immediate good completion =====
-        read12_dispatch(32'd20, 8'd0);
+        // ===== [11] READ(12) LBA20 x4 - multi-sector + garbage bytes =====
+        $display("===== [11] READ(12) LBA 20 x4 =====");
+        read12_run(32'd20, 8'd4, 1, 1);
+
+        // ===== [12] READ(12) LBA16405 x1 - the boot-binary region =====
+        $display("===== [12] READ(12) LBA 16405 =====");
+        read12_run(32'd16405, 8'd1, 1, 0);
+
+        // ===== [13] READ(12) LBA16406 x124 - the boot binary burst (FULL) =====
+        $display("===== [13] READ(12) LBA 16406 x124 (boot binary) =====");
+        read12_run(32'd16406, 8'd124, 1, 0);
+
+        // ===== supplementary (off the traced path, RTL kept alive) =====
+        // SET FEATURES 0xEF: NOT on the CD-boot path (adjudication), but the
+        // flash-boot drive probe still issues it - keep it answering clean.
+        $display("===== [S1] SET FEATURES 0xEF (supplementary) =====");
+        io_write(4'd1, 16'h0003);
+        io_write(4'd2, 16'h0021);
+        io_write(4'd7, 16'h00EF);
+        wait_irq(1000, "SET FEATURES");
+        io_read(4'd7, v);
+        if (v[0] !== 1'b0 || (v & 16'h0040) !== 16'h0040) begin
+            $display("FAIL: SET FEATURES status=%02h (want DRDY, no ERR)", v[7:0]);
+            errors = errors + 1;
+        end
+        // zero-length READ(12) -> immediate good completion
+        $display("===== [S2] zero-length READ(12) (supplementary) =====");
+        read12_dispatch(32'd20, 8'd0, 0);
         wait_irq(1000, "zero-length completion");
         io_read(4'd7, v);
         if ((v & 16'h0008) !== 16'h0000) begin
             $display("FAIL: zero-length READ raised a data phase (STATUS=%02h)", v[7:0]);
             errors = errors + 1;
-            io_write(4'd7, 16'h0008);              // DEVICE RESET to recover (pre-fix path)
+            io_write(4'd7, 16'h0008);              // DEVICE RESET to recover
         end else begin
             chk(v & 16'h00ff, 16'h0050, "zero-length completion status");
             io_read(4'd2, v); chk(v & 16'h00ff, 16'h0003, "zero-length completion ireason");
         end
-
-        // ===== [5] drive identity: Matsushita CR-589 + IDENTIFY DMA bit =====
-        io_write(4'd7, 16'h00A0);
-        io_write(4'd0, {8'h00, 8'h12});            // INQUIRY
-        for (k = 0; k < 5; k = k + 1) io_write(4'd0, 16'h0000);
-        io_read(4'd7, v); chk(v & 16'h00ff, 16'h0048, "INQUIRY status");
-        for (k = 0; k < 4; k = k + 1) io_read(4'd0, w0);   // words 0..3
-        io_read(4'd0, w0); chk(w0, 16'h414D, "INQUIRY vendor 'MA'");   // bytes 8,9
-        io_read(4'd0, w0); chk(w0, 16'h5354, "INQUIRY vendor 'TS'");   // bytes 10,11
-        io_read(4'd0, w0); chk(w0, 16'h4948, "INQUIRY vendor 'HI'");   // bytes 12,13
-        io_read(4'd0, w0); chk(w0, 16'h4154, "INQUIRY vendor 'TA'");   // bytes 14,15
-        for (k = 8; k < 18; k = k + 1) io_read(4'd0, w0);  // drain to completion
-        io_write(4'd7, 16'h00A1);                  // IDENTIFY PACKET DEVICE
-        io_read(4'd7, v); chk(v & 16'h00ff, 16'h0048, "IDENTIFY status");
-        for (k = 0; k < 49; k = k + 1) io_read(4'd0, w0);  // words 0..48
-        io_read(4'd0, w0);
-        if ((w0 & 16'h0400) !== 16'h0400) begin
-            $display("FAIL: IDENTIFY word49=%04h (DMA-supported bit clear)", w0);
-            errors = errors + 1;
-        end
-        for (k = 50; k < 256; k = k + 1) io_read(4'd0, w0);
-        io_read(4'd7, v); chk(v & 16'h00ff, 16'h0050, "IDENTIFY done status");
-
-        // ===== [6] PIO fallback stays alive (green): 1 sector via PIO =====
-`ifndef PREFIX_RTL
-        read12_run(32'd17, 8'd1, 0);
-`endif
+        // PIO fallback stays alive: 1 sector via PIO
+        $display("===== [S3] PIO sector fallback (supplementary) =====");
+        read12_run(32'd17, 8'd1, 0, 0);
 
         if (errors == 0) $display("RESULT: PASS (cdboot)");
         else             $display("RESULT: FAIL (cdboot, %0d errors)", errors);
