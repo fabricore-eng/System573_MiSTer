@@ -70,12 +70,28 @@ atapi_cdread: cddata
 COORD := $(HOME)/Dev/mister-dev-hub/tools/dell_coord.sh
 SIMKEY ?= 573
 
+# Progress marker (control-room contract §1c, cockpit f339e46): after EACH test, push
+# '<start-ISO>\tiverilog suite\t<pct>\t<eta_s>\t<done>/<total> <last-test>' to
+# dell:~/mister-shared/state/progress/$(SIMKEY) so the dashboard bar tracks the suite live.
+# One short ssh per test (~0.5 s x $(words $(TESTS)) — acceptable); SIMPROGRESS=0 opts out.
+# Best-effort like the sim marker: a dead ssh must never break the suite. The trap below
+# removes the marker on exit (same trap that fires the sim stop).
+SIMPROGRESS ?= 1
+PROG_SSH  := ssh -o BatchMode=yes -o ConnectTimeout=3 dell
+PROG_FILE := mister-shared/state/progress/$(SIMKEY)
+
 all:
 	@[ -x "$(COORD)" ] && "$(COORD)" sim $(SIMKEY) start "iverilog suite ($(words $(TESTS)) tests)" >/dev/null 2>&1 || true; \
-	trap '[ -x "$(COORD)" ] && "$(COORD)" sim $(SIMKEY) stop >/dev/null 2>&1 || true' EXIT INT TERM; \
-	fail=0; \
+	trap '{ [ -x "$(COORD)" ] && "$(COORD)" sim $(SIMKEY) stop; } >/dev/null 2>&1; [ "$(SIMPROGRESS)" = 0 ] || $(PROG_SSH) "rm -f ~/$(PROG_FILE)" >/dev/null 2>&1; true' EXIT INT TERM; \
+	start_iso=$$(date -u +%FT%TZ); t0=$$(date +%s); total=$(words $(TESTS)); n=0; fail=0; \
 	for t in $(TESTS); do \
 	  $(MAKE) -s $$t || fail=1; \
+	  n=$$((n+1)); \
+	  if [ "$(SIMPROGRESS)" != 0 ]; then \
+	    el=$$(( $$(date +%s) - t0 )); pct=$$((100*n/total)); eta=$$((el*(total-n)/n)); \
+	    printf '%s\tiverilog suite\t%s\t%s\t%s/%s %s\n' "$$start_iso" "$$pct" "$$eta" "$$n" "$$total" "$$t" | \
+	      $(PROG_SSH) "mkdir -p ~/mister-shared/state/progress && cat > ~/$(PROG_FILE)" >/dev/null 2>&1 || true; \
+	  fi; \
 	done; \
 	echo "-----------------------------------------"; \
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; \
