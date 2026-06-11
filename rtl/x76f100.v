@@ -44,7 +44,24 @@ module x76f100 #(
     input  wire sec_rst,    // chip RST pin, active high (0->1 = response to reset)
     input  wire scl,        // serial clock
     input  wire sda_i,      // SDA driven by the host (1 = released/high)
-    output reg  sda_o       // SDA driven by the device (1 = high, 0 = low)
+    output reg  sda_o,      // SDA driven by the device (1 = high, 0 = low)
+
+    // ---- boot-time NVRAM image load (the 132-byte MAME x76f100 nvram image) ----
+    // Streamed in byte-by-byte at boot from the security-EEPROM ioctl channel. The
+    // image layout (machine/x76f100.cpp nvram_read/nvram_write order) is:
+    //   [  0:  3] response-to-reset (4 bytes, 0x19,0x00,0xAA,0x55) -- IGNORED here
+    //            (the RTR constant is hard-wired in rtr_val()); accepted + dropped.
+    //   [  4: 11] write password    (8 bytes)  -> wpw[0..7]
+    //   [ 12: 19] read  password    (8 bytes)  -> rpw[0..7]
+    //   [ 20:131] 112 data bytes               -> data[0..111]
+    // load_we writes load_data at byte address load_addr (0..131). When any byte is
+    // loaded, `loaded` latches and the loaded NVRAM overrides the compile-time params
+    // (params stay the default for sims that never drive the load port). Byte order is
+    // chosen so rpw[0] == .u1[12] == the FIRST read-password byte the master sends, so
+    // the ST_PW compare (wbuf[j] vs rpw[j], j ascending) matches MSB-first as on HW.
+    input  wire        load_we,
+    input  wire [9:0]  load_addr,   // 0..131
+    input  wire [7:0]  load_data
 );
     // ---- states (match MAME state_t order) ----
     localparam [2:0] ST_STOP     = 3'd0,
@@ -73,6 +90,16 @@ module x76f100 #(
     reg [7:0] wpw  [0:7];   // write password
     reg [7:0] rpw  [0:7];   // read password
     reg [7:0] wbuf [0:7];   // input byte buffer (password / write data)
+
+    // ---- image-load byte-offset map (MAME x76f100 nvram layout) ----
+    // 4-byte RTR header at [0:3] is consumed but not stored (RTR is constant).
+    localparam integer LD_WPW  = 4;     // write password [4:11]
+    localparam integer LD_RPW  = 12;    // read  password [12:19]
+    localparam integer LD_DATA = 20;    // 112 data bytes [20:131]
+
+    // High once any image byte has been loaded (the loaded NVRAM is authoritative;
+    // before that the compile-time params remain in effect so existing sims pass).
+    reg loaded = 1'b0;
 
     integer k;
     initial begin
@@ -149,6 +176,24 @@ module x76f100 #(
     always @(posedge clk) begin
         // one-shot default
         ram_we <= 1'b0;
+
+        // ===== boot-time NVRAM image load (runs even while rst is asserted) =====
+        // Small register files are written directly; the 112-byte body goes through the
+        // single write port. The 4-byte RTR header is dropped. (Boot load completes long
+        // before any protocol edge, so it never overlaps the block-flush burst engine.)
+        if (load_we) begin
+            loaded <= 1'b1;
+            if (load_addr >= LD_DATA[9:0]) begin
+                ram_we    <= 1'b1;
+                ram_waddr <= (load_addr - LD_DATA[9:0]); // 0..111 (low 7 bits)
+                ram_wdata <= load_data;
+            end else if (load_addr >= LD_RPW[9:0])
+                rpw[load_addr - LD_RPW[9:0]] <= load_data;
+            else if (load_addr >= LD_WPW[9:0])
+                wpw[load_addr - LD_WPW[9:0]] <= load_data;
+            // load_addr < LD_WPW (0..3): the 4-byte RTR header -- accepted and dropped
+            // (RtR is hard-wired in rtr_val()).
+        end
 
         // ===== write-burst engine: serialise the 8-byte block flush to one byte /
         // clock (a block flush only starts on a rising-SCL edge, ~9 idle clocks
