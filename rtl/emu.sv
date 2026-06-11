@@ -383,6 +383,14 @@ parameter CONF_STR = {
 	"F1,EXE,Load Exe;",
 	"F2,BIN,Load 573 Flash;",
 	"F3,BIN,Load 573 NVRAM;",
+	// F4/F5 = the security-cart pair. WITHOUT an F-slot at an index, MiSTer Main SILENTLY
+	// DROPS an .mgl <file index=N> for it (same rule as S-slots, hub LESSONS) -> the index-N
+	// download pulse never fires. The seceep/secser decode (ioctl_index 4/5) + the whole
+	// x76/ds2401 load chain were all correct, but index 4 had no slot, so the synth .u1 never
+	// reached the chip and hypbbc2p stuck at "-3N" (read pw stayed 0). The unit sim missed it
+	// because the TB drives the load port directly, bypassing CONF_STR delivery.
+	"F4,U1,Load Security Cassette;",
+	"F5,U6,Load Cart Serial;",
 	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
 	"O[94],573 Flash Debug,Off,On;",
 	"O[96:95],573 Dbg Field,ch4Q,expQ,cnt/sz,wrAddr;",
