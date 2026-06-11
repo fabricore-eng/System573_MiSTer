@@ -103,6 +103,13 @@ module system573_top #(
     input  wire        cd_hps_write,    // <- sd_buff_wr    (one 16-bit word per pulse)
     input  wire [15:0] cd_hps_data,     // <- sd_buff_dout
 
+    // ---- PSX DMA channel 5 drain of the ATAPI data phase (psx_patches/0023) ----
+    // The BIOS's only sector-read data path: the ISR arms ch5 and the DMA pulls the
+    // 2048-byte sector as 16-bit halfwords straight from atapi.v's prefetch register.
+    output wire        atapi_dma_req,   // -> psx atapi_dmaRequest (data-phase request)
+    input  wire        atapi_dma_rd,    // <- psx DMA_ATA_readEna (halfword consume)
+    output wire [15:0] atapi_dma_dout,  // -> psx DMA_ATA_read
+
     input  wire [7:0]  adc_ch0,
     input  wire [7:0]  adc_ch1,
     input  wire [7:0]  adc_ch2,
@@ -207,14 +214,22 @@ module system573_top #(
     wire [31:0] atapi_sec_lba;
     wire [10:0] atapi_sbuf_addr;
     wire [15:0] atapi_sbuf_q;
+    wire        atapi_sec_ready;
+    wire        atapi_dma_req_int;
+    // ide_rst polarity: 0x1f560000 bit0 is the drive's ACTIVE-LOW reset line
+    // (psx-spx / MAME konami573: write 0 = assert reset, write 1 = release).
+    // The old `sel_idereset & exp1_we` reset on ANY write -- including the
+    // BIOS's release-write of 1, which re-reset the drive it had just reset.
     atapi u_atapi (
-        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
+        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we & ~exp1_wdata[0]),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
         .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq),
         .cd_attached(cd_image),
         .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
-        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q)
+        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
+        .sec_ready(atapi_sec_ready),
+        .dma_req(atapi_dma_req_int), .dma_rd(atapi_dma_rd), .dma_dout(atapi_dma_dout)
     );
 
     // --- mounted-CD-image sector reader (Feature B) ---
@@ -222,10 +237,12 @@ module system573_top #(
         .clk(clk), .rst(rst),
         .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
         .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
-        .sec_ready(), .sec_busy(),
+        .sec_ready(atapi_sec_ready), .sec_busy(),
         .cd_req(cd_hps_req), .cd_lba(cd_hps_lba),
         .cd_ack(cd_hps_ack), .cd_wr(cd_hps_write), .cd_data(cd_hps_data)
     );
+    // ch5 request follows the same drive-present gate as INTRQ.
+    assign atapi_dma_req = cd_present ? atapi_dma_req_int : 1'b0;
     // cd_present gates the IDE read mux + INTRQ. CORRECTION (HW-verified 2026-06-03):
     // a real 573 -- even for no_cdrom flash games (gchgchmp/hyperbbc) -- carries a CR-589
     // CD-ROM on the IDE bus, and the GX700 POST "DRIVE CHECK" probes it UNCONDITIONALLY

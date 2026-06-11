@@ -1262,6 +1262,10 @@ psx
    .exp1_dataRead(exp1_dataRead),
    .exp1_wait(exp1_wait),
    .exp_irq10(exp_irq10),
+   // System 573 ATAPI on DMA ch5 (psx_patches/0023)
+   .atapi_dmaRequest(atapi_dma_req),
+   .DMA_ATA_readEna(atapi_dma_rd),
+   .DMA_ATA_read(atapi_dma_dout),
    .ram_refresh(sdr_refresh),
    .ram_dataWrite(sdr_sdram_din),
    .ram_dataRead32(sdr_sdram_dout32),
@@ -1497,6 +1501,12 @@ wire        exp1_re;
 wire [15:0] exp1_dataRead;
 wire        exp_irq10;
 wire        exp1_wait;          // 573 flash line-fill stall -> psx_mister EXP1 wait
+
+// 573 ATAPI <-> PSX DMA channel 5 (psx_patches/0023). All clk_1x, no CDC: the
+// dma.vhd consume strobe is ce-qualified, atapi.v free-runs on the same clock.
+wire        atapi_dma_req;      // atapi data-phase request -> psx atapi_dmaRequest
+wire        atapi_dma_rd;       // psx DMA_ATA_readEna -> atapi halfword consume
+wire [15:0] atapi_dma_dout;     // atapi prefetched sector halfword -> psx DMA_ATA_read
 
 // 573 onboard-flash SDRAM line-fill bridge (system573_top <-> sdram ch4).
 wire        flash_mem_req;
@@ -1904,6 +1914,10 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .cd_hps_ack     (sd_ack[1]),
    .cd_hps_write   (sd_buff_wr),
    .cd_hps_data    (sd_buff_dout),
+   // ATAPI data phase -> PSX DMA ch5 (psx_patches/0023)
+   .atapi_dma_req  (atapi_dma_req),
+   .atapi_dma_rd   (atapi_dma_rd),
+   .atapi_dma_dout (atapi_dma_dout),
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),

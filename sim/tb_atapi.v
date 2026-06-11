@@ -18,7 +18,8 @@ module tb_atapi;
                .sel(sel), .addr(addr), .we(we), .re(re),
                .din(din), .dout(dout), .intrq(intrq),
                .cd_attached(1'b0), .sec_req(), .sec_lba(),
-               .sbuf_addr(), .sbuf_q(16'h0000));
+               .sbuf_addr(), .sbuf_q(16'h0000), .sec_ready(1'b0),
+               .dma_req(), .dma_rd(1'b0), .dma_dout());
 
     always #5 clk = ~clk;
 
@@ -75,9 +76,9 @@ module tb_atapi;
 
         // first word = {resp[1],resp[0]} = {0x80,0x05}
         chk(word[0], 16'h8005, "INQ word0");
-        // bytes 8..10 = "KON"
-        chk(word[4], 16'h4F4B, "INQ vendor KO");   // {resp[9]=O, resp[8]=K}
-        chk({8'h00, word[5][7:0]}, 16'h004E, "INQ vendor N");
+        // bytes 8..10 = "MAT" (Matsushita CR-589 -- the 573's real drive identity)
+        chk(word[4], 16'h414D, "INQ vendor MA");   // {resp[9]='A', resp[8]='M'}
+        chk({8'h00, word[5][7:0]}, 16'h0054, "INQ vendor T");
 
         io_read(4'd7, v); chk(v, 16'h0050, "INQ done status"); // back to DRDY|DSC
 
@@ -87,7 +88,8 @@ module tb_atapi;
         io_write(4'd0, 16'h0000);   // LBA[31:16]
         io_write(4'd0, 16'h0100);   // LBA[15:0] -> pkt[5]=0x01 (sector 1)
         io_write(4'd0, 16'h0000);
-        io_write(4'd0, 16'h0000);   // transfer length
+        io_write(4'd0, 16'h0001);   // transfer length = 1 sector (pkt[8]; a 0-length
+                                    // READ now correctly completes with NO data phase)
         io_write(4'd0, 16'h0000);   // -> dispatch
         io_read(4'd7, v); chk(v, 16'h0048, "READ status");      // DRDY|DRQ
         io_read(4'd5, v); chk(v, 16'h0008, "READ byte count hi"); // 0x0800 = 2048

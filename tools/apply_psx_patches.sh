@@ -109,7 +109,17 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # (CPU + icache + DMA reads) and at the dma.vhd write-back fifo insert --
           # matching MAME's DMA n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp).
           # emu.sv enables it via S573_RAM4MB. Red/green: sim/system573/run_ram_mirror.sh.
-          "$ROOT/psx_patches/0022-s573-main-ram-4mb.patch" )
+          "$ROOT/psx_patches/0022-s573-main-ram-4mb.patch" \
+          # 0023 = ATAPI CD-ROM on DMA channel 5 (the hard gate for every CD-installer
+          # game). The BIOS's only sector-read data path is DMA mode (mode byte = 2 ->
+          # ISR arms ch5: MADR=buf, BCR=bytes>>2, CHCR=0x11050100 manual+chop32); the
+          # vendored core's ch5 is dead (request tied '0', no trigger, no WORKING arm
+          # -> 'severity failure'). Adds the SPU-pattern 16-bit read trio
+          # (atapi_dmaRequest/DMA_ATA_readEna/DMA_ATA_read) threaded dma -> psx_top ->
+          # psx_mister -> emu.sv -> system573_top/atapi.v. readEna is ce-qualified
+          # (the 573 fabric free-runs on clk1x). Device->RAM only (CHCR bit0 forced 0).
+          # Red/green: sim/tb_cdboot.v (BIOS ch5 contract BFM, 32-word chopped bursts).
+          "$ROOT/psx_patches/0023-s573-dma-ch5-atapi.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

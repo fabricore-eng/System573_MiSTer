@@ -31,6 +31,7 @@ module tb_drivecheck;
         .cd_present(1'b1),
         .cd_image(1'b0), .cd_hps_req(), .cd_hps_lba(),
         .cd_hps_ack(1'b0), .cd_hps_write(1'b0), .cd_hps_data(16'h0000),
+        .atapi_dma_req(), .atapi_dma_rd(1'b0), .atapi_dma_dout(),
         .adc_ch0(8'h00), .adc_ch1(8'h00), .adc_ch2(8'h00), .adc_ch3(8'h00),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),

@@ -34,15 +34,17 @@ module tb_atapi_cdread;
     reg         cd_ack = 0, cd_wr = 0;
     reg  [15:0] cd_data = 0;
 
+    wire        sec_ready, sec_busy;
     atapi dut (
         .clk(clk), .rst(rst), .ide_rst(1'b0),
         .sel(sel), .addr(addr), .we(we), .re(re),
         .din(din), .dout(dout), .intrq(intrq),
         .cd_attached(1'b1),
         .sec_req(sec_req), .sec_lba(sec_lba),
-        .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q)
+        .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
+        .sec_ready(sec_ready),
+        .dma_req(), .dma_rd(1'b0), .dma_dout()
     );
-    wire        sec_ready, sec_busy;
     s573_cdimg cdimg (
         .clk(clk), .rst(rst),
         .sec_req(sec_req), .sec_lba(sec_lba),
@@ -137,6 +139,7 @@ module tb_atapi_cdread;
 
     // ---- run a full ATAPI READ(10) of `lba`; the BIOS issues PACKET then the 12-byte
     // CDB, then PIO-reads 1024 words. Returns nothing; assertions inline. ----
+    integer poll;
     task atapi_read10(input [31:0] lba);
         reg [15:0] v;
         begin
@@ -148,15 +151,16 @@ module tb_atapi_cdread;
             io_write(4'd0, {8'h00, 8'h00});           // pkt[6]=0, pkt[7]=len hi
             io_write(4'd0, {8'h00, 8'h01});           // pkt[8]=len lo (1 block), pkt[9]=0
             io_write(4'd0, 16'h0000);                 // pkt[10..11] -> dispatch
-            // wait for the sector to be fetched + buffered before the host PIO-reads.
-            // (On HW the BIOS does this via the IRQ10/DRQ handshake; here we model it by
-            // waiting on the reader: sec_busy RISES on the new fetch, then sec_ready. We
-            // must wait through busy first so a STALE sec_ready from the prior sector is
-            // not mistaken for this one.)
-            wait (sec_busy === 1'b1);
-            wait (sec_ready === 1'b1);
-            repeat (2) @(posedge clk);
-            io_read(4'd7, v); chk(v & 16'h00ff, 16'h0048, "READ status DRDY|DRQ");
+            // The drive now holds BSY (DRQ clear) until the sector is REALLY buffered
+            // (data-ready gating), so do what the BIOS does: a bounded STATUS poll
+            // until BSY drops and DRQ rises. Bus-visible only -- no DUT peeking.
+            poll = 0;
+            v    = 16'h0080;
+            while (poll < 100000 && (v & 16'h0088) !== 16'h0008) begin
+                io_read(4'd7, v);
+                poll = poll + 1;
+            end
+            chk(v & 16'h00ff, 16'h0048, "READ status DRDY|DRQ");
             io_read(4'd5, v); chk(v & 16'h00ff, 16'h0008, "READ byte count 0x0800");
         end
     endtask

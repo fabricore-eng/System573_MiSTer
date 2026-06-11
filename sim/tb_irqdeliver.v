@@ -31,7 +31,8 @@ module tb_irqdeliver;
                .sel(sel), .addr(addr), .we(we), .re(re),
                .din(din), .dout(dout), .intrq(intrq),
                .cd_attached(1'b0), .sec_req(), .sec_lba(),
-               .sbuf_addr(), .sbuf_q(16'h0000));
+               .sbuf_addr(), .sbuf_q(16'h0000), .sec_ready(1'b0),
+               .dma_req(), .dma_rd(1'b0), .dma_dout());
 
     always #5 clk = ~clk;
 
