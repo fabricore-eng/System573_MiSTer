@@ -35,7 +35,7 @@ SHOT_DIR="${MISTER_SHOT_DIR:-/media/fat/screenshots}"
 SS_DIR="/media/fat/savestates"
 
 KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
-SSH=(ssh -o ConnectTimeout=8 -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:-192.168.1.40}")
+SSH=(ssh -o ConnectTimeout=8 -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:-mister}")
 # fall back to a bare host alias if the keyed form fails
 "${SSH[@]}" true 2>/dev/null || SSH=(ssh -o ConnectTimeout=8 mister)
 

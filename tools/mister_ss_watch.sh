@@ -25,7 +25,7 @@ OUT="$ROOT/local"; mkdir -p "$OUT"
 PFX="${1:-garb}"; MAXN="${2:-40}"
 SS_DIR="/media/fat/savestates/Arcade"
 KEY="${MISTER_SSH_KEY:-~/.ssh/mister_crt}"; KEY="${KEY/#\~/$HOME}"
-SSH=(ssh -o ConnectTimeout=8 -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:-192.168.1.40}")
+SSH=(ssh -o ConnectTimeout=8 -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:-mister}")
 "${SSH[@]}" true 2>/dev/null || SSH=(ssh -o ConnectTimeout=8 mister)
 
 list_states() { "${SSH[@]}" "for f in $SS_DIR/*.ss; do [ -e \"\$f\" ] && stat -c '%Y %n' \"\$f\"; done" 2>/dev/null; }
