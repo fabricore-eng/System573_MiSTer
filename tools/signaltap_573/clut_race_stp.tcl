@@ -3,17 +3,19 @@
 # clut_race_stp.tcl -- GENERATE the SignalTap II .stp for the 573 CLUT-fetch
 # race probe (the hyperbbc menu-panel wrong-palette garble).
 #
-# WHAT IT PROBES
-#   The game draws 320 textured 4bpp quads, all requesting CLUT row 491
-#   (VRAM y=0x1EB). On HW the pixelpipeline's RESIDENT row (textPalY) ends up
-#   a NEIGHBOR row (observed 480-509) -> wrong palette. Palette data in VRAM
-#   is byte-correct, GP0 stream is MAME-identical => the loss is inside the
-#   GPU's render-time palette-fetch path. Prime suspect: DISPLAY SCANOUT
-#   (gpu_videoout) sharing the one VRAM port. gpu.vhd:1620-1623 OR-MERGES all
-#   requestors' reqVRAMXPos/YPos/Size onto one bus -- a same-cycle
-#   pixelpipeline+videoout request pair corrupts the issued address. The
-#   watch list captures both sides of that arbiter so one capture can
-#   CONFIRM or REFUTE scanout involvement.
+# WHAT IT PROBES (BUILD #9 -- dual-boundary observation, BUILD9_PLAN.md Opt B)
+#   The GP0 command words arrive at the GPU with the CLUT halfword MANGLED
+#   (true 0x7AC0 / row 491 -> 0x7800/0x7840 family / rows 480-481). Every RTL
+#   stage simulated clean and a full-cycle CAS-latency change altered nothing,
+#   so this build puts the corruption ON CAMERA at two named boundaries
+#   simultaneously:
+#     sdram->dma : sdram:sdram dma_data[31:0]/dma_wr   (clk1x regs, sdram.sv)
+#     dma->gpu   : dma:idma DMA_GPU_write[31:0]/writeEna (clk1x regs,
+#                  dma.vhd:699-700)
+#   plus the GPU-side witnesses rec_textPalY (gpu_poly decode of the
+#   post-FIFO word) and the pixelpipeline request/latch trio. Verdict matrix
+#   in BUILD9_PLAN.md section 5: mangled@both = SDRAM read capture confirmed;
+#   clean@sdram+mangled@dma = dma word path; clean@both = GPU-internal.
 #
 # USAGE
 #   tclsh clut_race_stp.tcl                  -> writes clut_race.stp here
@@ -41,18 +43,26 @@
 # CONFIG
 # ---------------------------------------------------------------------------
 
-# Hierarchy prefixes (derived from the real tree, 2026-06-09):
+# Hierarchy prefixes (derived from the real tree, 2026-06-09; build9 adds
+# verified 2026-06-10):
 #   sys_top (top) -> emu:emu (rtl/emu.sv) -> psx_mister:psx (emu.sv:1149)
 #   -> psx_top:ipsx_top (psx_mister.vhd:314) -> gpu:igpu (psx_top.vhd:1506)
 #   -> gpu_pixelpipeline:igpu_pixelpipeline (gpu.vhd:1397)
-set PP "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline"
-set GP "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu"
+#   dma:idma      at psx_top.vhd:1259 (idma : entity work.dma)
+#   gpu_poly      at gpu.vhd:1289 (igpu_poly)
+#   sdram:sdram   at rtl/emu.sv:1882 (instance label "sdram"; the second
+#                 instance "sdram2" at :1966 is the 573-flash one -- NOT ours)
+set PP  "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline"
+set GP  "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu"
+set PY  "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly"
+set DMA "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma"
+set SDR "emu:emu|sdram:sdram"
 
 # Capture clock: clk2x (the GPU/pixelpipeline clock; emu.sv:222 wire clk_2x,
 # pll outclk_1). Primary = the named net inside emu. FALLBACK if the node
 # finder can't resolve it at compile (check the map report):
 #   emu:emu|pll:pll|pll_0002:pll_inst|altera_pll:altera_pll_i|outclk_wire[1]
-set CLOCK_NODE "emu:emu|clk_2x"
+set CLOCK_NODE {emu:emu|pll:pll|pll_0002:pll_inst|altera_pll:altera_pll_i|outclk_wire[1]}
 
 # JTAG identity (from jtagconfig in raetro/quartus:17.0 on dell, 2026-06-09):
 #   DE-SoC [1-4] / @1 4BA00477 SOCVHPS / @2 02D020DD 5CSEBA6(.|ES)/5CSEMA6/..
@@ -73,97 +83,206 @@ set SAMPLE_DEPTH 4096
 set TRIGGER_POSITION "post"   ;# SCHEMA-RISK: samples only show "pre"; "post"
                                # is the GUI's third preset. Validate.
 
-# Storage qualifier: conditional, single node pipeline_busy='1'.
-# pipeline_busy (gpu_pixelpipeline.vhd:597) = pipeline_stall OR any stage
-# valid; pipeline_stall includes state/=IDLE, so this stores every cycle in
-# which pixels flow OR a texture/CLUT fetch is in flight (incl. all CLUTwrenA
-# write beats) and skips idle gaps between draws -- stretching the usable
-# window. Single node keeps the qualifier syntax in known-good schema
-# territory (multi-node OR text form is unverified). Cycles NOT stored:
-# textPalReq pending while the pipe is otherwise idle (the fetch FSM picks it
-# up 1 cycle later and THAT is stored; record_data_gap marks the seam).
-set QUAL_NODE "$PP|pipeline_busy"
+# Storage qualifier: conditional, single node DMA_GPU_writeEna='1' -- store
+# ONLY dma->gpu write beats. 4096 samples / 2 (clk2x double-samples each
+# clk1x beat) ~= 2048 GP0 words ~= 227 of the 320 quads' 9-word packets
+# around the trigger: the buffer IS a GP0 stream dump at the boundary,
+# directly diffable against the MAME GP0 oracle. The sdram-side dma_data and
+# the GPU-side witnesses are still sampled at every stored beat. Single node
+# keeps the qualifier syntax in known-good schema territory (identical shape
+# to build #8's pipeline_busy qualifier; zero new schema risk).
+set QUAL_NODE "$DMA|DMA_GPU_writeEna"
 
 # ---------------------------------------------------------------------------
 # WATCH LIST -- {name width} ; width>1 expands to name[0]..name[width-1];
 # width==0 -> literal single node name (used for enum-state regs).
-# ~87 bits total. Keep LEAN: every bit costs trigger+data fabric.
+# BUILD9_PLAN.md Option B (dual-boundary): exactly 87 bits.
+# Clock-domain safety @ clk2x capture: DMA_GPU_* and sdram dma_* are clk1x
+# registers (exact 2:1 same-PLL in-phase -> each beat sampled twice, dedup
+# offline); rec_textPalY/pixelpipeline nets are clk2x-native. NO clk3x sdram
+# node is tapped (dq_reg/state/ch*_rq/dma_done are clk3x -- aliased at clk2x).
 # ---------------------------------------------------------------------------
 set NODES [list \
+    [list "$DMA|DMA_GPU_writeEna"   1] \
+    [list "$DMA|DMA_GPU_write"     32] \
+    [list "$SDR|dma_wr"             1] \
+    [list "$SDR|dma_data"          32] \
+    [list "$PY|rec_textPalY"        9] \
     [list "$PP|stage1_valid"        1] \
-    [list "$PP|stage1_palReqY"      9] \
-    [list "$PP|textPalY"            9] \
     [list "$PP|textPalReq"          1] \
     [list "$PP|textPalReqY"         9] \
-    [list "$PP|CLUTwrenA"           1] \
-    [list "$PP|CLUTaddrA"           6] \
-    [list "$PP|reqVRAMXPos"        10] \
-    [list "$PP|reqVRAMYPos"         9] \
-    [list "$PP|state.IDLE"               0] \
-    [list "$PP|state.REQUESTMORETEXTURE" 0] \
-    [list "$PP|state.REQUESTTEXTURE"     0] \
-    [list "$PP|state.WAITTEXTURE"        0] \
-    [list "$PP|state.REQUESTPALETTE"     0] \
-    [list "$PP|state.WAITPALETTE"        0] \
-    [list "$PP|drawMode\[7\]"       0] \
-    [list "$PP|drawMode\[8\]"       0] \
-    [list "$PP|pipeline_stall"      1] \
-    [list "$PP|pipeline_busy"       1] \
-    [list "$GP|videoout_reqVRAMEnable" 1] \
-    [list "$GP|pipeline_reqVRAMEnable" 1] \
-    [list "$GP|reqVRAMEnable"       1] \
-    [list "$GP|reqVRAMYPos"         9] \
-    [list "$GP|vramState.IDLE"           0] \
-    [list "$GP|vramState.WRITESECOND"    0] \
-    [list "$GP|vramState.READSECOND"     0] \
-    [list "$GP|vramState.READVRAM"       0] \
-    [list "$GP|vramState.CLEARLINESTART" 0] \
-    [list "$GP|vramState.CLEARLINE"      0] \
-    [list "$GP|reqVRAMIdle"         1] \
-    [list "$GP|reqVRAMDone"         1] \
-    [list "$GP|vram_BUSY"           1] \
-    [list "$GP|vram_pause"          1] \
+    [list "$PP|textPalFetched"      1] \
 ]
+# 1+32+1+32+9+1+1+9+1 = 87 bits (the cap, exactly).
 # Watch-list rationale (why each group):
-#  stage1_palReqY vs textPalY ......... the mismatch itself (required vs resident)
-#  textPalReq/textPalReqY ............. the shared request latch (overwrite window)
-#  CLUTwrenA/CLUTaddrA ................ which row's data actually lands in iCLUTram
-#  PP reqVRAMX/YPos + state.* ......... what Y the fetch FSM ISSUED + FSM phase
-#  GP videoout_/pipeline_reqVRAMEnable. the suspected same-cycle collision pair
-#  GP reqVRAMYPos (OR-merged bus!) .... the corrupted address, if any (gpu.vhd:1622)
-#  vramState.* / vram_BUSY / Idle/Done. who held the port; DDR3 backpressure
-#  drawMode[8:7] ...................... palette path (8=0) + color mode (7)
+#  SDR dma_wr/dma_data ........... sdram->dma handoff (clk_base=clk1x regs,
+#                                  sdram.sv:164-217 always @(posedge clk_base))
+#  DMA_GPU_write/writeEna ........ dma->gpu handoff (clk1x regs, dma.vhd:699-700)
+#  rec_textPalY .................. gpu_poly decode of the POST-FIFO word
+#                                  (gpu_poly.vhd:537) -- brackets the GPU FIFO
+#  stage1_valid/textPalReq/ReqY .. the pixelpipeline request latch (what row
+#                                  render actually asked for)
+#  textPalFetched ................ fetch-complete flag (0019 cache-hit gate)
 
 # ---------------------------------------------------------------------------
-# TRIGGER (basic, single level, AND of per-bit patterns):
-#   stage1_valid='1' AND drawMode(8)='0'  (a CLUT-textured pixel at stage1)
-#   AND stage1_palReqY = 0x1EB (491)      (this pixel NEEDS row 491)
-#   AND textPalY[3] = '0'                 (resident row is NOT 491)
-#
-# WHY bit3 and not a full /=: a basic per-bit pattern can't express a 9-bit
-# "not equal". 491 = 1_1110_1011 has bit3=1, so textPalY[3]='0' excludes the
-# correct row and fires on wrong rows 480-487/496-503 (the dominant observed
-# stray, 480, is covered). The bug hits all 320 quads/frame, so any wrong-row
-# cube fires within one frame. ALTERNATES if a capture shows the stray row
-# has bit3=1 (489-495, 504-509): use textPalY[1]='0' (excludes 491; covers
-# 488-489,492-493,496-497,...) or do the RECON pass: trigger only on
-# stage1_valid+palReqY==491, read the actual resident row from the CSV, then
-# set an exact == pattern here and regenerate (no rebuild needed).
+# TRIGGER (basic, single level, AND of per-bit patterns) -- BUILD9_PLAN.md s3.
+# Fire on a MANGLED CLUT beat at the dma->gpu boundary:
+#   writeEna='1' AND DMA_GPU_write[31:16] == 0111 1000 0x00 0000
+#   (0x7800 / 0x7840: clutY in {480,481}, clutX=0, halfword bit15=0).
+# Bit map (gpu_poly.vhd:536-537): clutY[8:0]=w[30:22], clutX[5:0]=w[21:16].
+#   true  491: 0x7AC0 -> w[30:22] = 1 1 1 1 0 1 0 1 1
+#   mangled family:      w[30:22] = 1 1 1 1 0 0 0 0 x   (w22 = only dont-care)
+# w25/w23 are LOW here but HIGH in true 491 -> can NEVER fire on a correct
+# word. The 0x2C opcode term is deliberately ABSENT: opcode (W0) and CLUT
+# halfword (W2) are different beats; a single-level basic trigger ANDs one
+# sample, so including it would be unsatisfiable by construction. The opcode
+# is in the stored stream two beats earlier; sequencing is done offline.
+# NO-FIRE IS INFORMATIVE: storage is qualified on writeEna, so a capture that
+# never triggers while garble is on screen = the mangled value does NOT exist
+# at the dma->gpu boundary -> fault is GPU-internal (FIFO/decode); run
+# RECON=stream in the same session for the positive-control stream.
 # ---------------------------------------------------------------------------
 set TRIGGER_TERMS [list \
-    [list "$PP|stage1_valid"          high] \
-    [list "$PP|drawMode\[8\]"         low ] \
-    [list "$PP|stage1_palReqY\[8\]"   high] \
-    [list "$PP|stage1_palReqY\[7\]"   high] \
-    [list "$PP|stage1_palReqY\[6\]"   high] \
-    [list "$PP|stage1_palReqY\[5\]"   high] \
-    [list "$PP|stage1_palReqY\[4\]"   low ] \
-    [list "$PP|stage1_palReqY\[3\]"   high] \
-    [list "$PP|stage1_palReqY\[2\]"   low ] \
-    [list "$PP|stage1_palReqY\[1\]"   high] \
-    [list "$PP|stage1_palReqY\[0\]"   high] \
-    [list "$PP|textPalY\[3\]"         low ] \
+    [list "$DMA|DMA_GPU_writeEna"      high] \
+    [list "$DMA|DMA_GPU_write\[31\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[30\]"   high] \
+    [list "$DMA|DMA_GPU_write\[29\]"   high] \
+    [list "$DMA|DMA_GPU_write\[28\]"   high] \
+    [list "$DMA|DMA_GPU_write\[27\]"   high] \
+    [list "$DMA|DMA_GPU_write\[26\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[25\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[24\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[23\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[21\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[20\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[19\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[18\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[17\]"   low ] \
+    [list "$DMA|DMA_GPU_write\[16\]"   low ] \
 ]
+
+# ---------------------------------------------------------------------------
+# RECON trigger modes (regenerate-only -- NO rebuild: all 87 nodes are
+# compiled as trigger inputs, so any per-bit retune is runtime-armable).
+# The storage qualifier (DMA_GPU_writeEna) is COMPILED-IN and identical in
+# every mode; only the trigger pattern changes.
+# Overrides live HERE (before validation/TPAT) so RECON terms are checked
+# against the watch list and the per-bit level-0 attrs match the active
+# trigger.
+# ---------------------------------------------------------------------------
+# RECON=stream: stream-dump mode. Fire on the FIRST 0x2C-family opcode beat
+# (0x2C..0x2F = 001011xx in bits[31:24]) and let the writeEna-qualified
+# buffer do the work: offline diff vs the MAME GP0 oracle finds every mangled
+# word, no trigger expressiveness needed.
+if {[info exists ::env(RECON)] && $::env(RECON) eq "stream"} {
+    set TRIGGER_TERMS [list \
+        [list "$DMA|DMA_GPU_writeEna"      high] \
+        [list "$DMA|DMA_GPU_write\[31\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[30\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[29\]"   high] \
+        [list "$DMA|DMA_GPU_write\[28\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[27\]"   high] \
+        [list "$DMA|DMA_GPU_write\[26\]"   high] ]
+    puts "RECON-stream MODE: trigger = first 0x2C-family opcode beat (stream dump)"
+}
+# RECON=anydma: liveness -- fire on ANY dma->gpu write during the scene.
+if {[info exists ::env(RECON)] && $::env(RECON) eq "anydma"} {
+    set TRIGGER_TERMS [list [list "$DMA|DMA_GPU_writeEna" high]]
+    puts "RECON-anydma MODE: trigger = any DMA->GPU write"
+}
+# RECON=framedump: trigger on the 0x60 frame-clear word; with TRIG_POS=pre the
+# ~3584 post-trigger samples (~1792 words) cover the ENTIRE menu list.
+if {[info exists ::env(RECON)] && $::env(RECON) eq "framedump"} {
+    set terms {}
+    set TRIGGER_TERMS [list [list "$DMA|DMA_GPU_writeEna" high]]
+    foreach b {31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0} {
+        set pol [expr {($b == 30 || $b == 29) ? "high" : "low"}]
+        lappend TRIGGER_TERMS [list "$DMA|DMA_GPU_write\[$b\]" $pol]
+    }
+    puts "RECON-framedump MODE: trigger = word==0x60000000 at writeEna"
+}
+# RECON=word: exact 32-bit word match at the dma->gpu boundary. Value from
+# env TRIG_WORD (0x... literal). Used for the FONT-UPLOAD boundary capture
+# (2026-06-10): trigger on a known MAME upload pixel word -- a LANDED word as
+# the positive control / burst anchor, a GAPPED word as the decisive
+# crosses-vs-never-crosses bit. 33 terms (writeEna + 32 exact bits).
+if {[info exists ::env(RECON)] && $::env(RECON) eq "word"} {
+    if {![info exists ::env(TRIG_WORD)]} {
+        puts stderr "FATAL: RECON=word requires TRIG_WORD=0xXXXXXXXX in env"; exit 1
+    }
+    set tw [expr {$::env(TRIG_WORD) + 0}]
+    set TRIGGER_TERMS [list [list "$DMA|DMA_GPU_writeEna" high]]
+    for {set b 31} {$b >= 0} {incr b -1} {
+        set pol [expr {(($tw >> $b) & 1) ? "high" : "low"}]
+        lappend TRIGGER_TERMS [list "$DMA|DMA_GPU_write\[$b\]" $pol]
+    }
+    puts [format "RECON-word MODE: trigger = word==0x%08X at writeEna" $tw]
+}
+if {[info exists ::env(TRIG_POS)]} { set TRIGGER_POSITION $::env(TRIG_POS) }
+# RECON=true491x: relaxed true-491 -- clut ROW exact (w[30:22]=111101011),
+# clutX DON'T-CARE (the over-constraint that mis-aimed the first runs).
+# Fire => intact 491 attributes cross the dma->gpu boundary (bug GPU-side).
+# Silent during garble => the RAM list never contains 491 (game-computed).
+if {[info exists ::env(RECON)] && $::env(RECON) eq "true491x"} {
+    set TRIGGER_TERMS [list \
+        [list "$DMA|DMA_GPU_writeEna" high] \
+        [list "$DMA|DMA_GPU_write\[31\]" low ] \
+        [list "$DMA|DMA_GPU_write\[30\]" high] [list "$DMA|DMA_GPU_write\[29\]" high] \
+        [list "$DMA|DMA_GPU_write\[28\]" high] [list "$DMA|DMA_GPU_write\[27\]" high] \
+        [list "$DMA|DMA_GPU_write\[26\]" low ] [list "$DMA|DMA_GPU_write\[25\]" high] \
+        [list "$DMA|DMA_GPU_write\[24\]" low ] [list "$DMA|DMA_GPU_write\[23\]" high] \
+        [list "$DMA|DMA_GPU_write\[22\]" high] ]
+    puts "RECON-true491x MODE: trigger = row-491 clut attr, any clutX"
+}
+# RECON=true491: positive control. Same as the main trigger but w25/w23/w22
+# HIGH = the TRUE CLUT word 0x7AC0 (row 491). Proves clean beats traverse the
+# boundary and the tap itself isn't lying.
+if {[info exists ::env(RECON)] && $::env(RECON) eq "true491"} {
+    set TRIGGER_TERMS [list \
+        [list "$DMA|DMA_GPU_writeEna"      high] \
+        [list "$DMA|DMA_GPU_write\[31\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[30\]"   high] \
+        [list "$DMA|DMA_GPU_write\[29\]"   high] \
+        [list "$DMA|DMA_GPU_write\[28\]"   high] \
+        [list "$DMA|DMA_GPU_write\[27\]"   high] \
+        [list "$DMA|DMA_GPU_write\[26\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[25\]"   high] \
+        [list "$DMA|DMA_GPU_write\[24\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[23\]"   high] \
+        [list "$DMA|DMA_GPU_write\[22\]"   high] \
+        [list "$DMA|DMA_GPU_write\[21\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[20\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[19\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[18\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[17\]"   low ] \
+        [list "$DMA|DMA_GPU_write\[16\]"   low ] ]
+    puts "RECON-true491 MODE: trigger = TRUE CLUT word 0x7AC0 (positive control)"
+}
+# RECON=491: fire the moment textPalReqY EVER holds 491 (any cycle) --
+# render-side witness, kept from build #8 (node still tapped).
+if {[info exists ::env(RECON)] && $::env(RECON) eq "491"} {
+    set TRIGGER_TERMS [list \
+        [list "$PP|textPalReqY\[8\]" high] [list "$PP|textPalReqY\[7\]" high] \
+        [list "$PP|textPalReqY\[6\]" high] [list "$PP|textPalReqY\[5\]" high] \
+        [list "$PP|textPalReqY\[4\]" low ] [list "$PP|textPalReqY\[3\]" high] \
+        [list "$PP|textPalReqY\[2\]" low ] [list "$PP|textPalReqY\[1\]" high] \
+        [list "$PP|textPalReqY\[0\]" high] ]
+    puts "RECON-491 MODE: trigger = textPalReqY==0x1EB (any cycle)"
+}
+# RECON=rec491: fire when gpu_poly's DECODED clut row register holds 491 --
+# kept from build #8 (node still tapped).
+if {[info exists ::env(RECON)] && $::env(RECON) eq "rec491"} {
+    set TRIGGER_TERMS [list \
+        [list "$PY|rec_textPalY\[8\]" high] [list "$PY|rec_textPalY\[7\]" high] \
+        [list "$PY|rec_textPalY\[6\]" high] [list "$PY|rec_textPalY\[5\]" high] \
+        [list "$PY|rec_textPalY\[4\]" low ] [list "$PY|rec_textPalY\[3\]" high] \
+        [list "$PY|rec_textPalY\[2\]" low ] [list "$PY|rec_textPalY\[1\]" high] \
+        [list "$PY|rec_textPalY\[0\]" high] ]
+    puts "RECON-rec491 MODE: trigger = gpu_poly rec_textPalY==0x1EB"
+}
+# (build #8 modes RECON=1/instrobe/anystrobe removed: their nodes
+#  (stage1-only / pipeline_textPalNew / pipeline_textPalY) are no longer in
+#  the Option-B watch list.)
 
 # ---------------------------------------------------------------------------
 # generation -- no user-serviceable parts below
@@ -263,7 +382,7 @@ puts $f "        <trigger_out_editor/>"
 puts $f "      </presentation>"
 # SCHEMA-RISK: CRC attr -- GUI writes a checksum; semantics unverified. "0"
 # accepted = fine; if open_session rejects, try removing the attribute.
-puts $f "      <trigger CRC=\"0\" attribute_mem_mode=\"false\" gap_record=\"true\" global_temp=\"1\" is_expanded=\"true\" name=\"$TRIG_NAME\" position=\"$TRIGGER_POSITION\" power_up_trigger_mode=\"false\" record_data_gap=\"true\" segment_size=\"1\" storage_mode=\"conditional\" storage_qualifier_disabled=\"no\" storage_qualifier_port_is_pin=\"false\" storage_qualifier_port_name=\"auto_stp_external_storage_qualifier\" storage_qualifier_port_tap_mode=\"classic\" trigger_type=\"circular\">"
+puts $f "      <trigger CRC=\"573C1EB1\" attribute_mem_mode=\"false\" gap_record=\"true\" global_temp=\"1\" is_expanded=\"true\" name=\"$TRIG_NAME\" position=\"$TRIGGER_POSITION\" power_up_trigger_mode=\"false\" record_data_gap=\"true\" segment_size=\"1\" storage_mode=\"conditional\" storage_qualifier_disabled=\"no\" storage_qualifier_port_is_pin=\"false\" storage_qualifier_port_name=\"auto_stp_external_storage_qualifier\" storage_qualifier_port_tap_mode=\"classic\" trigger_type=\"circular\">"
 puts $f "        <power_up_trigger position=\"$TRIGGER_POSITION\" storage_qualifier_disabled=\"no\"/>"
 puts $f "        <events use_custom_flow_control=\"no\">"
 # SCHEMA-RISK: multi-term basic condition text. Wild samples only show single
@@ -271,6 +390,8 @@ puts $f "        <events use_custom_flow_control=\"no\">"
 # per-bit level-0 attrs above carry the same condition redundantly. If
 # open_session rejects the text, fall back to level-0 attrs + empty text, and
 # verify the trigger summary in the map report after synthesis.
+# (RECON trigger overrides are applied up in the CONFIG section, before
+# validation/TPAT, so the level-0 attrs and this text always agree.)
 set terms {}
 foreach t $TRIGGER_TERMS { lassign $t tn tp ; lappend terms "'[xesc $tn]' == $tp" }
 # NB: join with XML-escaped ampersands -- raw "&&" is illegal in XML text

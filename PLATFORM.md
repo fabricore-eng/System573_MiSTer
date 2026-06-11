@@ -1,0 +1,120 @@
+# PLATFORM.md — Konami System 573 platform constants (the living cited table)
+
+**Process:** `~/Dev/mister-dev-hub/docs/PLATFORM_CONSTANTS_AUDIT.md` (Gate 0: every platform
+constant the reference emulator encodes, one row each, cited on BOTH sides — a row without an
+RTL citation is unverified).
+
+**Reference emulator:** MAME 0.288, tag `mame0288` (github.com/mamedev/mame). Primary driver:
+`src/mame/konami/ksys573.cpp` (cited below as `ksys573.cpp#L...`); device files cited by path.
+**Our core:** `rtl/emu.sv` + `rtl/*.v` + `psx_patches/` over the pristine vendored consumer-PSX
+core at `psx/` (submodule pointer never moves; every PSX edit is a numbered patch).
+
+**How to update:** when you touch a constant (or light up a new subsystem), edit the row here
+in the same commit — re-cite both sides at current line numbers, set Status, and if it was a
+sweep, add a dated record under `docs/audits/`. New subsystem ⇒ new section BEFORE the RTL.
+
+**Status legend:** `MATCH` (both sides cited, equal) · `MISMATCH` (verified divergence, not yet
+fixed) · `KNOWN-BUG` (one of the four motivating bugs; see fix state in the row) ·
+`FIX-IN-FLIGHT` (divergence confirmed, fix pending in this worktree) · `UNKNOWN` (one side
+uncited / no reference exists — explicit follow-up).
+
+Last full sweep: 2026-06-10 (`docs/audits/2026-06-10-platform-constants-audit.md`).
+Tally: 38 rows — 26 MATCH · 3 KNOWN-BUG · 2 FIX-IN-FLIGHT · 1 MISMATCH (new: ATAPI DMA ch5) · 6 UNKNOWN.
+
+## CPU, clocks & main memory
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| Main CPU + master clock | CXD8530CQ @ XTAL(67'737'600) (67.7376 MHz crystal; internal /2 → 33.8688 MHz CPU clock) | ksys573.cpp#L2595 (+ board layout L163, L217) | PLL clk1x=33.8688 / clk2x=67.7376 / clk3x=101.6064 MHz from 50 MHz ref; PSX core runs on the post-/2 33.8688 master clock; 573 fabric CLK_FREQ_HZ=33_868_800. Representation difference only. Timing note: clk_2x ~3 ns short at worst corner (psx/PSX.sdc patched). | psx/rtl/pll/pll_0002.v:25-34; rtl/emu.sv:226-233, 1151-1153, 1757 | MATCH |
+| Main RAM size + mirror window (ram_config 0x1f801060) | 4 MB ("4M"; 8× KM48V514); BIOS programs config nibble 0xC → 4 MB mirrored window, effective CPU mask 0x3fffff (reset default 0x800 = 2 MB window); MAME full-RAM dumps exactly 4,194,304 B | ksys573.cpp#L2600 (+L235); src/devices/cpu/psx/psx.cpp#L1353-L1401, L1760, L2000; `ls local/mame_gate_hunt/gh_ram_*.bin` = 4194304 | ram8mb=1'b1 → 8 MB linear (inline comment falsely claims 4 MB); addr[24:23] pass through, no 4 MB mirror; DMA wrap mask also keyed on ram8mb (8 MB, not 0x3fffff); pristine PSX core offers only 2 MB or 8 MB — no patch adds a 4 MB mode | rtl/emu.sv:1167; psx/rtl/psx_top.vhd:1353-1355; psx/rtl/dma.vhd:740 | KNOWN-BUG (#1 — STILL UNFIXED) |
+| Scratchpad + ROM window | 1 KB scratchpad at 0x1f800000-0x1f8003ff; ROM window 1<<((rom_config>>16)&0x1f) clamped to 4 MB | src/devices/cpu/psx/psx.cpp#L1746, L1336-L1350, L1404-L1411 | Pristine consumer PSX core path (no patch touches it); weak ours-side cite, but games execute, which exercises the scratchpad | psx/ vendored | MATCH |
+| IRQ controller | 11 lines (intin0..10) at 0x1f801070; GPU vblank on intin0; PSX_IRQ_MASK 0x7fd is log-only | src/devices/cpu/psx/irq.cpp#L17,L79 + irq.h#L29-L39; psx.cpp#L1762 | Pristine PSX core IRQ block; 573 adds only the exp IRQ10 wiring (ATA IRQ row) | psx/ vendored (no psx_patch touches the IRQ block) | MATCH |
+
+## GPU / video
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| GPU device variant (gputype) | CXD8561Q → gputype 2 (all of 8514Q/8561Q/BQ/CQ/8654Q are type 2; only CXD8538Q is type 1); GP1(0x10) info 07 returns 2; MAME models zero difference among type-2 revisions | ksys573.cpp#L2633; src/devices/video/psx.cpp#L62-L69, L3371-L3373 | Vendored PSX core implements the consumer (type-2 coordinate layout) GPU — no type-1 layout exists in it. Real-silicon 8561Q/BQ/CQ differences (dither/blend) are not in MAME — needs another source if ever relevant. | psx/rtl/gpu.vhd (pristine consumer core) | MATCH |
+| GPU / video clock | GPU XTAL(53'693'175) | ksys573.cpp#L2633 | clk_vid = 53.693175 MHz (pll2 NTSC base; runtime-reconfig for PAL/FF) | psx/rtl/pll2/pll2_0002.v:25,30; rtl/emu.sv:236-241, 2035 | MATCH |
+| VRAM size / row count | 0x200000 (2 MB) = 1024 rows × 1024 px × 2 B (width hardwired 1024; height=(vramSize/1024)/2; Y addressing via p_p_vram[n%height]); MAME VRAM dumps exactly 2,097,152 B | ksys573.cpp#L2633; src/devices/video/psx.cpp#L490-L491, L509-L510, psx.h#L263; `ls local/mame_gate_hunt/gh_vram_*.bin` = 2097152 | 9-bit Y = 512 rows = 1 MB (pixelAddr = row[8:0] & col[9:0] & '0'); every core-side VRAM capture is exactly 1,048,576 B (3 independent dumps) = half of MAME's. Y bit 9 silently aliases rows 512-1023 onto 0-511 — THE garble. Fix = patch 0021, PENDING (psx_patches/ tops out at 0020). | psx/rtl/gpu_cpu2vram.vhd:27,44,61,122,126; psx/rtl/gpu.vhd:198-199; psx/rtl/gpu_vram2vram.vhd:68,70; `ls local/glyph_dma/vram_de10_full.bin, vram_run3.bin` = 1048576 | KNOWN-BUG (#2) / FIX-IN-FLIGHT |
+| GPU Y-coordinate field widths (gputype 2) | E3/E4 drawarea Y = 10-bit at bit 10; E5 offset Y = 11-bit signed at bit 11; GP1(05) display-start Y = 10-bit at bit 10; texpage TWO Y bits (bit4=Y256, bit11=Y512 → GPUSTAT bit 15); CLUT Y = full 10 bits; reset drawarea = (0,0)-(1023,1023) | src/devices/video/psx.cpp#L3197-L3232 (E3/E4/E5), L3294-L3303 (disp start), L826-L845 (texpage), L1544-L1545 (CLUT), L3498-L3523 (reset) | 9-bit Y throughout: drawingAreaTop/Bottom 9-bit, vram2vram src/dst Y 9-bit, cpu2vram dst Y 9-bit; CLUT probe patches 0012-0019 retain 9-bit. Same scope as the 2 MB fix (patch 0021): every Y-bearing GP0/GP1 field needs the 10th bit + texpage bit11 + GPUSTAT bit15. CAUTION: MAME's A0/C0 raw 16-bit W/H (no ((W-1)&0x3FF)+1) and atomic DMA are MAME quirks, NOT real-HW ground truth — don't copy into RTL. | psx/rtl/gpu.vhd:198-199; psx/rtl/gpu_vram2vram.vhd:68,70; psx/rtl/gpu_cpu2vram.vhd:44; psx_patches/ (no Y-width change through 0020) | FIX-IN-FLIGHT |
+| GPU DMA channel + VBLANK IRQ | GPU = DMA channel 2 (read+write); vblank → psxirq intin0 | src/devices/video/psx.cpp#L40-L42 | Pristine dma.vhd ch2 = GPU; 573 path exercises it for font/gfx uploads. HW-measured: ch2 uploads cross the dma→gpu boundary bit-exact vs MAME (write-side verdict 2026-06-10). | psx/rtl/dma.vhd:50-75 (no psx_patch touches dma.vhd) | MATCH |
+
+## DMA
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| DMA channel map (consumer channels) | ch2=GPU, ch4=SPU, ch6=OTC (end marker 0xffffff); 7 channels; n_adrmask = ramsize-1 | video/psx.cpp#L40-41; sound/spu.cpp#L941-942; cpu/psx/dma.cpp#L38,L47,L124,L320-L336 | Pristine 7-channel dma.vhd, same ch2/ch4/ch6 assignments; consumer CD ch3 read data tied to zero (patch 0011); MDEC channels dormant ALM cost. adrmask facet is wrong only via the ram8mb known bug (Main RAM row). | psx/rtl/dma.vhd:50-75; psx_patches/0011-s573-remove-cd-top.patch | MATCH |
+| DMA request-mode (sync 1) block semantics | words = BS × BA with BA==0 → 0x10000 wrap; MAME executes the whole transfer atomically (no per-block DRQ pacing — MAME quirk, not HW truth) | src/devices/cpu/psx/dma.cpp#L127-L136, L249-L256 | Pristine dma.vhd; behaviorally witnessed: boot font upload (GP0 A0 + ch2 REQUEST mode) crosses dma→gpu BIT-EXACT vs MAME on real HW (SignalTap, 2026-06-10). Source path exonerated for the garble — remaining bug is inside the GPU cpu2vram→VRAM write path (the 512-row aliasing). | psx/rtl/dma.vhd (pristine); measurement: memory garble-fix-plan 5p write-side verdict | MATCH |
+| **ATAPI DMA channel (ch5)** | 573 wires CD/ATAPI DMA to PSX DMA channel 5 (psxdma install_read/write_handler ch5); BIOS CD-boot path depends on it (ATAPI_CYCLES_PER_SECTOR floor ≥2000 "or the BIOS ends up out of order") | ksys573.cpp#L2597-L2598, L391, L1193 | NOT implemented — ATAPI is PIO-only over EXP1; ch5 remains the unused consumer PIO channel; no psx_patch hooks ATAPI into dma.vhd. Aggravating: vendored dma.vhd:363 hard-wires `dmaArray(5).request <= '0'` and the trigger block (L368-373) omits ch5 — ch5 can NEVER fire. Zero effect on flash-boot hyperbbc; gates tier-B CD games + BIOS boot with DIP SW4=CD-ROM. | rtl/atapi.v:5-8,27-49 (PIO engine); rtl/system573_top.v:201-208; psx/rtl/dma.vhd:363,368-373 (untouched by psx_patches/0001-0020) | **MISMATCH (new, latent)** |
+
+## SPU / audio
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| SPU clock + RAM size | SPU @ XTAL(67'737'600)/2 = 33.8688 MHz, stereo; spu_ram_size hardwired 512 KB (same as consumer; board "SPUDR4M" KM416V256) | ksys573.cpp#L2640, L2644 context, L234; src/devices/sound/spu.cpp#L125 | 512 KB (19-bit byte address) on clk1x 33.8688 MHz; backing = SDRAM2 ch1/ch2 when fitted+enabled, else spu_ram.vhd DDR3 path. Audio HW-confirmed working (hyperbbc milestone). | psx/rtl/spu.vhd:51; rtl/emu.sv:1203,1955,1988-2005; psx/rtl/spu_ram.vhd:20,225-236 | MATCH |
+
+## BIOS
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| BIOS ROM | 0x080000 (512 KB) ROM_REGION32_LE; std 700a01.22g CRC(11812ef8); 3 variants (std / gchgchmp / 700b01.22g); every local BIOS file + zip member exactly 524,288 B | ksys573.cpp#L3751-L3757; `ls dumps/bios/*` and `unzip -l dumps/sys573.zip` = 524288 each | 512 KB load window (ioctl_addr[18:0], index 0) staged at SDRAM BIOS_START 0x800000; fastboot forced OFF (Konami BIOS is not SCPH) | rtl/emu.sv:681,745,1166 | MATCH |
+
+## ATAPI / CD
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| ATAPI register map + drive identity | ATA cs0 0x1f480000-f, cs1 0x1f4c0000-f, soft reset 0x1f560000 (write bit0=0); default drive cr589 (real units CR-583/587); hyperbbc config = NO drive (konami573(config,true)) | ksys573.cpp#L962-L965, L2597-L2598, L2604-L2608, L3075 | Pages 0x480000/0x4c0000/0x560000 decoded; ATAPI signature 0xEB14, IDENTIFY PACKET DEVICE 0xA1 (256 words), READ blocklen 2048 B, HPS streams raw 2352-B sectors as 1176 words; cd_present hardwired 1'b1 — deliberate, HW-validated delta vs MAME hyperbbc's no-drive (GX700 POST probes unconditionally; 0xFFFF float reads as BSY-stuck → CDR BAD; empty-drive-present is arguably closer to a real cab) | rtl/s573_bus.v:36-37,40; rtl/atapi.v:74,107,144-147,225,233,287; rtl/s573_cdimg.v:17-23; rtl/emu.sv:1805-1811,1816-1821 | MATCH |
+| ATA IRQ routing | ATA IRQ → psxirq intin10 | ksys573.cpp#L1165-L1168 | ATAPI INTRQ → exp_irq10 | rtl/system573_top.v:229; rtl/emu.sv:1831 | MATCH |
+| ATAPI_CYCLES_PER_SECTOR | 30000 CPU cycles — driver convenience ("plenty of time"); only the ≥2000 BIOS floor is a real constraint | ksys573.cpp#L391, L1193-L1194 | No equivalent pacing constant (PIO-only ATAPI, no DMA sector timer). Becomes relevant with the ch5 DMA work (tier-B); treat 30000 as tuning, ≥2000 as the hard floor. | rtl/atapi.v (no pacing constant) | UNKNOWN |
+
+## NVRAM / RTC (M48T58)
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| M48T58 timekeeper device | 0x2000 (8 KB) total; clock registers at 0x1ff8-0x1fff (8 regs) → 8184 usable NVRAM bytes; every .22h image 8,192 B | src/devices/machine/timekpr.cpp#L151-L165; `ls dumps/hyperbbc/nvram8k.bin` + `unzip -l hyperbbc.zip 876?a.22h` = 8192 | ram[0:8183] + 8 RTC registers at RTC_BASE=13'd8184 (=0x1ff8); RTC freeze semantics modeled (date wrap simplified). No SD save-back path (load-only) — high-score persistence broken; feature gap, not a constant bug. | rtl/m48t58.v:49-53 | MATCH |
+| M48T58 bus mapping | 0x1f620000-0x1f623fff, umask32 0x00ff00ff (byte-wide chip on the low byte of each 16-bit lane; 16 KB window for 8 KB chip) | ksys573.cpp#L968 | Page 0x62xxxx; 16-bit accesses low-byte only; byte addr = addr[14:1] | rtl/s573_bus.v:43,49-51; rtl/system573_top.v:243-252 | MATCH |
+| NVRAM ioctl load path (hps_io WIDE unpack) | Framework constant, not MAME: hps_io WIDE(1) = 16-bit ioctl words, addr steps by 2 | sys/hps_io.sv:28,35; rtl/emu.sv:568 | Each WIDE word → TWO byte writes (even=dout[7:0], odd=dout[15:8]) with ioctl_wait backpressure; same unpacker reused for security-cart loaders; load under reset. Original loader wrote only the low byte → every odd NVRAM byte zeroed → 'GQ876..1998EAA' signature self-test fail (red-N). | rtl/s573_nvram_loader.v:53-61; rtl/emu.sv:757-763,1480-1502; rtl/m48t58.v:38-47; regression tb sim/tb_s573_nvram_loader.v | KNOWN-BUG (#4 — FIXED 7f335d7, HW-confirmed) |
+
+## Flash / PCMCIA / EXP1
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| Flash bank select decode | bank = control reg (0x1f500000) & 0x3f, used RAW — m_flashbank->set_bank(m_control & 0x3f), no shift; control bit6 = sec IO dir, OUT2 bit 0x40 zs01 SDA | ksys573.cpp#L964, L1132-L1141, L3251-L3252 | internal=(bank[5:2]==0) i.e. bank<4; bank_idx=bank[1:0] (raw); ctl bits [6]/[7] handled. Old ctl[5:4] shifted decode starved banks 1-3 (12 MB) → PROGRAM ROM CHECK stall. | rtl/s573_flash.v:117-131 (MAME cited inline as authoritative) | KNOWN-BUG (#3 — FIXED 6b29c37, HW-confirmed) |
+| Flash window + bank geometry | CPU window 0x1f000000-0x1f3fffff (4 MB); ADDRESS_MAP_BANK 16-bit data, stride 0x400000/bank; onboard = banks 0-3 = 16 MB | ksys573.cpp#L957, L2630, L975-L982 | Page sel ≤0x3f; flash_word = {bank_idx, win_addr[20:0]} (full 21-bit window — the old [16:1] slice exposing only 128 KB/bank is fixed); 16-word line buffer, SDRAM image at FLASH_START 0x0100_0000 | rtl/s573_bus.v:34; rtl/system573_top.v:154-160; rtl/s573_flash.v:184-199; rtl/emu.sv:682-692,1573-1575 | MATCH |
+| Onboard flash chips + byte interleave order | 8× Fujitsu 29F016A (2 MB each, zip members exactly 2,097,152 B) as 4 banks × 4 MB; per bank a chip PAIR: 31x = LOW byte (umask16 0x00ff), 27x = HIGH byte (0xff00); bank order m,l,j,h | ksys573.cpp#L975-L982, L2615-L2622, L232; `unzip -l dumps/mame573/hyperbbc.zip` | pack_hyperbbc.py implements exactly that: banks 31m/27m, 31l/27l, 31j/27j, 31h/27h, even=31x LOW, odd=27x HIGH (MAME order cited in-file); packed flash16m.bin = 16,777,216 B; NOR program = write-through line buffer + SDRAM write-back, erase = no-op vs 0xFF blank. Interleave order EXONERATED as a garble suspect. | tools/pack_hyperbbc.py:5-18,32-40; rtl/s573_flash.v:95-97,286-294; rtl/emu.sv:1928-1939; `ls dumps/hyperbbc/flash16m.bin` | MATCH |
+| PCMCIA flash banks | pccard1 = banks 16-31 (0x4000000+), pccard2 = banks 32-47; detect lines IN1 bits 0x04000000/0x08000000; 16/32/64 MB card options; hyperbbc uses NO card | ksys573.cpp#L983-L984, L2685-L2709, L3233-L3234, L3073-L3079 | Decode-only: banks 16-47 read 0xFFFF (absent), pcmcia_present=2'b00 — empty-slot semantics. Card device emulation is a future gate for PCCARD games. | rtl/s573_flash.v:117-121,161,348 | MATCH |
+| EXP1 bus width + access protocol | Flash window is amap16 (16-bit data); EXP1 configured 16-bit wide (ex1_memctrl bit 12=1); BIOS reads flash signature/CRC byte-by-byte (lb) | ksys573.cpp#L957 (amap16) | Patches widen EXP1: 24-bit addr / 16-bit data (0001), exp1_wait (0006), byte-lane replication (0009), 2-bit reqsize lb/lh/lw (0010); odd-byte rotate in the 573 slave; registered+held rdata contract. All four patches 573-essential, consistent with MAME's 16-bit flashbank space. | psx_patches/0001,0006,0009,0010; rtl/system573_top.v:296-303,315-318 | MATCH |
+
+## 573 register map & I/O
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| 573 register address map | 0x1f400000 IN0/OUT0 · ..04 IN1 · ..08 IN2+JVS rx · ..0c IN3 · 0x1f480000/0x1f4c0000 ATA · 0x1f500000 control · 0x1f560000 atapi reset · 0x1f5c0000 nopw (watchdog?) · 0x1f600000 lamps · 0x1f620000 m48t58 · 0x1f680000 JVS tx · 0x1f6a0000 security | ksys573.cpp#L955-L971 | Same pages decoded (0x40/0x48/0x4c/0x50/0x56/0x5c/0x62/0x68/0x6a) plus an extra 0x1f520000 "jvsclr" page not in MAME's map (decoded, consumed by nothing, reads 0) — behaviorally inert; verify vs real-HW docs before wiring anything to it | rtl/s573_bus.v:34-51; rtl/system573_top.v:116-129 | MATCH |
+| JVS sense + status bits | sense = IN1 bit 0x00080000 (jvs_sense_r = !address_set_line → reads 1 with no JVS board); rx-ready = bit 0x00100000; TX at 0x1f680000; packet sync 0xE0, 8-bit additive checksum | ksys573.cpp#L969, L1030-L1123, L3226-L3227 | Stub matching the no-board values: 0x1f400006 bit3 (= IN1 bit19) hardwired 1; bits[5:4]=0 force the MAME-equivalent send/recv timeout → graceful skip; no packet engine; jvs_mcu_rst_n unconnected. HW-confirmed (e280f95). Real JVS host engine = future work for I/O-board games. | rtl/s573_io.v:72,98-109; rtl/system573_top.v:270 | MATCH |
+| H8/3644 security MCU handshake | Real MCU ROM NO_DUMP; MAME HLEs from a 64-byte h8_response (std BIOS pairs h8a01.bin CRC 131e0359, dsem2 pairs h8b01.bin); clock = OUT0 bit 0x100, data = IN1 bits 0x10-0x80; both h8*.bin exactly 64 B | ksys573.cpp#L3758-L3763, L3194, L3209-L3212, L1313-L1331; `ls dumps/bios/h8a01.bin h8b01.bin` = 64 | Response nibble hardwired 0xC — matches the 700A h8a01.bin only; TODO in source: 700B needs a ROM-backed shifter. Scoped MATCH (700A BIOS, HW-confirmed boot); dsem2/700B will fail until ROM-backed. Protocol beyond the 64 bytes unknowable from MAME (MCU unemulated). | rtl/s573_io.v:86-89 | MATCH |
+| Security cart register + EEPROM models | 0x1f6a0000 16-bit latch; OUT1 D0-D7 fan out to cassette lines (hyperbbc reuses them as lamps d4=green d5=blue d6=red d7=start); X76F041 image 548 B, X76F100 132 B (0x84, incl 4B RtR+8B WPW+8B RPW), ZS01 4116 B; hyperbbc = cassette Y (X76F100), "game doesn't check the security chip" | ksys573.cpp#L970, L1197-L1211, L2240-L2251, L2711-L2718, L3073-L3079, L5828-L5835; k573cass.cpp#L65,L115,L171,L253,L280,L293 | x76f100 132-B image (112-B body), x76f041 548-B, zs01 4116-B; cart type latched from loaded size (≥560 ZS01, ≥256 041, else 100; old ≥112 threshold that mistyped X76F100 as 041 is fixed); latch at page 0x6a; .u1=ioctl 4, .u6=ioctl 5. Cart-A (X76F041) unlocks gtrfrk5m/8m/pnchmn2 per roadmap. | rtl/x76f100.v:4-8,84; rtl/x76f041.v:62; rtl/emu.sv:1505-1518,1552-1570; rtl/s573_bus.v:46; rtl/system573_top.v:67-73,179-187 | MATCH |
+| DS2401 silicon serial | 8-B raw ID: family 0x01 + 48-bit serial + CRC8; present only in XI/YI/ZI carts ("i" suffix) + k573dio board + gunmania/kicknkick; hyperbbc cart (Y) has NONE; cart readback IN1 bit 0x00004000 | ksys573.cpp#L2714-L2718, L3153, L3182, L3221, L5622-L5623 | family 8'h01 · 48-bit serial · CRC8 poly 0x8C reflected; default serial 48'h1; cart device CART_SERIAL + DIO device CART_SERIAL+1; loadable 8-B MAME .u6 (byte k → rom[8*(7-k)+:8]); 1-Wire thresholds from CLK_FREQ_HZ. Note: core always instantiates a cart DS2401 even for Y carts (real Y cart has none) — benign for hyperbbc (never checked); revisit per-cart presence when "i"-suffix games matter. | rtl/ds2401.v:20,28-38,44-50,53-70; rtl/system573_top.v:14,179,233; rtl/emu.sv:662,1539-1550 | MATCH |
+| ADC0834 | OUT0 bit0=DI, bit1=CS, bit2=CLK; DO = IN1 bit 0x00010000, SARS = 0x00020000; 4 analog inputs via callback | ksys573.cpp#L2646-L2647, L3191-L3193, L3213-L3214, L3223 | Bit-banged from ctrl reg bits 0-2; readback on bits 0-1 of the 0x06 half-word (= IN1 bits 16-17); all four channels tied 8'h00. Zeroed channels suffice for hyperbbc; DDR-family analog stages need real sources. | rtl/emu.sv:1822-1825; rtl/system573_top.v:140-147; rtl/s573_io.v:65-67,110-112 | MATCH |
+| DIP switches / boot device | DIP SW:4 bit 0x8 "Start Up Device": 0x0 = Flash ROM (MAME default), 0x8 = CD-ROM | ksys573.cpp#L3206-L3236 | dip_sw = {status[93], 3'b111}: SW4 = OSD "573 Boot Device", default 0 = Flash ROM; SW1-3 hardwired 1 ("off"). Caveat: MAME defaults/polarity for SW1-3 not extracted — 3'b111 vs MAME-0 is an open minor item. | rtl/emu.sv:370,1795-1797 | MATCH |
+| Watchdog (0x1f5c0000) | UNEMULATED in MAME: nopw with comment "// watchdog?" — no timeout or kick semantics exist to compare | ksys573.cpp#L966 | Observe-only module: TIMEOUT_CYCLES 32'd1_000_000 clk1x (~29.5 ms), kick on any page-0x5c write, bite output deliberately unconnected. Both sides behaviorally inert → no functional divergence today; the ~29.5 ms placeholder is unvalidated vs real HW. | rtl/watchdog.v:13; rtl/system573_top.v:15,135-138; rtl/s573_bus.v:41; rtl/emu.sv:1443-1444,1830 | UNKNOWN |
+| Main-RAM-layout strap (0x1f40000e bit10) | Not extracted from MAME (IN3 bit semantics not tabulated — citation gap; ksys573.cpp IN3 region #L955-L971 not decoded per-bit) | (none — gap) | Hardwired 0 = "new 2x2MB layout" (700B BIOS then picks 0x1f801060 = 0x4788); 0x0c word returns TEST button at bit10. Cross-check vs MAME's IN3 port bits when auditing inputs; interacts with the ram_config the BIOS writes (Main RAM row). | rtl/s573_io.v:121-124 | UNKNOWN |
+
+## Expansion I/O boards
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| Expansion I/O boards (window + clocks) | 0x1f640000-0x1f6400ff per-variant (k573dio amap @ 19.6608 MHz, k573kara @ 36.864 MHz, gx700pwbf/k, ge765, gunmania; gbbchmp MB89371 @ 4 MHz); hyperbbc uses the BASE map — nothing at 0x1f640000 | ksys573.cpp#L987-L1027, L2661, L2669, L3118, L3073-L3079 | DIO partially stubbed: crypto_key/mp3_start/fpga_ctrl outputs unconnected; no board window implemented. Matches hyperbbc (no board); the DIO constants need their own extraction lane when the C-tier DDR/MP3 work starts (~33 games). | rtl/system573_top.v:238-239 | UNKNOWN |
+
+## Game config (hyperbbc — the bring-up title)
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| hyperbbc machine config + ROM set | konami573(config,true)=no CD drive; cassette Y, security never checked; init only zeroes lamp state; all 8 flash chips populated (full 16 MB) + 8 KB NVRAM 876ea.22h CRC(8e11d196); uncompressed zip total 37,773,312 B = 3 variants exactly | ksys573.cpp#L3073-L3079, L2264-L2281, L5756-L5778, L6495; `unzip -l dumps/mame573/hyperbbc.zip` | Flash-only boot path (ioctl 2 = 16 MB image, ioctl 3 = 8 KB NVRAM); boots+runs+audio HW-confirmed (frame_diff-verified milestone, 6b29c37 era). All four 4 MB banks live program/data — consistent with the bank-decode bug having starved banks 1-3. Remaining delta = the VRAM garble (FIX-IN-FLIGHT rows). | rtl/emu.sv:657-664; `ls dumps/hyperbbc/flash16m.bin` 16777216, `nvram8k.bin` 8192 | MATCH |
+
+## Core-internal constants (no MAME analog — recorded because load-bearing)
+
+| Constant | Reference value | Cited source | Our core | RTL citation | Status |
+|---|---|---|---|---|---|
+| Savestate region + RAM coverage | No MAME analog; platform main RAM = 4 MB, VRAM = 2 MB | (platform sizes: ksys573.cpp#L2600, #L2633) | DDR3 slot 0x3E000000, 4 MB/slot; coverage table: RAM = 2 MB ONLY, VRAM = 1 MB, SPURAM = 512 KB; .ss files are 4,194,304 B with BOTH halves nonzero (the "lower-2MB cap" is about mapped region, not file size). Tooling gap: savestates truncate the 573's 4 MB RAM to 2 MB, and VRAM coverage goes short once the 2 MB fix lands — fix alongside patch 0021 if savestate debugging matters. | psx/rtl/savestates.vhd:90-122; rtl/emu.sv:358; `ls local/de10_menu_ss/*.ss` = 4194304 | UNKNOWN |
+| SDRAM controller CAS latency | No platform reference (MiSTer-side SDRAM controller) | (n/a) | CAS_LATENCY 3'd3 (upstream 3'd2): clk3x = 101.6064 MHz > 100 MHz puts CL2 out of spec; SignalTap-proven fix for deterministic low-bit miscapture on GP0 DMA reads under flash traffic (CLUT 0x7AC0 → 0x7800/0x7840) | psx_patches/0020-sdram-cas-latency-3.patch | UNKNOWN |

@@ -180,3 +180,45 @@ sample indices/values, not vibes, in any status post.
 The debug branch stays unmerged. Production ships without ENABLE_SIGNALTAP;
 no RTL was touched (node preservation was QSF-only), so there is nothing to
 revert in psx/.
+
+## Post-build gate additions (learned 2026-06-10, build #3 fired never)
+After EVERY instrumented build, before deploying, on dell:
+1. `grep -c 136017 output_files/Konami_System_573.fit.rpt` must be **0**
+   (any hit = a preserve assignment was silently ignored -> tag registers
+   swept -> probe trigger inputs tied to GND -> trigger can never fire).
+2. `grep -c "stage1_palReqY" output_files/Konami_System_573.fit.rpt` must be
+   well above 2 (placed cells, not just warning echoes).
+3. M10K ~= baseline+42 and auto_signaltap present (hollow-build check, step 1b).
+
+## CRC gate (learned 2026-06-10, builds #3-#5 could never ARM)
+Error 261009 "not compatible... expected 0x0, read 0x0" = the .stp carried
+CRC="0" (hand-authored XML), --enable tied all 32 crc[] pins to gnd, and the
+runtime REFUSES a zero checksum even when it matches. The CRC is a
+self-consistency token copied verbatim from the .stp attribute into the
+crc[] vcc/gnd tie pattern at --enable time (verified: popcount + bit
+positions follow the attribute). Fix: any NONZERO CRC in the generator
+(ours: 573C1EB1), re-enable, rebuild. Gate: grep crc Konami_System_573.qsf
+must show a MIXED vcc/gnd pattern, never all-gnd.
+ALSO: capture.sh's "TRIGGERED"/"NO TRIGGER" verdicts are UNRELIABLE when
+arming fails -- on any anomaly read the FULL quartus_stp output (Error
+261009 appears there, followed by a bogus TRIGGERED + an Internal Error in
+sdr_data_log.cpp during the doomed export).
+
+## Boot-window captures (learned 2026-06-10, the write-side verdict runs)
+NEVER arm before load_core: the FPGA reconfig KILLS an armed analyzer
+(2x Error 12852 JTAG-chain integrity, PRE->IDLE disarm, then a dead poll to
+timeout). Any no-fire from an arm-before-load flow is a DEAD-ARM artifact,
+not evidence. Working flow: load_core, then capture.sh at T0+5s -- ROM
+streaming delays the game's first uploads to ~T0+30-40s, so the race is
+easily won, no input injection needed.
+Always verify the boot actually reached the game before grading a boot
+capture (screenshot >15KB at T0+~115s; the garbled menu compresses to ~2KB
+so size-gates apply to ATTRACT frames only).
+Board reset: OSD/keyboard injection is currently dead on de10 (alt+f1, F12,
+LCtrl+LAlt+RAlt all inert; one press froze the game) -- reset via
+`dell_coord.sh devlock de10 reboot 573` only.
+Heisenbug watch: 0/3 armed-through-boot halts after the protocol above; the
+one HARDWARE ERROR remains n=1 (correlated with armed-through-boot + a
+killed agent).
+.stp variants for the word-boundary probe: clut_race_word_u2anchor.stp
+(U2-anchored) and clut_race_word_u1alt.stp (U1 alternate trigger).

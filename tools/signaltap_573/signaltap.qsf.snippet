@@ -1,75 +1,129 @@
 # =============================================================================
-# signaltap.qsf.snippet -- QSF additions for the CLUT-race SignalTap build.
+# signaltap.qsf.snippet -- QSF additions for the BUILD #9 dual-boundary
+# SignalTap probe (BUILD9_PLAN.md Option B: sdram->dma + dma->gpu, 87 bits).
 #
-# HOW IT BECOMES ACTIVE: append this file's contents to Konami_System_573.qsf
-# on a DEBUG branch (e.g. dbg-signaltap-clut, branched off feat-flash-load)
-# and commit it together with tools/signaltap_573/clut_race.stp -- the hub
-# launcher (dell_build.sh <ref>) builds a pushed git ref, so both files must
-# be committed on the ref you build. Example:
-#   git checkout -b dbg-signaltap-clut feat-flash-load
-#   tclsh tools/signaltap_573/clut_race_stp.tcl tools/signaltap_573/clut_race.stp
-#   cat tools/signaltap_573/signaltap.qsf.snippet >> Konami_System_573.qsf
-#   git add -A && git commit -m "dbg: SignalTap CLUT-race probe" && git push
+# HOW IT BECOMES ACTIVE: this content lives appended in Konami_System_573.qsf
+# on the debug branch dbg-signaltap-clut, committed together with
+# tools/signaltap_573/clut_race.stp -- the hub launcher (dell_build.sh <ref>)
+# builds a pushed git ref, so both files must be committed on the ref built.
 # NEVER merge this into feat-flash-load/main: debug-build-only.
 #
-# NODE PRESERVATION comes from THESE assignments, not RTL edits (vendored
-# psx/ stays pristine). Two mechanisms:
-#   PRESERVE_REGISTER          -- stops register merging/retiming/renaming
-#   PRESERVE_FANOUT_FREE_NODE  -- stops sweeping of registers with NO readers
-#   KEEP                       -- materializes a named COMBINATIONAL net
-# CRITICAL: with CLUT_ROWLOCK='0' (production config -- the config that
-# exhibits the bug), the rowlock comparators constant-fold away, leaving the
-# patch-0018 tag registers stageS/stage0/stage1_palReqY with ZERO readers;
-# without PRESERVE_FANOUT_FREE_NODE they are swept and the trigger's
-# stage1_palReqY nodes won't exist.
+# REQUIRED SECOND STEP (RUNBOOK 1b): the compiler does NOT read the .stp;
+# insertion is driven by the SLD_* expansion generated ON DELL by
+#   quartus_stp Konami_System_573 --stp_file tools/signaltap_573/clut_race.stp --enable
+# which appends USE_SIGNALTAP_FILE + SLD_NODE_* + CONNECT_TO_SLD_* lines.
 #
-# Wildcards: "*|entity:instance|signal" is robust against upper-hierarchy
-# renames. VHDL matching is case-insensitive. An assignment that matches
-# NOTHING is silently ignored -- after the first instrumented synthesis,
-# check output_files/Konami_System_573.map.rpt for SignalTap "node not
-# found" warnings and the fit.rpt "Ignored Assignments" section.
+# NODE PRESERVATION comes from THESE assignments, not RTL edits (vendored
+# psx/ stays pristine). All taps below are REGISTERS (no combinational nets
+# in the build-9 watch list) -> PRESERVE_REGISTER only, no KEEP /
+# PRESERVE_FANOUT_FREE_NODE needed (every tapped reg has live fanout).
+#
+# NO WILDCARDS: PRESERVE_REGISTER wildcards are SILENTLY IGNORED by Quartus
+# 17.0 (Critical Warning 136017; cost one hollow-trigger build 2026-06-10).
+# Every assignment is an explicit full per-bit path.
+#
+# Clock-domain note: DMA_GPU_* (dma.vhd:699-700) and sdram dma_* (sdram.sv
+# always @(posedge clk_base), clk_base=clk_1x) are clk1x registers --
+# oversampled 2:1 at the clk2x capture clock. rec_textPalY (gpu_poly.vhd:151)
+# and the pixelpipeline regs are clk2x-native. NO clk3x node is tapped.
 # =============================================================================
 
 # --- enable SignalTap with our pre-authored instance -------------------------
 set_global_assignment -name ENABLE_SIGNALTAP ON
-set_global_assignment -name USE_SIGNALTAP_FILE tools/signaltap_573/clut_race.stp
 
-# --- pixelpipeline: patch-0018 per-pixel CLUT-row tags (NO readers when
-# --- CLUT_ROWLOCK='0' -> must be kept alive explicitly) ----------------------
-set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stageS_palReqY[*]"
-set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stageS_palReqY[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage0_palReqY[*]"
-set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage0_palReqY[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON          -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_palReqY[*]"
-set_instance_assignment -name PRESERVE_FANOUT_FREE_NODE ON  -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_palReqY[*]"
+# --- build #9: dma->gpu boundary (clk1x registers, dma.vhd:699-700) ----------
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_writeEna"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[8]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[9]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[10]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[11]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[12]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[13]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[14]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[15]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[16]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[17]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[18]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[19]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[20]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[21]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[22]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[23]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[24]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[25]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[26]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[27]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[28]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[29]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[30]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|dma:idma|DMA_GPU_write[31]"
 
-# --- pixelpipeline: live registers we tap (preserve names; stop merging) -----
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalY[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|textPalReq"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|stage1_valid"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTaddrA[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|reqVRAMXPos[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|reqVRAMYPos[*]"
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|drawMode[*]"
-# state FSM: default one-hot encoding keeps the state.<NAME> node names; no
-# assignment needed (do NOT force re-encoding -- it would rename the nodes).
+# --- build #9 Option B: sdram->dma handoff (clk_base=clk1x regs, sdram.sv) ---
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_wr"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[8]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[9]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[10]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[11]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[12]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[13]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[14]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[15]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[16]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[17]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[18]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[19]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[20]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[21]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[22]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[23]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[24]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[25]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[26]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[27]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[28]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[29]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[30]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|sdram:sdram|dma_data[31]"
 
-# --- pixelpipeline: combinational nets we tap --------------------------------
-# CLUTwrenA (gpu_pixelpipeline.vhd:579), pipeline_busy (:597),
-# pipeline_stall (:456) are concurrent assignments -> KEEP materializes them.
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|CLUTwrenA"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_busy"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu_pixelpipeline:igpu_pixelpipeline|pipeline_stall"
+# --- build #9: gpu_poly decode-side CLUT row (clk2x reg, gpu_poly.vhd:151) ---
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_poly:igpu_poly|rec_textPalY[8]"
 
-# --- gpu-level VRAM arbiter (the OR-merge bus, gpu.vhd:1617-1623) ------------
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMEnable"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMYPos[*]"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|reqVRAMIdle"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|videoout_reqVRAMEnable"
-set_instance_assignment -name IMPLEMENT_AS_OUTPUT_OF_LOGIC_CELL ON -to "*|gpu:igpu|pipeline_reqVRAMEnable"
-# reqVRAMDone is registered in the vram process; preserve its name:
-set_instance_assignment -name PRESERVE_REGISTER ON -to "*|gpu:igpu|reqVRAMDone"
-# vram_BUSY / vram_pause are gpu input-port nets (driven upstream); they
-# normally survive as named nets. If SignalTap reports them unresolved, tap
-# the psx_top-side sources instead (see RUNBOOK troubleshooting).
+# --- pixelpipeline render-side keeps (clk2x regs) ----------------------------
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|stage1_valid"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReq"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalReqY[8]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|psx_mister:psx|psx_top:ipsx_top|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline|textPalFetched"
+
+set_global_assignment -name ENABLE_LOGIC_ANALYZER_INTERFACE ON

@@ -23,6 +23,17 @@ internal-consistency anchors (cell validity, one-hot FSM groups, 9-bit
 bus value stability, sample-index monotonicity) and the evidence is
 printed.  Pass --shift N to override.
 
+BUILD-9 CAPTURES (dma/sdram boundary watch list, no FSM one-hot groups):
+two generation-aware anchors keep calibration decisive there without
+touching older files' scoring:
+  - storage-qualifier gold: build 9 stores ONLY DMA-write beats, so the
+    DMA_GPU_writeEna channel must decode constant '1' on every stored
+    (majority-decodable) row; the per-shift fraction multiplies the score.
+  - an absent anchor is NEUTRAL: with no one-hot groups in the watch list
+    the one-hot term is 1.0 (previously 0.0, which zeroed every shift).
+  - rec_textPalY joins the stable-bus anchor set (decodes to a small
+    stable CLUT-row value set on the true shift).
+
 NON-UNIFORM ALIGNMENT (Quartus 17.0 export_data_log quirk, observed
 2026-06-09): when a channel is used as a trigger term, its DATA column can
 be silently omitted from the CSV while its name stays in the header, and a
@@ -238,7 +249,8 @@ class Capture:
     # ---- calibration ---------------------------------------------------------
     def _calibrate(self, forced):
         anchor_buses = [k for k in self.bus
-                        if k[1] in ("textPalReqY", "textPalY", "pipeline_textPalY")]
+                        if k[1] in ("textPalReqY", "textPalY", "pipeline_textPalY",
+                                    "rec_textPalY")]
         onehot_groups = {}
         for (owner, base), ch in self.scalars.items():
             if "." in base:  # FSM one-hot style: state.IDLE, vramState.READVRAM...
@@ -259,6 +271,22 @@ class Capture:
         lines.append(f"[calibration] row fields={ncols} -> value cols "
                      f"{val_lo}..{val_hi} ({nvalcols}) for {len(self.channels)} "
                      f"channels; trailing-empty={trailing_empty}")
+        # build-9 storage-qualifier anchor: every genuinely stored row IS a
+        # DMA-write beat, so the qualifier channel must decode constant '1'.
+        # "Stored row" is determined shift-independently: a majority of the
+        # value columns hold 0/1 (gap rows are all-X; the pre-trigger marker
+        # row has a single decodable cell and is rightly excluded).
+        qual_ch = next((ch for (o, b), ch in self.scalars.items()
+                        if b == "DMA_GPU_writeEna"), None)
+        stored_idx = []
+        if qual_ch is not None:
+            for i, (_, f) in enumerate(self.rows):
+                dec = sum(1 for c in range(val_lo, val_hi + 1)
+                          if c < len(f) and f[c] in ("0", "1"))
+                if dec * 2 >= nvalcols:
+                    stored_idx.append(i)
+            lines.append(f"[calibration] qualifier anchor ACTIVE "
+                         f"(DMA_GPU_writeEna, {len(stored_idx)} stored rows)")
         scores = {}
         for s in SHIFT_RANGE:
             # 0. structural fit: channels must claim value columns bijectively;
@@ -287,7 +315,9 @@ class Capture:
                     oh_tot += 1
                     if sum(c == "1" for c in cells) == 1:
                         oh_ok += 1
-            onehot = oh_ok / oh_tot if oh_tot else 0.0
+            # an ABSENT anchor is neutral evidence, not a veto: with no
+            # one-hot groups in the watch list (build 9) this term is 1.0.
+            onehot = oh_ok / oh_tot if oh_tot else (1.0 if not onehot_groups else 0.0)
             # 3. bus stability: dominance of the modal value on anchor buses
             doms = []
             ndistinct = {}
@@ -300,17 +330,30 @@ class Capture:
                 doms.append(cnt.most_common(1)[0][1] / len(vals))
                 ndistinct[k[1]] = len(cnt)
             busdom = sum(doms) / len(doms) if doms else 0.0
+            # 4. storage-qualifier gold (build 9): fraction of stored rows on
+            # which the qualifier channel decodes '1'.  1.0 on the true shift
+            # by construction; absent anchor = neutral 1.0.
+            if qual_ch is not None and stored_idx:
+                cells = [self._cell(self.rows[i][1], qual_ch.hdr_idx, s)
+                         for i in stored_idx]
+                qual = sum(c == "1" for c in cells) / len(cells)
+            else:
+                qual = None
             # Multiplicative: a structural collision (channel claiming the
             # sample-index column or the trailing empty) is fatal evidence,
             # not a 1% blemish.  Dominance of a constant bus saturates under
             # ANY shift of a constant, so it confirms but never adjudicates.
             score = (structural ** 4) * validity * onehot * (0.5 + 0.5 * busdom)
+            if qual is not None:
+                score *= qual
             scores[s] = score
             lines.append(
                 f"[calibration]  shift={s:+d}: structural={structural:.4f} "
                 f"(collisions={collisions} orphans={orphans}) "
                 f"validity={validity:.4f} onehot={onehot:.4f} "
-                f"busdom={busdom:.4f} distinct={ndistinct}  SCORE={score:.4f}")
+                f"busdom={busdom:.4f} "
+                f"qual={'n/a' if qual is None else f'{qual:.4f}'} "
+                f"distinct={ndistinct}  SCORE={score:.4f}")
 
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
         best, second = ranked[0], ranked[1]
