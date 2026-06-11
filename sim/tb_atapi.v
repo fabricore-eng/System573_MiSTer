@@ -19,6 +19,8 @@ module tb_atapi;
                .din(din), .dout(dout), .intrq(intrq),
                .cd_attached(1'b0), .sec_req(), .sec_lba(),
                .sbuf_addr(), .sbuf_q(16'h0000), .sec_ready(1'b0),
+               .toc_track_count(8'd1), .toc_leadout(32'd16680),
+               .toc_qtrack(), .toc_qstart(32'd0), .toc_qaudio(1'b0),
                .dma_req(), .dma_rd(1'b0), .dma_dout());
 
     always #5 clk = ~clk;

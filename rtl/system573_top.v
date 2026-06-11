@@ -103,6 +103,15 @@ module system573_top #(
     input  wire        cd_hps_write,    // <- sd_buff_wr    (one 16-bit word per pulse)
     input  wire [15:0] cd_hps_data,     // <- sd_buff_dout
 
+    // ---- mounted-disc metadata (s573_cdtoc): Main disk_t (ioctl index 251) +
+    //      the img_size/2352 single-track fallback. atapi.v serves READ TOC /
+    //      READ CAPACITY content from this (the GX700 CD-boot path reads both).
+    input  wire        cd_ti_write,     // <- ramdownload_wr && cdinfo_download
+    input  wire [8:0]  cd_ti_addr,      // <- ramdownload_wraddr[10:2] (32-bit word index)
+    input  wire [31:0] cd_ti_data,      // <- ramdownload_wrdata
+    input  wire        cd_img_mounted,  // <- img_mounted[1] (pulse)
+    input  wire [63:0] cd_img_size,     // <- img_size (bytes; raw 2352-byte sectors)
+
     // ---- PSX DMA channel 5 drain of the ATAPI data phase (psx_patches/0023) ----
     // The BIOS's only sector-read data path: the ISR arms ch5 and the DMA pulls the
     // 2048-byte sector as 16-bit halfwords straight from atapi.v's prefetch register.
@@ -216,6 +225,12 @@ module system573_top #(
     wire [15:0] atapi_sbuf_q;
     wire        atapi_sec_ready;
     wire        atapi_dma_req_int;
+    // disc metadata (s573_cdtoc <-> atapi)
+    wire [7:0]  atapi_toc_track_count;
+    wire [31:0] atapi_toc_leadout;
+    wire [6:0]  atapi_toc_qtrack;
+    wire [31:0] atapi_toc_qstart;
+    wire        atapi_toc_qaudio;
     // ide_rst polarity: 0x1f560000 bit0 is the drive's ACTIVE-LOW reset line
     // (psx-spx / MAME konami573: write 0 = assert reset, write 1 = release).
     // The old `sel_idereset & exp1_we` reset on ANY write -- including the
@@ -229,6 +244,9 @@ module system573_top #(
         .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
         .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
         .sec_ready(atapi_sec_ready),
+        .toc_track_count(atapi_toc_track_count), .toc_leadout(atapi_toc_leadout),
+        .toc_qtrack(atapi_toc_qtrack), .toc_qstart(atapi_toc_qstart),
+        .toc_qaudio(atapi_toc_qaudio),
         .dma_req(atapi_dma_req_int), .dma_rd(atapi_dma_rd), .dma_dout(atapi_dma_dout)
     );
 
@@ -240,6 +258,17 @@ module system573_top #(
         .sec_ready(atapi_sec_ready), .sec_busy(),
         .cd_req(cd_hps_req), .cd_lba(cd_hps_lba),
         .cd_ack(cd_hps_ack), .cd_wr(cd_hps_write), .cd_data(cd_hps_data)
+    );
+
+    // --- mounted-disc metadata (TOC + capacity) for the drive's READ TOC /
+    //     READ CAPACITY responses: Main disk_t (ioctl 251) or img_size fallback ---
+    s573_cdtoc u_cdtoc (
+        .clk(clk), .rst(rst),
+        .ti_write(cd_ti_write), .ti_addr(cd_ti_addr), .ti_data(cd_ti_data),
+        .img_mounted(cd_img_mounted), .img_size(cd_img_size),
+        .toc_track_count(atapi_toc_track_count), .toc_leadout(atapi_toc_leadout),
+        .toc_qtrack(atapi_toc_qtrack), .toc_qstart(atapi_toc_qstart),
+        .toc_qaudio(atapi_toc_qaudio)
     );
     // ch5 request follows the same drive-present gate as INTRQ.
     assign atapi_dma_req = cd_present ? atapi_dma_req_int : 1'b0;

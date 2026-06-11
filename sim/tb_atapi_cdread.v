@@ -43,6 +43,8 @@ module tb_atapi_cdread;
         .sec_req(sec_req), .sec_lba(sec_lba),
         .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
         .sec_ready(sec_ready),
+        .toc_track_count(8'd1), .toc_leadout(32'd16680),
+        .toc_qtrack(), .toc_qstart(32'd0), .toc_qaudio(1'b0),
         .dma_req(), .dma_rd(1'b0), .dma_dout()
     );
     s573_cdimg cdimg (

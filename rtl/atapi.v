@@ -51,6 +51,15 @@ module atapi #(
     input  wire [15:0] sbuf_q,      // buffered sector word (registered, 1-clk latency)
     input  wire        sec_ready,   // s573_cdimg: the requested sector is buffered + valid
 
+    // ---- mounted-disc metadata (s573_cdtoc: Main disk_t via ioctl 251, or the
+    //      img_size/2352 fallback). READ TOC and READ CAPACITY serve REAL disc
+    //      content from these (the MAME adjudication trace is the spec). ----
+    input  wire [7:0]  toc_track_count, // tracks on the disc (>= 1)
+    input  wire [31:0] toc_leadout,     // lead-out LBA = total image sectors
+    output reg  [6:0]  toc_qtrack,      // track-start table lookup (1-clk latency)
+    input  wire [31:0] toc_qstart,      // start LBA of track toc_qtrack
+    input  wire        toc_qaudio,      // 1 = audio track
+
     // ---- PSX DMA channel 5 drain (psx_patches/0023) ----
     // dma_req is the device's DRQ to the DMA engine: high through a disc data-in
     // phase. dma_rd is DMA_ATA_readEna (ce-qualified in dma.vhd): each cycle it is
@@ -66,7 +75,8 @@ module atapi #(
     // interrupt reason (sector-count) bits: C/D=bit0, I/O=bit1
     localparam [7:0] IR_CD=8'h01, IR_IO=8'h02;
 
-    localparam [2:0] S_IDLE=3'd0, S_PKT=3'd1, S_DATAIN=3'd2, S_DATAOUT=3'd3, S_FETCH=3'd4;
+    localparam [2:0] S_IDLE=3'd0, S_PKT=3'd1, S_DATAIN=3'd2, S_DATAOUT=3'd3, S_FETCH=3'd4,
+                     S_TOC=3'd5;
 
     // Data-ready gating + pacing (clk1x = 33.8688 MHz):
     //  * FETCH_SETTLE covers the sec_req -> s573_cdimg sec_ready-invalidate race (the
@@ -91,7 +101,16 @@ module atapi #(
     reg        irq_out;       // edge-guaranteed INTRQ level (see assign intrq below)
     reg        datain_disc;   // data-in source: 1 = disc store, 0 = resp[]
     reg        datain_ident;  // data-in source: 1 = generated IDENTIFY block
+    reg        datain_toc;    // data-in source: 1 = dynamic TOC/CAPACITY response
     reg [12:0] disc_base;     // byte base into the disc store for READ commands
+
+    // READ TOC / READ CAPACITY dynamic-response build (from s573_cdtoc metadata)
+    reg [1:0]  tocb;          // S_TOC build step (lookup latency cover)
+    reg [7:0]  toc_start;     // CDB byte 6: start track (0/1, 2..n, or 0xAA lead-out)
+    reg [15:0] toc_len;       // TOC header data-length field (full TOC, alloc-clipped xfer)
+    reg [7:0]  toc_d_track;   // served descriptor: track number (0xAA = lead-out)
+    reg        toc_d_audio;   //                    ADR/CTRL select (0x10 audio / 0x14 data)
+    reg [31:0] toc_d_lba;     //                    LBA (also READ CAPACITY last-LBA)
 
     // multi-sector READ(10)/READ(12) bookkeeping (transfer length from the CDB)
     reg [15:0] nblk;          // sectors remaining INCLUDING the one in flight
@@ -162,18 +181,57 @@ module atapi #(
                         default: if ((k==6'd22) || (k>=6'd29 && k<=6'd31)) b=8'h20; // spaces
                     endcase
                 end
-                8'h25: case (k)                    // READ CAPACITY (8 bytes): last-LBA, blklen 2048
-                    6'd1:b=8'h01; 6'd2:b=8'h23; 6'd3:b=8'h44; 6'd6:b=8'h08; default:b=8'h00; endcase
+                // (READ CAPACITY 0x25 / READ TOC 0x43 moved to the DYNAMIC response
+                //  dresp_byte below: real disc metadata from s573_cdtoc, not fixtures)
                 8'h03: case (k)                    // REQUEST SENSE (16/18): resp code 0x70, key 0
                     6'd0:b=8'h70; 6'd7:b=8'h0a; default:b=8'h00; endcase
-                8'h43: case (k)                    // READ TOC (12): 1 data track, MSF 0
-                    6'd1:b=8'h0a; 6'd2:b=8'h01; 6'd3:b=8'h01; 6'd5:b=8'h14; 6'd6:b=8'h01; default:b=8'h00; endcase
                 8'h5A: case (k)                    // MODE SENSE(10) page 0x0E (24)
                     6'd1:b=8'h16; 6'd8:b=8'h0e; 6'd9:b=8'h0e; 6'd10:b=8'h04; 6'd15:b=8'h4b;
                     6'd16:b=8'h01; 6'd17:b=8'hff; 6'd18:b=8'h02; 6'd19:b=8'hff; default:b=8'h00; endcase
                 default: b=8'h00;
             endcase
             resp_byte = b;
+        end
+    endfunction
+
+    // Dynamic data-in responses: REAL disc metadata (s573_cdtoc), selected by
+    // resp_cmd when datain_toc is set. Byte layouts per SFF-8020 / the MAME
+    // adjudication trace:
+    //  * READ TOC (12 bytes transferred): header {data length BE (FULL TOC
+    //    length: tracks start..last + lead-out, minus the 2 length bytes),
+    //    first track 01, last track N}, then ONE descriptor {00, ADR/CTRL,
+    //    track#, 00, LBA BE x4} - the BIOS allocates 12 so exactly one
+    //    descriptor transfers (start track 0/1 -> first track; 0xAA -> lead-out).
+    //  * READ CAPACITY (8 bytes): {last LBA BE x4, block length 2048 BE x4}.
+    function [7:0] dresp_byte(input [7:0] cmd, input [3:0] k);
+        reg [7:0] b;
+        begin
+            b = 8'h00;
+            if (cmd == 8'h43) begin
+                case (k)
+                    4'd0:  b = toc_len[15:8];
+                    4'd1:  b = toc_len[7:0];
+                    4'd2:  b = 8'h01;                          // first track on disc
+                    4'd3:  b = toc_track_count;                // last track on disc
+                    4'd5:  b = toc_d_audio ? 8'h10 : 8'h14;    // ADR 1, CTRL data bit
+                    4'd6:  b = toc_d_track;
+                    4'd8:  b = toc_d_lba[31:24];
+                    4'd9:  b = toc_d_lba[23:16];
+                    4'd10: b = toc_d_lba[15:8];
+                    4'd11: b = toc_d_lba[7:0];
+                    default: b = 8'h00;
+                endcase
+            end else begin                                     // 0x25 READ CAPACITY
+                case (k)
+                    4'd0: b = toc_d_lba[31:24];                // last LBA = lead-out - 1
+                    4'd1: b = toc_d_lba[23:16];
+                    4'd2: b = toc_d_lba[15:8];
+                    4'd3: b = toc_d_lba[7:0];
+                    4'd6: b = 8'h08;                           // block length 0x00000800
+                    default: b = 8'h00;
+                endcase
+            end
+            dresp_byte = b;
         end
     endfunction
 
@@ -222,7 +280,9 @@ module atapi #(
             state <= S_IDLE; pkt_idx <= 0; ridx <= 0; resp_len <= 0;
             irq_pending <= 1'b0; irq_event <= 1'b0; irq_out <= 1'b0;
             r_feat <= 0; r_devctl <= 0;
-            datain_disc <= 1'b0; datain_ident <= 1'b0;
+            datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b0;
+            tocb <= 2'd0; toc_qtrack <= 7'd1; toc_start <= 8'd0;
+            toc_len <= 16'd0; toc_d_track <= 8'd0; toc_d_audio <= 1'b0; toc_d_lba <= 32'd0;
             sec_req <= 1'b0; sec_lba <= 32'd0;
             nblk <= 16'd0; cur_lba <= 32'd0;
             fetch_wait <= 13'd0; pf_cnt <= 2'd0; pf_addr <= 11'd0; dma_word <= 16'd0;
@@ -266,27 +326,35 @@ module atapi #(
                                       // resp_byte() combinational ROM, not a register array.)
                                       8'h12: begin n = 7'd36; resp_cmd <= 8'h12;        // INQUIRY
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
-                                      8'h25: begin n = 7'd8;  resp_cmd <= 8'h25;        // READ CAPACITY
+                                      8'h25: begin n = 7'd8;  resp_cmd <= 8'h25;        // READ CAPACITY (dynamic)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b1;
+                                          toc_d_lba <= toc_leadout - 32'd1;  // last addressable LBA (MAME: 16679)
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h03: begin n = 7'd16; resp_cmd <= 8'h03;        // REQUEST SENSE (key 0 = ready)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00; // BIOS checks bc==0x10 @0x803cbc0c
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h43: begin n = 7'd12; resp_cmd <= 8'h43;        // READ TOC (bc==12 @0x803cbe04)
+                                          // Dynamic content: honors pkt[6] (start track / 0xAA lead-out)
+                                          // from the s573_cdtoc metadata. A short S_TOC build window
+                                          // covers the 1-clk track-table lookup, then the data phase.
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
-                                          r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
-                                          irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b1;
+                                          r_error <= 8'h00;
+                                          toc_start  <= pkt[6];
+                                          toc_qtrack <= (pkt[6] <= 8'h01) ? 7'd1 : pkt[6][6:0];
+                                          tocb       <= 2'd0;
+                                          r_status   <= ST_BSY;
+                                          state      <= S_TOC; end
                                       8'h5A: begin n = 7'd24; resp_cmd <= 8'h5A;        // MODE SENSE(10) (bc==0x18)
                                           resp_len <= n; r_bclo <= {1'b0, n}; r_bchi <= 8'h00;
-                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0;
+                                          ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b0; datain_toc <= 1'b0;
                                           r_status <= ST_DRDY | ST_DRQ; r_ireason <= IR_IO; r_error <= 8'h00;
                                           irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN; end
                                       8'h28, 8'hA8: begin       // READ(10) / READ(12) (disc data-in)
@@ -311,7 +379,7 @@ module atapi #(
                                               sec_req   <= cd_attached;   // only when an image is mounted
                                               disc_base <= {pkt[5][$clog2(NSECT)-1:0], 11'd0};
                                               resp_len  <= 13'd2048;
-                                              datain_disc <= 1'b1; datain_ident <= 1'b0;
+                                              datain_disc <= 1'b1; datain_ident <= 1'b0; datain_toc <= 1'b0;
                                               r_error   <= 8'h00;
                                               if (cd_attached) begin
                                                   // Data-ready gating: the HPS sector fetch is ms-scale, so
@@ -384,7 +452,7 @@ module atapi #(
                             8'hA1: begin                         // IDENTIFY PACKET DEVICE (data-in, 512 bytes)
                                 resp_len  <= 13'd512;
                                 r_bclo <= 8'h00; r_bchi <= 8'h02; // byte count 0x0200
-                                ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b1;
+                                ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b1; datain_toc <= 1'b0;
                                 r_status  <= ST_DRDY | ST_DRQ;
                                 r_ireason <= IR_IO; r_error <= 8'h00;
                                 irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN;
@@ -460,6 +528,49 @@ module atapi #(
                     ridx <= ridx + 13'd2;
             end
 
+            // ---- READ TOC dynamic-response build (disc metadata lookup) ----
+            // tocb 0: toc_qtrack settles into s573_cdtoc's registered lookup;
+            // tocb 1: latch the served descriptor; tocb 2: raise the data phase.
+            if (state == S_TOC) begin
+                case (tocb)
+                    2'd0: tocb <= 2'd1;
+                    2'd1: begin
+                        if (toc_start == 8'hAA) begin            // lead-out descriptor
+                            toc_d_track <= 8'hAA;
+                            toc_d_audio <= 1'b0;                 // MAME: ADR/CTRL 0x14
+                            toc_d_lba   <= toc_leadout;
+                            toc_len     <= 16'd10;               // header(4) + 1 descr(8) - 2
+                            tocb        <= 2'd2;
+                        end else if (toc_start > 8'h01 && toc_start > toc_track_count) begin
+                            // invalid start track -> CHECK CONDITION (illegal request)
+                            r_status  <= ST_DRDY | ST_ERR;
+                            r_error   <= 8'h50;
+                            r_ireason <= IR_CD | IR_IO;
+                            irq_pending <= 1'b1; irq_event <= 1'b1;
+                            datain_toc  <= 1'b0;
+                            state <= S_IDLE;
+                        end else begin                           // first served track descriptor
+                            toc_d_track <= (toc_start <= 8'h01) ? 8'h01 : toc_start;
+                            toc_d_audio <= toc_qaudio;
+                            toc_d_lba   <= toc_qstart;
+                            // FULL TOC length field (alloc clips the transfer to 12):
+                            // 2 + 8 * (tracks from start..last, plus the lead-out)
+                            toc_len <= 16'd2 +
+                                       (({8'd0, toc_track_count} -
+                                         ((toc_start <= 8'h01) ? 16'd1 : {8'd0, toc_start}) +
+                                         16'd2) << 3);
+                            tocb <= 2'd2;
+                        end
+                    end
+                    default: begin                               // fire the data phase
+                        r_status  <= ST_DRDY | ST_DRQ;
+                        r_ireason <= IR_IO;
+                        irq_pending <= 1'b1; irq_event <= 1'b1;
+                        state <= S_DATAIN;
+                    end
+                endcase
+            end
+
             // ---- sector fetch / pacing / prefetch prime (disc reads) ----
             // Hold BSY until the requested sector is REALLY buffered (sec_ready) and
             // the pacing floor has elapsed, then prime the 1-word prefetch register
@@ -521,6 +632,8 @@ module atapi #(
         case (addr)
             4'd0:    dout = (state != S_DATAIN) ? 16'h0000 :
                             datain_ident ? ident_word(ridx) :
+                            datain_toc   ? {dresp_byte(resp_cmd, ridx[3:0] + 4'd1),
+                                            dresp_byte(resp_cmd, ridx[3:0])} :
                             datain_disc  ? (cd_attached ? dma_word : disc_dout)
                                          : {resp_byte(resp_cmd, ridx[5:0] + 6'd1),
                                             resp_byte(resp_cmd, ridx[5:0])};

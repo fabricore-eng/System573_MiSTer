@@ -1914,6 +1914,15 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .cd_hps_ack     (sd_ack[1]),
    .cd_hps_write   (sd_buff_wr),
    .cd_hps_data    (sd_buff_dout),
+   // Mounted-disc metadata (s573_cdtoc): the Main disk_t blob (ioctl index 251 --
+   // the same stream emu.sv routes to the psx trackinfo_* ports, where it dangles
+   // since cd_top's removal) + img_mounted/img_size for the single-track fallback.
+   // atapi.v serves the GX700's READ TOC / READ CAPACITY from this.
+   .cd_ti_write    (ramdownload_wr && cdinfo_download),
+   .cd_ti_addr     (ramdownload_wraddr[10:2]),
+   .cd_ti_data     (ramdownload_wrdata),
+   .cd_img_mounted (img_mounted[1]),
+   .cd_img_size    (img_size),
    // ATAPI data phase -> PSX DMA ch5 (psx_patches/0023)
    .atapi_dma_req  (atapi_dma_req),
    .atapi_dma_rd   (atapi_dma_rd),

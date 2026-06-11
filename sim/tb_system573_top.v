@@ -31,6 +31,8 @@ module tb_system573_top;
         .cd_present(1'b1),   // this integration test exercises the ATAPI/CD path, so model a drive present
         .cd_image(1'b0), .cd_hps_req(), .cd_hps_lba(),
         .cd_hps_ack(1'b0), .cd_hps_write(1'b0), .cd_hps_data(16'h0000),
+        .cd_ti_write(1'b0), .cd_ti_addr(9'd0), .cd_ti_data(32'd0),
+        .cd_img_mounted(1'b0), .cd_img_size(64'd0),
         .atapi_dma_req(), .atapi_dma_rd(1'b0), .atapi_dma_dout(),
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),

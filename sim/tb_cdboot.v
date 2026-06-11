@@ -68,6 +68,16 @@ module tb_cdboot;
     reg         dma_rd = 0;
     wire [15:0] dma_dout;
     wire        dma_req;
+    // cdtoc <-> atapi (disc metadata)
+    wire [7:0]  toc_track_count;
+    wire [31:0] toc_leadout;
+    wire [6:0]  toc_qtrack;
+    wire [31:0] toc_qstart;
+    wire        toc_qaudio;
+    // cdinfo (ioctl 251) download stream into s573_cdtoc (TB = the HPS)
+    reg         ti_write = 0;
+    reg  [8:0]  ti_addr = 0;
+    reg  [31:0] ti_data = 0;
 
     atapi dut (
         .clk(clk), .rst(rst), .ide_rst(ide_rst),
@@ -77,6 +87,8 @@ module tb_cdboot;
         .sec_req(sec_req), .sec_lba(sec_lba),
         .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
         .sec_ready(sec_ready),
+        .toc_track_count(toc_track_count), .toc_leadout(toc_leadout),
+        .toc_qtrack(toc_qtrack), .toc_qstart(toc_qstart), .toc_qaudio(toc_qaudio),
         .dma_req(dma_req), .dma_rd(dma_rd), .dma_dout(dma_dout)
     );
 
@@ -87,6 +99,14 @@ module tb_cdboot;
         .sec_ready(sec_ready), .sec_busy(sec_busy),
         .cd_req(cd_req), .cd_lba(cd_lba),
         .cd_ack(cd_ack), .cd_wr(cd_wr), .cd_data(cd_data)
+    );
+
+    s573_cdtoc cdtoc (
+        .clk(clk), .rst(rst),
+        .ti_write(ti_write), .ti_addr(ti_addr), .ti_data(ti_data),
+        .img_mounted(1'b0), .img_size(64'd0),
+        .toc_track_count(toc_track_count), .toc_leadout(toc_leadout),
+        .toc_qtrack(toc_qtrack), .toc_qstart(toc_qstart), .toc_qaudio(toc_qaudio)
     );
 
     always #5 clk = ~clk;
@@ -126,6 +146,26 @@ module tb_cdboot;
                 $display("FAIL: IRQ timeout (%0s)", what);
                 errors = errors + 1;
             end
+        end
+    endtask
+
+    // ---- the cdinfo (ioctl 251) fixture: Main 250828 disk_t for hypbbc2p ----
+    // word0 = track_count | BCD<<8; word1 = total_lba (the lead-out, no pregap
+    // offset - psx.cpp send_cue_and_metadata zeroes track 1's start); track t
+    // at words 4t..4t+3: start_lba, end_lba, {minBCD,secBCD,isAudio<<16}, commit.
+    task ti_word(input [8:0] a, input [31:0] d);
+        begin @(negedge clk); ti_addr=a; ti_data=d; ti_write=1; @(negedge clk); ti_write=0; end
+    endtask
+    task load_cdinfo;
+        begin
+            ti_word(9'd0, {16'h0000, 8'h01, TRACK_COUNT});  // track_count=1 (BCD 01)
+            ti_word(9'd1, LEADOUT_LBA);                     // total_lba = 16680
+            ti_word(9'd2, 32'h00000342);                    // total MSF BCD (3:42) - unused here
+            ti_word(9'd3, 32'h00000000);                    // libcrypt/region/reset
+            ti_word(9'd4, 32'd0);                           // track 1 start_lba = 0
+            ti_word(9'd5, LEADOUT_LBA - 1);                 // track 1 end_lba
+            ti_word(9'd6, 32'h00000002);                    // MSF BCD, isAudio(bit16)=0 -> data
+            ti_word(9'd7, 32'd0);                           // commit track 1
         end
     endtask
 
@@ -338,6 +378,11 @@ module tb_cdboot;
     reg [15:0] w0;
     initial begin
         repeat (4) @(posedge clk); @(negedge clk); rst = 0; @(negedge clk);
+
+        // the HPS pushes the disk_t metadata (ioctl 251) at mount time,
+        // long before the BIOS boots - replicate that ordering
+        load_cdinfo;
+        repeat (4) @(negedge clk);
 
         // ===== [0] IDE reset (WRST 0x1f560000 0->1) -> ATAPI signature =====
         $display("===== [0] IDE reset + ATAPI signature =====");
