@@ -13,7 +13,8 @@
 // HOST INTERFACE -- the MiSTer "CUECHD" sd-block stream (the SAME channel the
 // upstream PSX cd_top consumed; freed by psx_patches/0011 when cd_top was removed,
 // reclaimed here). It is the contract in psx/rtl/cd_top.vhd's SFETCH state machine:
-//   * cd_req=1 with cd_lba = the RAW sector LBA; hold until cd_ack=1, then drop req.
+//   * cd_req=1 with cd_lba = the sector LBA in MAIN'S MSF SPACE (user LBA + 150,
+//     see PREGAP_LBA below); hold until cd_ack=1, then drop req.
 //   * the host then streams the RAW 2352-byte sector as 1176 16-bit words, one per
 //     cd_wr pulse (cd_data valid on each). 1176 words = 2352 bytes.
 //   * MODE1/MODE2-form2 sectors carry a 16-byte sync+header, then 2048 user bytes,
@@ -44,7 +45,7 @@ module s573_cdimg (
 
     // ---- MiSTer CUECHD sd-block host stream (= emu.sv sd_lba1/sd_rd[1]/...) ----
     output reg         cd_req,       // request a sector  -> sd_rd[1]
-    output reg  [31:0] cd_lba,       // raw sector LBA     -> sd_lba1
+    output reg  [31:0] cd_lba,       // MSF-space LBA (user+150) -> sd_lba1
     input  wire        cd_ack,       // host accepted req  <- sd_ack[1]
     input  wire        cd_wr,        // host data strobe   <- sd_buff_wr
     input  wire [15:0] cd_data       // host word          <- sd_buff_dout
@@ -61,6 +62,18 @@ module s573_cdimg (
     localparam [10:0] HDR_WORDS  = 11'd8;      // 16 bytes
     localparam [10:0] USER_WORDS = 11'd1024;   // 2048 bytes
     localparam [10:0] RAW_WORDS  = 11'd1176;   // 2352 bytes
+
+    // USER -> MSF LBA conversion at the host request boundary. MiSTer Main's PSX
+    // CD service (support/psx/psx.cpp, Main 250828 ae6dc92) expects MSF-space
+    // LBAs on sd_lba1, the way the consumer PSX core sends them: it fakes a
+    // 150-sector track-1 pregap (load_chd psx.cpp:142-146 indexes[1]=150,
+    // start=150; load_cue psx.cpp:250 likewise), serves ZEROS for any request
+    // below 150 WITHOUT touching the image (psx_read_cd psx.cpp:479-481), and
+    // reads the image at read_lba = lba - 150 (psx.cpp:517). The ATAPI/BIOS
+    // world stays USER space (sec_lba); the +150 happens HERE, in exactly one
+    // place. Without it the BIOS's PVD read (user LBA 16) lands in Main's zero
+    // zone -> 'CD001' check fails -> -11 -> CDR BAD.
+    localparam [31:0] PREGAP_LBA = 32'd150;
 
     localparam [1:0] S_IDLE=2'd0, S_REQ=2'd1, S_STREAM=2'd2, S_DONE=2'd3;
     reg [1:0]  state;
@@ -79,7 +92,7 @@ module s573_cdimg (
                 S_IDLE: begin
                     sec_busy <= 1'b0;
                     if (sec_req) begin
-                        cd_lba    <= sec_lba;
+                        cd_lba    <= sec_lba + PREGAP_LBA;  // user -> Main MSF space (see above)
                         cd_req    <= 1'b1;
                         sec_ready <= 1'b0;   // invalidate the old sector
                         sec_busy  <= 1'b1;

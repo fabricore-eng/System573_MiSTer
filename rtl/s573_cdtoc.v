@@ -7,24 +7,33 @@
 // with REAL disc metadata, not fixtures. Two sources, in priority order:
 //
 //  1. The MiSTer Main "disk_t" blob (support/psx/psx.cpp send_cue_and_metadata,
-//     version 250828): when a .cue/.chd is mounted on the CUECHD slot, Main
-//     pushes ioctl index 251 with the parsed cue metadata. 32-bit word layout
-//     (= the layout the removed psx cd_top parsed):
+//     version 250828 ae6dc92): when a .cue/.chd is mounted on the CUECHD slot,
+//     Main pushes ioctl index 251 with the parsed cue metadata. 32-bit word
+//     layout (= the layout the removed psx cd_top parsed):
 //       word 0      : track_count (bits 7:0 binary, 15:8 BCD)
-//       word 1      : total_lba   (the lead-out; track 1 start is forced 0,
-//                     LBAs carry NO 150-sector pregap offset)
+//       word 1      : total_lba   = table->end (psx.cpp:408) - MSF SPACE, i.e.
+//                     user lead-out + 150 (Main fakes a 150-sector track-1
+//                     pregap: load_chd psx.cpp:142-156 / load_cue psx.cpp:250)
 //       word 2      : total MM:SS (BCD)             - unused here
 //       word 3      : libcrypt mask / region / reset - unused here
-//       word 4t+0   : track t start_lba
+//       word 4t+0   : track t start_lba (track 1 FORCED 0 by psx.cpp:413 "i ?
+//                     start : 0" = already user space; tracks 2+ MSF space)
 //       word 4t+1   : track t end_lba                - unused here
 //       word 4t+2   : track t MM:SS BCD, bit16 = isAudio
 //       word 4t+3   : (commit word)
 //  2. Fallback when no cdinfo arrived (e.g. a frontend that mounts the image
 //     without metadata): single data track at LBA 0, lead-out = img_size/2352
-//     (raw 2352-byte sectors - redump .bin / chdman extractcd framing, the same
-//     framing s573_cdimg consumes). The division runs in a 40-cycle serial
-//     divider right after img_mounted; cdinfo (which Main sends AFTER the mount)
-//     simply overwrites the result.
+//     - 150. Main mounts img_size = toc.end*CD_SECTOR_LEN (psx.cpp:783) with
+//     toc.end the MSF lead-out, so the quotient carries the fake +150 pregap
+//     too. The division runs in a 40-cycle serial divider right after
+//     img_mounted; cdinfo (which Main sends AFTER the mount) simply overwrites
+//     the result.
+//
+// SPACE CONTRACT: every output of this module is USER space - the ATAPI/BIOS
+// world (MAME adjudication ground truth for hypbbc2p: READ TOC lead-out 16680,
+// READ CAPACITY last-LBA 16679). The -150 normalization of Main's MSF-space
+// values happens HERE; the matching user->MSF +150 on the sector-request path
+// lives in s573_cdimg (sd_lba1).
 //
 // The latched metadata intentionally survives core reset: emu.sv holds the core
 // in reset through downloads, and the 573 reset (watchdog/dip) must not forget
@@ -45,15 +54,18 @@ module s573_cdtoc (
     input  wire        img_mounted,   // pulse (emu.sv img_mounted[1])
     input  wire [63:0] img_size,      // image bytes (0 = unmounted)
 
-    // ---- disc metadata -> atapi.v ----
+    // ---- disc metadata -> atapi.v (USER space; see the header) ----
     output reg  [7:0]  toc_track_count, // tracks on the disc (>= 1)
-    output reg  [31:0] toc_leadout,     // lead-out LBA = total sectors
+    output reg  [31:0] toc_leadout,     // lead-out LBA = total USER sectors
 
     // track-start lookup, 1-clk latency (index = track number 1..99)
     input  wire [6:0]  toc_qtrack,
-    output reg  [31:0] toc_qstart,
+    output reg  [31:0] toc_qstart,      // USER-space start LBA
     output reg         toc_qaudio
 );
+    // Main's fake 150-sector track-1 pregap (psx.cpp:142-146/250): subtracted
+    // from every MSF-space disk_t / img_size value to keep ATAPI in user space.
+    localparam [31:0] PREGAP_LBA = 32'd150;
     // track table: {isAudio, start_lba[18:0]} indexed by track number (1..99;
     // cdinfo word address 4t..4t+3 -> index ti_addr[8:2] = t, same as cd_top)
     reg [19:0] track_tbl [0:127];
@@ -110,22 +122,33 @@ module s573_cdtoc (
                 div_cnt <= div_cnt - 6'd1;
             end else begin
                 div_run <= 1'b0;
+                // img_size/2352 is the MSF lead-out (img_size = toc.end*2352,
+                // psx.cpp:783, toc.end = user + 150) -> normalize to user space.
+                // Clamp guards a sub-pregap-sized image (can't come from Main).
                 if (!cdinfo_seen)
-                    toc_leadout <= div_quot[31:0];
+                    toc_leadout <= (div_quot[31:0] >= PREGAP_LBA)
+                                   ? div_quot[31:0] - PREGAP_LBA : 32'd0;
             end
         end
 
         // ---- disk_t download (authoritative; overwrites the fallback) ----
+        // Space normalization (audited at psx.cpp source, Main 250828):
+        //   total_lba (word 1) = table->end (psx.cpp:408) is MSF -> -150;
+        //   track 1 start_lba is FORCED 0 (psx.cpp:413) = already user -> keep;
+        //   track 2+ start_lba is MSF -> -150 (clamped; Main always sends >=150
+        //   for any track after the faked track-1 pregap).
         if (ti_write) begin
             cdinfo_seen <= 1'b1;
             if (ti_addr == 9'd0) begin
                 if (ti_data[7:0] != 8'd0)
                     toc_track_count <= ti_data[7:0];
             end else if (ti_addr == 9'd1) begin
-                toc_leadout <= ti_data;
+                toc_leadout <= (ti_data >= PREGAP_LBA) ? ti_data - PREGAP_LBA : 32'd0;
             end else if (ti_addr >= 9'd4) begin
                 case (ti_addr[1:0])
-                    2'd0: pend_start <= ti_data[18:0];
+                    2'd0: pend_start <= (ti_addr[8:2] == 7'd1) ? ti_data[18:0]
+                                      : (ti_data[18:0] >= PREGAP_LBA[18:0])
+                                        ? ti_data[18:0] - PREGAP_LBA[18:0] : 19'd0;
                     2'd2: pend_audio <= ti_data[16];
                     2'd3: track_tbl[ti_addr[8:2]] <= {pend_audio, pend_start};
                     default: ;

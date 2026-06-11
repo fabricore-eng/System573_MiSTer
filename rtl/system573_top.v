@@ -98,7 +98,7 @@ module system573_top #(
     // sd_ack[1]/sd_buff_wr/sd_buff_dout (the same channel cd_top used pre-patch-0011).
     input  wire        cd_image,        // 1 = a CD image is mounted (drive READ from it)
     output wire        cd_hps_req,      // -> sd_rd[1]      (request a raw sector)
-    output wire [31:0] cd_hps_lba,      // -> sd_lba1       (raw sector LBA)
+    output wire [31:0] cd_hps_lba,      // -> sd_lba1       (Main MSF-space LBA = user+150)
     input  wire        cd_hps_ack,      // <- sd_ack[1]
     input  wire        cd_hps_write,    // <- sd_buff_wr    (one 16-bit word per pulse)
     input  wire [15:0] cd_hps_data,     // <- sd_buff_dout

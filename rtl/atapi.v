@@ -55,7 +55,7 @@ module atapi #(
     //      img_size/2352 fallback). READ TOC and READ CAPACITY serve REAL disc
     //      content from these (the MAME adjudication trace is the spec). ----
     input  wire [7:0]  toc_track_count, // tracks on the disc (>= 1)
-    input  wire [31:0] toc_leadout,     // lead-out LBA = total image sectors
+    input  wire [31:0] toc_leadout,     // lead-out LBA, USER space (s573_cdtoc normalizes)
     output reg  [6:0]  toc_qtrack,      // track-start table lookup (1-clk latency)
     input  wire [31:0] toc_qstart,      // start LBA of track toc_qtrack
     input  wire        toc_qaudio,      // 1 = audio track
