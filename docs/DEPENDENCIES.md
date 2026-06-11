@@ -1,8 +1,8 @@
 # Dependencies & environment — staged for core development
 
-Everything an autonomous session needs to develop and test the core, beyond the
-in-repo RTL. Staged 2026-05-31. The unit-sim suite is green (`make -C sim`, 19/19)
-and the heavy external pieces are vendored and pinned.
+Everything needed to develop and test the core, beyond the in-repo RTL. The
+unit-sim suite is green (`make -C sim`, 19/19) and the heavy external pieces are
+vendored and pinned.
 
 ## Vendored code
 
@@ -22,7 +22,7 @@ snapshot (see `sys/README.md`). GPL-2.0 propagates to the whole core — keep up
 headers/LICENSE intact; any edits inside `psx/` (4 MB RAM / 2 MB VRAM / EXP1 routing)
 inherit GPL-2.0 and should be kept as isolated, offer-back-able diffs.
 
-## Toolchain (installed on this machine)
+## Toolchain
 
 | Tool | Version | Install | Use |
 |------|---------|---------|-----|
@@ -38,68 +38,44 @@ inherit GPL-2.0 and should be kept as isolated, offer-back-able diffs.
 
 ## Board connection
 
-`local/mister.env` is created and git-ignored (host `192.168.1.40`, user `root`, key
-`~/.ssh/mister_crt`, `MISTER_CORE_DIR=/media/fat/_Arcade` verified to exist,
-`CORE_RBF=Konami_System_573.rbf`). `ssh mister` is confirmed working (kernel 5.15.1
-armv7l). `MISTER_SHOT_DIR=/media/fat/screenshots` is auto-created on first capture.
+Copy `local/mister.env.example` to `local/mister.env` (git-ignored) and set the
+board's host/IP, SSH user + key, `MISTER_CORE_DIR`, and `CORE_RBF`. The
+`tools/mister_*.sh` scripts read it; an `ssh mister` SSH-config alias also works.
+`MISTER_SHOT_DIR` is auto-created on first screenshot capture.
 
-## FPGA bitstream build (native Quartus 17.0 on slave1)
+## FPGA bitstream build
 
 The `.rbf` needs x86-64 Quartus Prime Lite 17.0.x (Cyclone V `5CSEBA6U23I7`); the
-MiSTer ARM CPU can not build it. The **primary build box is `slave1`** (Dell OptiPlex
-7050, Ubuntu 26.04, reached via `ssh slave1` / `slave1.local`), which runs Quartus 17.0
-natively. Build there with `ssh slave1 ... quartus_sh --flow compile Konami_System_573`
-→ `output_files/Konami_System_573.rbf`.
-
-### Fallback: Quartus in Colima/Docker on the Mac (LEGACY — VM deleted June 2026)
-
-> The Mac's Colima/Quartus VM was **deleted to free disk** — this recipe is kept for
-> reference as a fallback only, not the current build path. Builds now run natively on
-> `slave1` (above).
-
-`raetro/quartus:17.0` (17.1 GB, bundles **Quartus 17.0.2 Build 602 Lite** + Cyclone V —
-no Intel-login installer needed) is pulled into the VM. A **full compile was validated
-end-to-end under Rosetta**: a minimal design targeting the DE10-Nano part
-`5CSEBA6U23I7` ran the complete flow — Analysis & Synthesis → **Fitter** (placement +
-routing, the mmap-heavy stage where Rosetta bugs would surface) → Assembler → and then
-`quartus_cpf` `.sof`→`.rbf` — producing a real `.sof` and loadable `.rbf`, 0 errors, in
-~70 s. The repo mounts cleanly via virtiofs. The VM is normally **stopped** to free RAM
-— `colima start` before building.
-
-> **CRITICAL arch gotcha (already handled, don't undo it):** this Mac's only Homebrew
-> is the **Intel build under Rosetta** (`/usr/local`, no `/opt/homebrew`), so
-> `brew install colima` yields **x86_64** `colima`/`limactl`, which Lima REFUSES for
-> vz+Rosetta (`"limactl is running under rosetta"`). The fix in place: **native arm64**
-> `colima` 0.10.1 + `lima` 2.1.1 binaries placed in `/usr/local/bin` (downloaded from
-> the projects' GitHub releases; no sudo — `/usr/local` is user-owned). If you ever
-> reinstall, keep them native arm64. (A few optional `lima` `libexec/` helpers
-> — krunkit driver, mcp — failed to extract into the Intel-brew `/usr/local/libexec`;
-> they're irrelevant to vz+Rosetta+docker and everything works without them.)
-
-Rosetta is enabled via the **Colima template** (there is no `--vz-rosetta` CLI flag in
-0.10.1): `~/.colima` template has `vmType: vz`, `rosetta: true`, `mountType: virtiofs`,
-`arch: host`. Do NOT set `arch: x86_64` — the guest stays aarch64 and Rosetta translates
-the x86 Quartus *process*; forcing x86_64 silently drops to slow qemu.
+MiSTer ARM CPU cannot build it. Build on any x86-64 Linux host with Quartus 17.0
+installed:
 
 ```sh
-colima start --cpu 6 --memory 11 --disk 60          # uses the vz+rosetta template
-# Build (after the wiring TODO below). The repo has NO .qpf, so compile by revision name:
+tools/apply_psx_patches.sh                       # apply the psx/ EXP1 widening first
+quartus_sh --flow compile Konami_System_573      # -> output_files/Konami_System_573.rbf
+```
+
+If Quartus isn't installed natively, the `raetro/quartus:17.0` Docker image bundles
+**Quartus 17.0.2 Build 602 Lite** + Cyclone V (no Intel-login installer needed):
+
+```sh
 docker run --rm --platform=linux/amd64 -v "$PWD":/work -w /work \
   --entrypoint quartus_sh raetro/quartus:17.0 --flow compile Konami_System_573
 # -> output_files/Konami_System_573.rbf
-colima stop                                          # reclaim the 11 GB when idle
 ```
 
-Notes: the `.sof`→`.rbf` conversion is done by MiSTer's `POST_FLOW` hook
-`sys/build_id.tcl` — ensure it's wired (`Template.qsf` / the psx subproject do this) or
-you get a `.sof` but no `.rbf`. Fallback image: `theypsilon/quartus-lite-c5:17.0`
-(`-slim`). To build your own image, the Lite 17.0 installer + Cyclone V pack are
-fetchable headlessly (no login) from
-`downloads.intel.com/akdlm/software/acdsinst/17.0std/595/ib_installers/`
-(`QuartusLiteSetup-17.0.0.595-linux.run` + `cyclonev-17.0.0.595.qdz`). Rosetta-on-Linux
-has rare mmap/glibc edge-case crashes — if Quartus dies oddly, qemu (slow) is the
-fallback. The VM disk size is a hard cap set at `colima start`; the pulled image
-persists across `colima stop`/`start` (only `colima delete` removes it).
+Notes:
+- `quartus_map` of the full PSX core needs ~11 GB RAM; on low-RAM hosts add swap (or
+  build serially — `NUM_PARALLEL_PROCESSORS 1`, already set in the qsf).
+- The `.sof`→`.rbf` conversion is done by MiSTer's `POST_FLOW`/`GENERATE_RBF` hook —
+  ensure it's wired (the qsf sets `GENERATE_RBF_FILE ON`) or you get a `.sof` but no
+  `.rbf`.
+- To build your own Quartus image, the Lite 17.0 installer + Cyclone V pack are
+  fetchable headlessly (no login) from
+  `downloads.intel.com/akdlm/software/acdsinst/17.0std/595/ib_installers/`
+  (`QuartusLiteSetup-17.0.0.595-linux.run` + `cyclonev-17.0.0.595.qdz`).
+
+(A detailed Colima/Docker-on-macOS-under-Rosetta build recipe is kept out of the public
+tree, in the git-ignored `local/`.)
 
 ## Local PSX-core patches (`psx_patches/`)
 
