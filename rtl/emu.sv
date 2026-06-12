@@ -423,6 +423,14 @@ parameter CONF_STR = {
 	// automatically after an install when the flash is dirty.
 	"SC4,SAV,Flash Save;",
 	"R[97],Save Flash;",
+	// Erase Flash Save: blank the mounted slot-4 .sav (write 16 MB of 0x00) so the
+	// next CD-ROM boot loads blank and re-installs clean. Mutually exclusive with
+	// save/load inside s573_flash_saver (it's a save-of-zeros).
+	"R[98],Erase Flash Save;",
+	// Auto Save Install (default On): when On, the install auto-saves once it finishes
+	// writing flash -- no OSD action. Off disables ONLY the auto-save (manual Save Flash
+	// + Erase still work). On = status[99]=0 (default) -> autosave_en = ~status[99] = 1.
+	"O[99],Auto Save Install,On,Off;",
 	"-;",
 	"O[36],Savestates to SDCard,On,Off;",
 	"O[68],Autoincrement Slot,Off,On;",
@@ -532,7 +540,14 @@ parameter CONF_STR = {
 	"Region US,",
 	"Region EU,",
 	"Saving Memcard,",
-	"Unsafe option used!;",
+	"Unsafe option used!,",
+	// info code 25 = "Flash saved" (info_req on a SAVE complete); 26 = "Flash save
+	// erased" (info_req on an ERASE complete). Codes are 1-indexed into this "I,"
+	// list: "Load=DPAD..."=1 ... "Saving Memcard"=23, "Unsafe option used!"=24,
+	// so the next two are 25 and 26. (Matches savestate_ui.sv's 1-based ss_info and
+	// the existing psx_info uses: 15/16 pad, 23 memcard, 24 unsafe.)
+	"Flash saved,",
+	"Flash save erased;",
 	"V,v",`BUILD_DATE
 };
 
@@ -1101,6 +1116,14 @@ always @(posedge clk_1x) begin
    end else if (saving_memcard) begin
       psx_info_req <= 1;
       psx_info     <= 8'd23;
+   end else if (saver_save_done) begin
+      // OSD toast on a flash SAVE complete (manual, OSD-open, or auto). NOT on LOAD.
+      psx_info_req <= 1;
+      psx_info     <= 8'd25;            // "Flash saved" (CONF_STR I-list index 25)
+   end else if (saver_erase_done) begin
+      // OSD toast on a flash ERASE complete.
+      psx_info_req <= 1;
+      psx_info     <= 8'd26;            // "Flash save erased" (CONF_STR I-list index 26)
    end else if (padMode_1[0] != padMode[0] && ~multitap) begin
       psx_info_req <= 1;
       if (padMode[0])  psx_info <= 8'd15;
@@ -1703,6 +1726,9 @@ end
 // -----------------------------------------------------------------------------
 wire        saver_busy;
 wire        saver_saving;
+wire        saver_save_done;    // 1-cycle: a SAVE completed (OSD toast "Flash saved")
+wire        saver_erase_done;   // 1-cycle: an ERASE completed (toast "Flash save erased")
+wire        saver_auto_saved;   // 1-cycle: the module self-fired an auto-save (clear flash_dirty)
 wire        saver_sd_rd;
 wire        saver_sd_wr;
 // saver SDRAM ch4 read-back (128-bit burst, flat 16-bit word index)
@@ -1731,17 +1757,29 @@ wire flash_load_arm = flash_save_mounted && (flash_save_size > 0)
                       && ~flash_load_taken;
 
 // SAVE trigger: explicit "Save Flash" R-bit OR the OSD-open auto-save when the
-// flash is dirty (an install happened). Edge-detected to a 1-cycle pulse.
+// flash is dirty (an install happened). Edge-detected to a 1-cycle pulse. (The
+// module ALSO auto-saves on its own "install then quiet" idle timer -- see
+// flash_wr_ack/auto_saved wiring below; the two paths are redundant safety nets
+// and both clear flash_dirty so neither double-saves.)
 wire bk_save_flash   = status[97];                 // "R[97],Save Flash;" (CONF_STR)
 wire bk_save_flash_a = OSD_STATUS & bk_autosave & flash_dirty;  // auto on OSD open
 reg  old_sflash = 1'b0, old_sflash_a = 1'b0;
 reg  flash_save_trigger = 1'b0;
 
+// ERASE trigger: the "Erase Flash Save" R-bit -> blank the .sav (roll back clean).
+wire bk_erase_flash = status[98];                  // "R[98],Erase Flash Save;" (CONF_STR)
+reg  old_eflash = 1'b0;
+reg  flash_erase_trigger = 1'b0;
+
 always @(posedge clk_1x) begin
-   flash_save_trigger <= 1'b0;
+   flash_save_trigger  <= 1'b0;
+   flash_erase_trigger <= 1'b0;
 
    // a programming write-back to flash during this session marks it dirty.
    if (flash_wr_ack) flash_dirty <= 1'b1;
+   // the module self-fired an install-complete auto-save: clear emu's dirty flag
+   // so the OSD-open path doesn't redundantly re-save the same episode.
+   if (saver_auto_saved) flash_dirty <= 1'b0;
 
    // slot-4 mount: latch presence + size (mirror the memcard mount logic).
    if (img_mounted[4]) begin
@@ -1759,6 +1797,7 @@ always @(posedge clk_1x) begin
    // exactly once per mount and never re-loads (which would clobber a later save).
    old_sflash   <= bk_save_flash;
    old_sflash_a <= bk_save_flash_a;
+   old_eflash   <= bk_erase_flash;
    if (flash_load_arm && saver_busy && ~saver_saving)
       flash_load_taken <= 1'b1;
 
@@ -1768,12 +1807,27 @@ always @(posedge clk_1x) begin
       flash_save_trigger <= 1'b1;
       flash_dirty        <= 1'b0;
    end
+
+   // edge -> 1-cycle erase pulse (blank the .sav). Mutually exclusive with save
+   // inside the module; a manual erase is a deliberate roll-back, so it does NOT
+   // touch flash_dirty (the live SDRAM flash is unchanged until the next reboot).
+   if (~old_eflash & bk_erase_flash)
+      flash_erase_trigger <= 1'b1;
 end
 
+// AUTOSAVE_THRESH default (~3.05e8 clk_1x cycles ~= 9 s @ 33.8688 MHz): the
+// install-complete auto-save fires once the flash has been written then quiet for
+// this long. The TB scales it down; HW uses the module default.
 s573_flash_saver #(.NUM_BLOCKS(16384)) u_flash_saver (
    .clk          (clk_1x),
    .reset        (RESET | status[0]),
    .save_trigger (flash_save_trigger),
+   .erase_trigger(flash_erase_trigger),
+   .flash_wr_ack (flash_wr_ack),       // install-activity strobe -> arms the auto-save
+   .autosave_en  (~status[99]),        // OSD "Auto Save Install" (default On; status[99]=0)
+   .auto_saved   (saver_auto_saved),   // 1-cycle: self-fired auto-save completed
+   .save_done    (saver_save_done),    // 1-cycle: a SAVE completed (toast)
+   .erase_done   (saver_erase_done),   // 1-cycle: an ERASE completed (toast)
    .load_arm     (flash_load_arm),
    .busy         (saver_busy),
    .saving       (saver_saving),

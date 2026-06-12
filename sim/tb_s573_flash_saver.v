@@ -48,13 +48,21 @@ module tb_s573_flash_saver;
     localparam integer WORDS_PER_BLK  = 512;
     localparam integer NWORDS         = NUM_BLOCKS * WORDS_PER_BLK;   // 32768
 
+    // AUTO-SAVE idle threshold, scaled WAY down from the HW default (~3.05e8 clk_1x
+    // cycles = ~9 s) so the TB doesn't wait real seconds. The counter / one-shot /
+    // re-arm logic is byte-for-byte identical at any threshold.
+    localparam integer AUTOSAVE_THRESH = 300;
+
     reg clk = 0, reset = 1;
     always #5 clk = ~clk;
 
     // ---- triggers ----
-    reg  save_trigger = 0;
-    reg  load_arm     = 0;
+    reg  save_trigger  = 0;
+    reg  erase_trigger = 0;
+    reg  flash_wr_ack  = 0;     // install-activity strobe that drives the auto-save
+    reg  load_arm      = 0;
     wire busy, saving;
+    wire save_done, erase_done, auto_saved;
 
     // ---- SD block protocol ----
     wire        sd_rd, sd_wr;
@@ -86,10 +94,24 @@ module tb_s573_flash_saver;
     integer errors = 0;
     integer i, j;
 
-    s573_flash_saver #(.NUM_BLOCKS(NUM_BLOCKS)) dut (
+    // ---- toast / auto-save pulse monitors (cycle-level info_req check) ----
+    integer save_done_cnt  = 0;   // # of save_done   1-cycle pulses seen
+    integer erase_done_cnt = 0;   // # of erase_done  1-cycle pulses seen
+    integer auto_saved_cnt = 0;   // # of auto_saved  1-cycle pulses seen
+    integer sd_wr_cnt      = 0;   // # of sd_wr block requests (1 per LBA per op)
+    always @(posedge clk) begin
+        if (save_done)  save_done_cnt  = save_done_cnt  + 1;
+        if (erase_done) erase_done_cnt = erase_done_cnt + 1;
+        if (auto_saved) auto_saved_cnt = auto_saved_cnt + 1;
+    end
+
+    s573_flash_saver #(.NUM_BLOCKS(NUM_BLOCKS), .AUTOSAVE_THRESH(AUTOSAVE_THRESH)) dut (
         .clk(clk), .reset(reset),
-        .save_trigger(save_trigger), .load_arm(load_arm),
+        .save_trigger(save_trigger), .erase_trigger(erase_trigger),
+        .flash_wr_ack(flash_wr_ack), .autosave_en(1'b1), .auto_saved(auto_saved),
+        .load_arm(load_arm),
         .busy(busy), .saving(saving),
+        .save_done(save_done), .erase_done(erase_done),
         .sd_rd(sd_rd), .sd_wr(sd_wr), .sd_lba(sd_lba), .sd_ack(sd_ack),
         .sd_buff_wr(sd_buff_wr), .sd_buff_addr(sd_buff_addr),
         .sd_buff_dout(sd_buff_dout), .sd_buff_din(sd_buff_din),
@@ -329,6 +351,145 @@ module tb_s573_flash_saver;
                 $display("FAIL: flash-boot signature word %0d not restored", i);
                 errors = errors + 1;
             end
+
+        // round-trip already restored sdram[] == ref_img[]; both PHASE 3/4 below
+        // start from that known-good image. Record the toast-pulse baseline: the
+        // PHASE-1 manual SAVE must have fired save_done EXACTLY once, no erase.
+        if (save_done_cnt != 1) begin
+            $display("FAIL: PHASE1 manual SAVE save_done pulses = %0d (exp 1)", save_done_cnt);
+            errors = errors + 1;
+        end else $display("  TOAST ok: PHASE1 SAVE fired save_done x1 (info_req 'Flash saved')");
+        if (erase_done_cnt != 0) begin
+            $display("FAIL: erase_done fired %0d times before any erase (exp 0)", erase_done_cnt);
+            errors = errors + 1;
+        end
+
+        // ============================================================
+        // PHASE 3 -- AUTO-SAVE: an install (flash_wr_ack pulses) then quiet past
+        // AUTOSAVE_THRESH must self-fire ONE byte-correct SAVE; staying idle must
+        // NOT re-fire; a NEW flash_wr_ack must RE-ARM another auto-save.
+        // sdram[] still holds ref_img -> the auto-save streams ref_img to savefile.
+        // ============================================================
+        for (i = 0; i < NWORDS; i = i + 1) savefile[i] = 16'hBEEF;   // junk: SAVE overwrites
+
+        // (3a) simulate an install: a burst of flash_wr_ack programming strobes.
+        for (i = 0; i < 5; i = i + 1) begin
+            @(negedge clk); flash_wr_ack = 1;
+            @(negedge clk); flash_wr_ack = 0;
+            repeat (3) @(negedge clk);   // intra-write gap < THRESH -> no premature fire
+        end
+        // assert NOTHING fired yet (dirty but not quiet long enough).
+        if (save_done_cnt != 1 || auto_saved_cnt != 0 || busy) begin
+            $display("FAIL: auto-save fired DURING install (saves=%0d auto=%0d busy=%0d)",
+                     save_done_cnt, auto_saved_cnt, busy);
+            errors = errors + 1;
+        end
+
+        // (3b) go quiet -> the idle counter crosses THRESH -> auto-save fires ONCE.
+        // Service exactly the blocks of one SAVE op concurrently with the quiet wait.
+        fork
+            run_save_service(NUM_BLOCKS);   // services the auto-fired SAVE's sd_wr blocks
+            begin : quiet_wait
+                // wait long enough for idle_cnt to pass THRESH and the FSM to start.
+                while (!busy) @(negedge clk);
+            end
+        join
+        wait (busy == 0);
+        repeat (3) @(negedge clk);   // let the completion-cycle toast pulse be counted
+
+        // (3c) the auto-save must have produced a byte-correct savefile == ref_img.
+        diff = 0;
+        for (i = 0; i < NWORDS; i = i + 1)
+            if (savefile[i] !== ref_img[i]) diff = diff + 1;
+        if (diff != 0) begin
+            $display("FAIL: AUTO-SAVE byte-diff = %0d words (of %0d)", diff, NWORDS);
+            errors = errors + diff;
+        end else
+            $display("  AUTO-SAVE ok: install->quiet self-fired a byte-exact SAVE (diff=0)");
+
+        // exactly ONE auto-save (auto_saved x1) + ONE more save_done since PHASE 1.
+        if (auto_saved_cnt != 1) begin
+            $display("FAIL: auto_saved pulses = %0d (exp exactly 1)", auto_saved_cnt);
+            errors = errors + 1;
+        end else $display("  AUTO-SAVE ok: fired EXACTLY once (auto_saved x1)");
+        if (save_done_cnt != 2) begin
+            $display("FAIL: save_done total = %0d (exp 2: PHASE1 manual + 1 auto)", save_done_cnt);
+            errors = errors + 1;
+        end
+
+        // (3d) NO re-fire while idle (dirty was cleared by the completed save).
+        repeat (AUTOSAVE_THRESH*3 + 50) @(negedge clk);
+        if (auto_saved_cnt != 1 || save_done_cnt != 2 || busy) begin
+            $display("FAIL: auto-save RE-FIRED while idle (auto=%0d save=%0d busy=%0d)",
+                     auto_saved_cnt, save_done_cnt, busy);
+            errors = errors + 1;
+        end else
+            $display("  AUTO-SAVE ok: did NOT re-fire during idle/gameplay");
+
+        // (3e) RE-ARM: a NEW flash_wr_ack (re-install) -> quiet -> a SECOND auto-save.
+        savefile[0] = 16'hBEEF;            // dirty the savefile so we know it re-writes
+        @(negedge clk); flash_wr_ack = 1;
+        @(negedge clk); flash_wr_ack = 0;
+        fork
+            run_save_service(NUM_BLOCKS);
+            begin : quiet_wait2
+                while (!busy) @(negedge clk);
+            end
+        join
+        wait (busy == 0);
+        repeat (3) @(negedge clk);
+        if (auto_saved_cnt != 2) begin
+            $display("FAIL: re-arm auto_saved pulses = %0d (exp 2)", auto_saved_cnt);
+            errors = errors + 1;
+        end else $display("  AUTO-SAVE ok: a new flash_wr_ack RE-ARMED a 2nd auto-save");
+        diff = 0;
+        for (i = 0; i < NWORDS; i = i + 1)
+            if (savefile[i] !== ref_img[i]) diff = diff + 1;
+        if (diff != 0) begin
+            $display("FAIL: re-arm AUTO-SAVE byte-diff = %0d", diff);
+            errors = errors + diff;
+        end
+
+        // ============================================================
+        // PHASE 4 -- ERASE: erase_trigger must stream a BLANK (all-0x00) 16 MB
+        // image to the savefile (skipping the ch4 read) and fire erase_done x1.
+        // ============================================================
+        for (i = 0; i < NWORDS; i = i + 1) savefile[i] = 16'hA5A5;   // non-zero: erase must zero it
+        fork
+            run_save_service(NUM_BLOCKS);
+            begin
+                @(negedge clk); erase_trigger = 1;
+                @(negedge clk); erase_trigger = 0;
+            end
+        join
+        wait (busy == 0);
+        repeat (3) @(negedge clk);
+
+        diff = 0;
+        for (i = 0; i < NWORDS; i = i + 1)
+            if (savefile[i] !== 16'h0000) begin
+                if (diff < 8)
+                    $display("FAIL erase: word %0d got %04h exp 0000", i, savefile[i]);
+                diff = diff + 1;
+            end
+        if (diff != 0) begin
+            $display("FAIL: ERASE non-zero words = %0d (of %0d)", diff, NWORDS);
+            errors = errors + diff;
+        end else
+            $display("  ERASE ok: streamed %0d blocks of all-0x00 (16 MB blank, diff=0)", NUM_BLOCKS);
+
+        // erase fired its toast exactly once; it must NOT have bumped a SAVE toast.
+        // By now save_done = 3 (PHASE1 manual + 2 auto-saves; auto-saves ARE saves)
+        // and auto_saved = 2 (the two self-fired ones). ERASE adds neither.
+        if (erase_done_cnt != 1) begin
+            $display("FAIL: erase_done pulses = %0d (exp 1)", erase_done_cnt);
+            errors = errors + 1;
+        end else $display("  TOAST ok: ERASE fired erase_done x1 (info_req 'Flash save erased')");
+        if (save_done_cnt != 3 || auto_saved_cnt != 2) begin
+            $display("FAIL: ERASE perturbed save toasts (save=%0d exp 3, auto=%0d exp 2)",
+                     save_done_cnt, auto_saved_cnt);
+            errors = errors + 1;
+        end else $display("  TOAST ok: ERASE added no save_done/auto_saved (save=3 auto=2)");
 
         if (errors == 0) $display("RESULT: PASS (s573_flash_saver)");
         else             $display("RESULT: FAIL (s573_flash_saver, %0d errors)", errors);
