@@ -1,0 +1,33 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -171,7 +171,7 @@
+    -- mis-invalidated palette cache (refine the 0013 invalidation). If it PERSISTS -> VRAM row
+    -- 491 itself holds stale data at fetch time (a VRAM write-after-read ordering bug). '1' for
+    -- this experiment build; '0' = no-op (normal cache, constant-folds away).
+-   constant DISABLE_CLUT_CACHE : std_logic := '1';
++   constant DISABLE_CLUT_CACHE : std_logic := '0';
+    -- 573 PROBE (0015): CLUT-cache LIVE-CONTENTS probe for the hyperbbc panel garble. The wrong
+    -- (red) palette lives ONLY in the GPU's draw-time CLUT cache -- no savestate captures it, and
+    -- every cold sim renders it correct. For the panel's draws (4bpp, CLUT (0,491)) this OVERRIDES
+@@ -218,7 +218,7 @@
+    -- NOT gated on textPalFetched (0013 clears it on VRAM writes -> premature release); the gate is
+    -- purely the resident-vs-required compare. '1' = fix ON; '0' = no-op (constant-folds away ->
+    -- netlist + cold-sim bit-identical to the legacy path).
+-   constant CLUT_ROWLOCK    : std_logic := '1';
++   constant CLUT_ROWLOCK    : std_logic := '0';
+    signal   rowlock_s0      : std_logic;   -- stage0 CLUT pixel needs a row that is not yet resident
+    signal   rowlock_s1      : std_logic;   -- stage1 CLUT pixel needs a row that is not yet resident
+    signal   rowlock_stall   : std_logic;   -- combined stage0/stage1 row-lock stall
+diff --git a/rtl/gpu.vhd b/rtl/gpu.vhd
+--- a/rtl/gpu.vhd
++++ b/rtl/gpu.vhd
+@@ -993,7 +993,7 @@
+             
+             if (vramFill_done = '1' or cpu2vram_done = '1' or vram2vram_done = '1') then
+                pipeline_clearCacheTexture <= '1';
+-               pipeline_clearCachePalette <= '1';  -- 573: a VRAM write can overwrite a cached CLUT's source row; the palette cache (keyed only on textPalX/Y) was NOT invalidated here -> stale CLUT reused on later same-coord draws = garble. Match the 0x01 clear-cache + texture-cache behaviour.
++               if (cpu2vram_done = '1' or vram2vram_done = '1') then pipeline_clearCachePalette <= '1'; end if;  -- 573 (0019): palette cache survives vramFill screen-clears (they don't touch CLUT VRAM); only cpu2vram/vram2vram can overwrite a cached CLUT
+             end if;
+             
+             if (softReset = '1') then

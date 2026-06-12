@@ -46,7 +46,84 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # color-mode (4bpp=RED/8bpp=BLUE/15bit=YELLOW) so one screenshot reveals which
           # texture mode the green-striped polys use. Gated by DBG_TEXMODE_MAP in
           # gpu_pixelpipeline.vhd; set '0' (constant-folds away) before any production rbf.
-          "$ROOT/psx_patches/0012-s573-debug-texmode-flagcolor.patch" )
+          "$ROOT/psx_patches/0012-s573-debug-texmode-flagcolor.patch" \
+          # 0013: CLUT-cache coherency fix. gpu.vhd invalidated only the TEXTURE cache
+          # (not the palette cache) on VRAM writes (fill/cpu2vram/vram2vram), so a palette
+          # uploaded to a cached CLUT row was ignored -> stale CLUT -> the hyperbbc green
+          # foreground-quad garble. Asserts pipeline_clearCachePalette too. Production fix.
+          "$ROOT/psx_patches/0013-s573-clut-cache-coherency.patch" \
+          # 0014: EXPERIMENT (bisection). Disables the GPU CLUT palette cache -> every textured
+          # primitive re-fetches its palette from VRAM (never serves a cached one). Tests whether
+          # the hyperbbc garble is a stale/mis-invalidated palette cache (fix) vs a VRAM
+          # write-after-read ordering bug (persists). Gated by DISABLE_CLUT_CACHE in
+          # gpu_pixelpipeline.vhd (set '1' for this build; '0' = no-op normal cache).
+          "$ROOT/psx_patches/0014-s573-disable-clut-cache.patch" \
+          # 0015 is a PROBE: for the hyperbbc panel's 4bpp CLUT-(0,491) draws it overrides the
+          # CLUT index with the screen-x position so the panel renders the 16 LIVE CLUT-cache
+          # entries as 16px colour bands into the framebuffer (which a savestate captures). The
+          # wrong (red) palette lives only in the draw-time cache; this is the on-HW way to read
+          # it. Gated by DBG_CLUT_STRIPE in gpu_pixelpipeline.vhd ('1' = probe; '0' = no-op).
+          "$ROOT/psx_patches/0015-s573-clut-stripe-probe.patch" \
+          # 0016 is the PRODUCTION FIX: a CLUT-resident interlock. The hyperbbc panel garble is a
+          # consume-before-refill race -- a quad's 2nd triangle + later scanlines bypass gpu_poly IDLE
+          # so their pixels emit before this primitive's CLUT row is loaded and read the PRIOR quad's
+          # resident palette (HW-probe-confirmed: panel read row ~482 not 491). 0016 stalls stage0/1
+          # CLUT-textured pixels until their requested row is resident (and lets the fetch start while
+          # they're parked, to avoid deadlock). Gated by CLUT_INTERLOCK in gpu_pixelpipeline.vhd
+          # ('1' = fix; '0' = no-op). NVC-analyze-clean; HW-A/B is the arbiter (bug is HW-timing-only).
+          "$ROOT/psx_patches/0016-s573-clut-resident-interlock.patch" \
+          # 0017 is a NUMERIC PROBE (decisive, unconfounded): for every 4bpp-CLUT textured pixel it
+          # overrides pixelColor with the RAW fetched CLUT row number textPalY (encoded 0x7E00|row,
+          # bit15=0 so no mask-blocking). A savestate then reads back the EXACT row(s) the hyperbbc
+          # panel fetched -- no band-colour inference. 491(0x1EB)=correct; anything else = the CLUT
+          # address/latch is wrong (and shows which row, and one-row vs many). Also turns the failed
+          # 0016 interlock OFF (CLUT_INTERLOCK='0'). Gated DBG_ROWDUMP in gpu_pixelpipeline.vhd
+          # ('1' = probe; '0' = no-op, constant-folds away). Set '0' for any production rbf.
+          "$ROOT/psx_patches/0017-s573-clut-rowdump-probe.patch" \
+          # 0018 = the PRODUCTION FIX (CLUT row-lock). Per-pixel snapshot of the required CLUT row +
+          # stall stage0/1 until the RESIDENT row matches the pixel's OWN snapshot + drive the fetch from
+          # the parked pixel's row (the shared textPalReqY gets overwritten by the next quad before the
+          # panel pixels read). Fixes the HW read-race 0016 could not. Gated CLUT_ROWLOCK ('1'=fix).
+          "$ROOT/psx_patches/0018-s573-clut-rowlock.patch" \
+          # 0019 = restore stock CLUT cache (DISABLE_CLUT_CACHE=0) + qualify 0013 (palette cache survives
+          # vramFill screen-clears) + turn off the failed CLUT_ROWLOCK (0018). The 320 row-491 menu/panel
+          # quads then fetch the palette ONCE and reuse it instead of re-fetching+racing per quad.
+          "$ROOT/psx_patches/0019-s573-clut-cache-restore.patch" \
+          # 0020 = SDRAM CAS latency 2->3: CL2 @ 101.6 MHz is out of SDR spec; the 573's
+          # continuous flash traffic collects the margin debt as deterministic low-bit
+          # miscapture on GPU-DMA reads (clut 491 -> 480/481). Audit: docs/audits/2026-06-10.
+          "$ROOT/psx_patches/0020-sdram-cas-latency-3.patch" \
+          # 0021 = 2 MB VRAM (the 573's CXD8561Q drives 1024 VRAM rows; the vendored core
+          # implements 512 and truncates Y to 9 bits, so boot-time uploads to y>=512 WRAP
+          # onto y-512 and corrupt the visible half -- the font-atlas/garble root cause).
+          # Widens dst/src/scissor/texpage/CLUT Y to 10 bits per MAME psxgpu (gputype 2)
+          # and maps row-bit-9 to DDR3 page 0x08 (+8MB; clear of memcard/SPU/framebuffer
+          # pages). Scanout untouched (display reads stay bit-identical). Red/green sim
+          # proof: sim/gpu_replay/run_vram2mb.sh + docs/audits/2026-06-10-vram-2mb-redgreen.md.
+          "$ROOT/psx_patches/0021-gpu-2mb-vram-10bit-y.patch" \
+          # 0022: 4 MB main-RAM decode (PLATFORM.md Main RAM row, constants-class bug #3).
+          # The 573 has 4 MB RAM (MAME ksys573.cpp "4M"); the pristine core decodes only
+          # 2 MB (ram8mb=0) or 8 MB linear (ram8mb=1), so +4MB accesses silently hit the
+          # wrong SDRAM cells. Adds an opt-in ram4mb port (default '0' = pristine
+          # behavior): masks RAM-region address bit 22 at the psx_top ram_Adr chokepoint
+          # (CPU + icache + DMA reads) and at the dma.vhd write-back fifo insert --
+          # matching MAME's DMA n_adrmask = ramsize-1 = 0x3fffff (cpu/psx/dma.cpp).
+          # emu.sv enables it via S573_RAM4MB. Red/green: sim/system573/run_ram_mirror.sh.
+          "$ROOT/psx_patches/0022-s573-main-ram-4mb.patch" \
+          # 0023 = ATAPI CD-ROM on DMA channel 5 (the hard gate for every CD-installer
+          # game). The BIOS's only sector-read data path is DMA mode (mode byte = 2 ->
+          # ISR arms ch5: MADR=buf, BCR=bytes>>2, CHCR=0x11050100 manual+chop32); the
+          # vendored core's ch5 is dead (request tied '0', no trigger, no WORKING arm
+          # -> 'severity failure'). Adds the SPU-pattern 16-bit read trio
+          # (atapi_dmaRequest/DMA_ATA_readEna/DMA_ATA_read) threaded dma -> psx_top ->
+          # psx_mister -> emu.sv -> system573_top/atapi.v. readEna is ce-qualified
+          # (the 573 fabric free-runs on clk1x). Device->RAM only (CHCR bit0 forced 0).
+          # Red/green: sim/tb_cdboot.v (BIOS ch5 contract BFM, 32-word chopped bursts).
+          "$ROOT/psx_patches/0023-s573-dma-ch5-atapi.patch" \
+          # 0024 = SIO1 DSR cassette presence: the BIOS leaf 0x80038A28 polls SIO1_STAT
+          # (0x1F801054) bit 7 (DSR); every real security cassette asserts slot DSR
+          # (local/seccart_presence/) show ZERO SIO1 writes, so no IRQ work is needed.
+          "$ROOT/psx_patches/0024-s573-sio1-dsr-presence.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

@@ -42,7 +42,14 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       - [x] ATA task-file + ATAPI PACKET handshake, non-data + PIO data-in,
             INTRQ (`rtl/atapi.v`, tested; TUR/INQUIRY/READ CAPACITY)
       - [x] READ(10)/READ(12) sector streaming from a backing disc store (tested)
-      - [ ] Back the disc store with a real CD image in MiSTer DDR3; DMA ch5
+      - [x] **Feature B.1: READ(10) data from a MOUNTED CD IMAGE** (`rtl/s573_cdimg.v`
+            + atapi.v `cd_attached`/`sec_req`/`sbuf` path; emu.sv CUECHD sd-block
+            channel reclaimed from the removed cd_top). atapi.v returns the disc's
+            REAL 2048-byte user sectors (raw MODE1/2352, sync/header stripped), proven
+            in sim against the hypbbc2p ISO9660 PVD (`sim/tb_atapi_cdread.v`,
+            `tb_s573_cdimg.v`). 2 KB sector BRAM + small FSM/mux (~150 ALMs).
+      - [ ] Full BIOS CD-boot command sequence on HW (the BIOS's boot-sector reads,
+            the DMA ch5 block path, CDDA audio, multi-track TOC) -- HW bring-up + later
 - [~] Bank-switched flash / PCMCIA backing store via MiSTer's DDR3
       - [x] Bank-switch control register + windowed banking (`rtl/s573_flash.v`,
             tested)

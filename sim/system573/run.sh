@@ -15,6 +15,10 @@
 # All build artifacts + sim outputs (.gra, trace logs) land in build/ (gitignored).
 # =============================================================================
 set -euo pipefail
+# live sim marker (cockpit 'simulating' indicator; push-not-scrape, hub 4e87e6b). Best-effort.
+COORD="$HOME/Dev/mister-dev-hub/tools/dell_coord.sh"
+[ -x "$COORD" ] && "$COORD" sim 573 start "NVC system573 boot ($(basename "$0") ${1:-2ms})" >/dev/null 2>&1 || true
+trap '[ -x "$COORD" ] && "$COORD" sim 573 stop >/dev/null 2>&1 || true' EXIT INT TERM
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -24,6 +28,9 @@ WD="$HERE/build"
 
 STOP_TIME="${1:-2ms}"
 RAM8MB="${2:-1}"
+# RAM4MB=1 (default): 4 MB main-RAM mask on top of the 8 MB decode (psx_patches/0022),
+# matching the .rbf (emu.sv S573_RAM4MB=1). RAM4MB=0 = the old 8 MB linear decode.
+RAM4MB="${RAM4MB:-1}"
 # TURBO=1 (default): sim accelerators (TURBO_MEM/COMP/CACHE). TURBO=0 runs the core
 # under realistic memory/cache/DMA timing (slower; use to confirm no accelerator masks
 # an integration bug, esp. on the GPU-DMA path).
@@ -310,9 +317,9 @@ analyze tb "$HERE/tb_system573.vhd"
 # FAST_BOOT NOPs the copy loop (they MUST match -- the boot jr's into the preloaded code).
 if [ "$FAST_BOOT" != "0" ]; then PRELOAD_COPY=1; else PRELOAD_COPY=0; fi
 
-echo "== elaborating tb_system573 (RAM8MB=$RAM8MB TURBO=$TURBO SLOWVRAM=$SLOWVRAM INJECT=$INJECT PRELOAD_COPY=$PRELOAD_COPY ATAPI_EMU=$ATAPI_EMU) =="
+echo "== elaborating tb_system573 (RAM8MB=$RAM8MB RAM4MB=$RAM4MB TURBO=$TURBO SLOWVRAM=$SLOWVRAM INJECT=$INJECT PRELOAD_COPY=$PRELOAD_COPY ATAPI_EMU=$ATAPI_EMU) =="
 $NVC $NVC_MEM --work="tb:$WD/tb" -L "$WD" -e tb_system573 --stats \
-     -gRAM8MB="'$RAM8MB'" -gTURBO="'$TURBO'" -gSLOWVRAM=$SLOWVRAM \
+     -gRAM8MB="'$RAM8MB'" -gRAM4MB="'$RAM4MB'" -gTURBO="'$TURBO'" -gSLOWVRAM=$SLOWVRAM \
      -gPRELOAD_COPY="'$PRELOAD_COPY'" -gATAPI_EMU="'$ATAPI_EMU'" \
      -gINJECT="'$INJECT'" -gINJECT_DELAY="$INJECT_DELAY" -gINJECT_WIDTH="$INJECT_WIDTH" \
      -gINJECT_AT="$INJECT_AT"

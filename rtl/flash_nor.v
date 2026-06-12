@@ -52,7 +52,13 @@ module flash_nor #(
     // High when the current read returns an autoselect MFR/DEV ID word (not the
     // array). Lets an external-backing parent skip the SDRAM fill for ID reads so
     // POST's flash-ID check never stalls. Combinational; harmless when unused.
-    output wire        id_read
+    output wire        id_read,
+    // High on the program DATA cycle (state ST_PROG + a write strobe): the parent
+    // (s573_flash, BACKING_EXTERNAL=1) uses this to write the programmed word back
+    // to its external array. `din` is the program data and `addr` the (low) target
+    // word; the NOR rule (cell &= data) is applied by the parent against the array
+    // word it holds. Combinational; harmless (and ignored) in BACKING_EXTERNAL=0.
+    output wire        prog_now
 );
     localparam [2:0] ST_READ=3'd0, ST_UL1=3'd1, ST_UL2=3'd2, ST_AUTO=3'd3,
                      ST_PROG=3'd4, ST_ER1=3'd5, ST_ER2=3'd6, ST_ERCMD=3'd7;
@@ -137,6 +143,11 @@ module flash_nor #(
 
     // An ID read is a read of MFR (addr 0x00) or DEV (0x01) while in autoselect.
     assign id_read = (ce && state == ST_AUTO && (addr[7:0] == 8'h00 || addr[7:0] == 8'h01));
+
+    // The program data cycle: in ST_PROG, any write strobe is the data write that
+    // ANDs `din` into the array word at `addr` (a reset F0 is NOT special here --
+    // the FSM above only treats F0 as a reset when state != ST_PROG). One cycle.
+    assign prog_now = (ce && we && state == ST_PROG);
 
     always @(*) begin
         if (ce && state == ST_AUTO)

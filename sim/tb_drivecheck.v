@@ -29,13 +29,21 @@ module tb_drivecheck;
         .coin_sw(2'b00), .service_btn(1'b0), .test_btn(1'b0),
         .pcmcia_present(2'b00),
         .cd_present(1'b1),
+        .cd_image(1'b0), .cd_hps_req(), .cd_hps_lba(),
+        .cd_hps_ack(1'b0), .cd_hps_write(1'b0), .cd_hps_data(16'h0000),
+        .cd_ti_write(1'b0), .cd_ti_addr(9'd0), .cd_ti_data(32'd0),
+        .cd_img_mounted(1'b0), .cd_img_size(64'd0),
+        .atapi_dma_req(), .atapi_dma_rd(1'b0), .atapi_dma_dout(),
         .adc_ch0(8'h00), .adc_ch1(8'h00), .adc_ch2(8'h00), .adc_ch3(8'h00),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
         .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
         .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
         .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
-        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0),
+        .sec_cart_type(2'd0),
+        .sec_eep_we(1'b0), .sec_eep_addr(10'd0), .sec_eep_din(8'd0),
+        .sec_ser_we(1'b0), .sec_ser_addr(3'd0), .sec_ser_din(8'd0)
     );
 
     always #5 clk = ~clk;
@@ -74,6 +82,21 @@ module tb_drivecheck;
             exp1_write(24'h48000e, 16'h00A0);          // PACKET command
             exp1_write(24'h480000, {8'h00, op});       // CDB word0 (opcode in low byte)
             for (w = 0; w < 5; w = w + 1) exp1_write(24'h480000, 16'h0000);
+        end
+    endtask
+
+    // bounded BSY-clear poll, like the BIOS's 0xf690-loop status wait (trace pc
+    // 0x803cb304): commands with a response-build window (READ TOC's metadata
+    // lookup) legally show BSY for a few cycles before raising DRQ.
+    task wait_not_busy(input [255:0] what);
+        integer p; reg [15:0] s; begin
+            s = 16'h0080;
+            for (p = 0; p < 64 && (s & 16'h0080) !== 16'h0000; p = p + 1)
+                exp1_read(24'h48000e, s);
+            if ((s & 16'h0080) !== 16'h0000) begin
+                $display("FAIL: BSY stuck (%0s)", what);
+                errors = errors + 1;
+            end
         end
     endtask
 
@@ -130,7 +153,9 @@ module tb_drivecheck;
         exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0050, "REQSENSE done");
 
         // READ TOC (0x43): 12-byte data-in; BIOS requires byte-count==12.
+        // (the dynamic TOC build holds BSY for the s573_cdtoc lookup - poll like the BIOS)
         packet_send(8'h43);
+        wait_not_busy("READTOC");
         exp1_read(24'h48000e, v); chk(v & 16'h00ff, 16'h0048, "READTOC DRQ");
         exp1_read(24'h480008, v); chk(v & 16'h00ff, 16'h000C, "READTOC byte count");
         for (i = 0; i < 6; i = i + 1) exp1_read(24'h480000, v);                        // 6 words = 12 bytes

@@ -45,6 +45,15 @@ module system573_top #(
     input  wire [127:0] flash_mem_q,
     input  wire        flash_mem_ready,
 
+    // SDRAM flash single-word WRITE-BACK port (FLASH_SIM_BACKING=0): NOR program
+    // makes the onboard flash writable for a CD game's installer. emu.sv muxes this
+    // into the free SDRAM ch3 writer and returns the ch3 completion on flash_wr_ack.
+    output wire        flash_wr_req,
+    output wire        flash_wr_busy,
+    output wire [26:0] flash_wr_addr,
+    output wire [15:0] flash_wr_data,
+    input  wire        flash_wr_ack,
+
     // DEBUG passthrough: s573_flash trigger-state observers (HW bring-up).
     output wire [23:0] flash_dbg,
 
@@ -52,6 +61,25 @@ module system573_top #(
     input  wire        nvram_we,
     input  wire [12:0] nvram_addr,
     input  wire [7:0]  nvram_din,
+
+    // M48T58 NVRAM image SAVE-BACK (hps_io ioctl upload -> config/nvram/*.nvm).
+    // Read port into the timekeeper (write-port idle cycles, 1-cycle latency,
+    // sav_rd_ok=0 -> the saver retries) + a "game wrote the timekeeper" strobe
+    // for emu.sv's dirty flag -> ioctl_upload_req (OSD autosave request).
+    input  wire [12:0] nvram_sav_addr,
+    output wire [7:0]  nvram_sav_dout,
+    output wire        nvram_sav_rd_ok,
+    output wire        nvram_written,
+
+    // Security-cartridge image load (e.g. pnchmn2 gqa09ja.u1 / .u6), streamed in at
+    // reset. cart_type selects the EEPROM model: 0 = X76F100, 1 = X76F041.
+    input  wire [1:0]  sec_cart_type,
+    input  wire        sec_eep_we,    // EEPROM (.u1: 548 B x76f041 / 4116 B zs01) byte write
+    input  wire [12:0] sec_eep_addr,  // 13-bit covers the padded 4116-byte ZS01 .u1
+    input  wire [7:0]  sec_eep_din,
+    input  wire        sec_ser_we,    // DS2401 (.u6, 8-byte serial image) byte write
+    input  wire [2:0]  sec_ser_addr,
+    input  wire [7:0]  sec_ser_din,
 
     // Board inputs (JAMMA / coins / DIP) from the MiSTer host
     input  wire [3:0]  dip_sw,
@@ -62,6 +90,35 @@ module system573_top #(
     input  wire        test_btn,
     input  wire [1:0]  pcmcia_present,
     input  wire        cd_present,      // 1 = ATAPI CD drive attached; 0 = no_cdrom flash config (MAME konami573 no_cdrom)
+
+    // ---- mounted CD-image sector stream (Feature B) ----
+    // cd_image=1 routes ATAPI READ(10/12) data from a mounted CD image (via the
+    // s573_cdimg reader on the MiSTer CUECHD sd-block host stream) instead of the
+    // SIM-only disc[] store. The cd_* ports below are emu.sv's sd_lba1/sd_rd[1]/
+    // sd_ack[1]/sd_buff_wr/sd_buff_dout (the same channel cd_top used pre-patch-0011).
+    input  wire        cd_image,        // 1 = a CD image is mounted (drive READ from it)
+    output wire        cd_hps_req,      // -> sd_rd[1]      (request a raw sector)
+    output wire [31:0] cd_hps_lba,      // -> sd_lba1       (Main MSF-space LBA = user+150)
+    input  wire        cd_hps_ack,      // <- sd_ack[1]
+    input  wire        cd_hps_write,    // <- sd_buff_wr    (one 16-bit word per pulse)
+    input  wire [15:0] cd_hps_data,     // <- sd_buff_dout
+
+    // ---- mounted-disc metadata (s573_cdtoc): Main disk_t (ioctl index 251) +
+    //      the img_size/2352 single-track fallback. atapi.v serves READ TOC /
+    //      READ CAPACITY content from this (the GX700 CD-boot path reads both).
+    input  wire        cd_ti_write,     // <- ramdownload_wr && cdinfo_download
+    input  wire [8:0]  cd_ti_addr,      // <- ramdownload_wraddr[10:2] (32-bit word index)
+    input  wire [31:0] cd_ti_data,      // <- ramdownload_wrdata
+    input  wire        cd_img_mounted,  // <- img_mounted[1] (pulse)
+    input  wire [63:0] cd_img_size,     // <- img_size (bytes; raw 2352-byte sectors)
+
+    // ---- PSX DMA channel 5 drain of the ATAPI data phase (psx_patches/0023) ----
+    // The BIOS's only sector-read data path: the ISR arms ch5 and the DMA pulls the
+    // 2048-byte sector as 16-bit halfwords straight from atapi.v's prefetch register.
+    output wire        atapi_dma_req,   // -> psx atapi_dmaRequest (data-phase request)
+    input  wire        atapi_dma_rd,    // <- psx DMA_ATA_readEna (halfword consume)
+    output wire [15:0] atapi_dma_dout,  // -> psx DMA_ATA_read
+
     input  wire [7:0]  adc_ch0,
     input  wire [7:0]  adc_ch1,
     input  wire [7:0]  adc_ch2,
@@ -130,6 +187,9 @@ module system573_top #(
         .flash_ready(flash_ready),
         .flash_mem_req(flash_mem_req), .flash_mem_addr(flash_mem_addr),
         .flash_mem_q(flash_mem_q), .flash_mem_ready(flash_mem_ready),
+        .flash_wr_req(flash_wr_req), .flash_wr_busy(flash_wr_busy),
+        .flash_wr_addr(flash_wr_addr),
+        .flash_wr_data(flash_wr_data), .flash_wr_ack(flash_wr_ack),
         .dbg_flash(flash_dbg)
     );
     // The EXP1 wait is asserted ONLY while a flash access is not ready (a missed
@@ -143,8 +203,11 @@ module system573_top #(
     wire [7:0]  sec_in;
     s573_seccart #(.DS_SERIAL(CART_SERIAL), .DS_CLK_HZ(CLK_FREQ_HZ)) u_seccart (
         .clk(clk), .rst(rst),
+        .cart_type(sec_cart_type),
         .latch_we(sel_seclatch & exp1_we), .d_latch(exp1_wdata[7:0]),
         .io0_dir(sec_io0_dir),
+        .load_eep_we(sec_eep_we), .load_eep_addr(sec_eep_addr), .load_eep_data(sec_eep_din),
+        .load_ser_we(sec_ser_we), .load_ser_addr(sec_ser_addr), .load_ser_data(sec_ser_din),
         .sec_io0(sec_io0), .sec_in(sec_in), .sec_drdy(sec_drdy), .sec_irdy(sec_irdy)
     );
 
@@ -153,12 +216,62 @@ module system573_top #(
     wire        atapi_intrq;
     wire        atapi_sel = sel_ide0 | sel_ide1;
     wire [3:0]  atapi_addr = sel_ide1 ? 4'd8 : exp1_addr[3:1];
+    // CD-image sector path (Feature B): atapi.v dispatches a READ -> sec_req/sec_lba;
+    // s573_cdimg fetches the raw sector from the mounted image and presents its 2048
+    // user-data bytes back as the sbuf buffer that atapi.v streams to the host.
+    wire        atapi_sec_req;
+    wire [31:0] atapi_sec_lba;
+    wire [10:0] atapi_sbuf_addr;
+    wire [15:0] atapi_sbuf_q;
+    wire        atapi_sec_ready;
+    wire        atapi_dma_req_int;
+    // disc metadata (s573_cdtoc <-> atapi)
+    wire [7:0]  atapi_toc_track_count;
+    wire [31:0] atapi_toc_leadout;
+    wire [6:0]  atapi_toc_qtrack;
+    wire [31:0] atapi_toc_qstart;
+    wire        atapi_toc_qaudio;
+    // ide_rst polarity: 0x1f560000 bit0 is the drive's ACTIVE-LOW reset line
+    // (psx-spx / MAME konami573: write 0 = assert reset, write 1 = release).
+    // The old `sel_idereset & exp1_we` reset on ANY write -- including the
+    // BIOS's release-write of 1, which re-reset the drive it had just reset.
     atapi u_atapi (
-        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we),
+        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we & ~exp1_wdata[0]),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
-        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq)
+        .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq),
+        .cd_attached(cd_image),
+        .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
+        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
+        .sec_ready(atapi_sec_ready),
+        .toc_track_count(atapi_toc_track_count), .toc_leadout(atapi_toc_leadout),
+        .toc_qtrack(atapi_toc_qtrack), .toc_qstart(atapi_toc_qstart),
+        .toc_qaudio(atapi_toc_qaudio),
+        .dma_req(atapi_dma_req_int), .dma_rd(atapi_dma_rd), .dma_dout(atapi_dma_dout)
     );
+
+    // --- mounted-CD-image sector reader (Feature B) ---
+    s573_cdimg u_cdimg (
+        .clk(clk), .rst(rst),
+        .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
+        .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
+        .sec_ready(atapi_sec_ready), .sec_busy(),
+        .cd_req(cd_hps_req), .cd_lba(cd_hps_lba),
+        .cd_ack(cd_hps_ack), .cd_wr(cd_hps_write), .cd_data(cd_hps_data)
+    );
+
+    // --- mounted-disc metadata (TOC + capacity) for the drive's READ TOC /
+    //     READ CAPACITY responses: Main disk_t (ioctl 251) or img_size fallback ---
+    s573_cdtoc u_cdtoc (
+        .clk(clk), .rst(rst),
+        .ti_write(cd_ti_write), .ti_addr(cd_ti_addr), .ti_data(cd_ti_data),
+        .img_mounted(cd_img_mounted), .img_size(cd_img_size),
+        .toc_track_count(atapi_toc_track_count), .toc_leadout(atapi_toc_leadout),
+        .toc_qtrack(atapi_toc_qtrack), .toc_qstart(atapi_toc_qstart),
+        .toc_qaudio(atapi_toc_qaudio)
+    );
+    // ch5 request follows the same drive-present gate as INTRQ.
+    assign atapi_dma_req = cd_present ? atapi_dma_req_int : 1'b0;
     // cd_present gates the IDE read mux + INTRQ. CORRECTION (HW-verified 2026-06-03):
     // a real 573 -- even for no_cdrom flash games (gchgchmp/hyperbbc) -- carries a CR-589
     // CD-ROM on the IDE bus, and the GX700 POST "DRIVE CHECK" probes it UNCONDITIONALLY
@@ -190,8 +303,15 @@ module system573_top #(
         .din(exp1_wdata[7:0]),
         .we(sel_rtc & exp1_we),
         .dout(rtc_dout),
-        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din)
+        .nvram_we(nvram_we), .nvram_addr(nvram_addr), .nvram_din(nvram_din),
+        .sav_addr(nvram_sav_addr), .sav_dout(nvram_sav_dout), .sav_rd_ok(nvram_sav_rd_ok)
     );
+
+    // Dirty strobe for the SD save-back: any game-side write into the timekeeper
+    // (NVRAM array or clock registers -- both belong to the persisted 8 KB image).
+    // The ioctl image LOAD (nvram_we) deliberately does NOT count: restoring the
+    // .nvm at boot must not mark the content dirty.
+    assign nvram_written = sel_rtc & exp1_we;
 
     // --- Konami ASIC I/O ---
     wire [15:0] asic_dout;

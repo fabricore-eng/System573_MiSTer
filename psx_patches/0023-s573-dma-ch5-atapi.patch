@@ -1,0 +1,205 @@
+diff --git a/rtl/dma.vhd b/rtl/dma.vhd
+--- a/rtl/dma.vhd
++++ b/rtl/dma.vhd
+@@ -73,7 +73,14 @@
+       DMA_SPU_readEna      : out std_logic := '0';
+       DMA_SPU_write        : out std_logic_vector(15 downto 0);
+       DMA_SPU_read         : in  std_logic_vector(15 downto 0);
+-      
++
++      -- System 573 (psx_patches/0023): ATAPI CD-ROM on DMA channel 5 (device->RAM
++      -- only). Mirrors the SPU 16-bit read trio; the device is the 573 EXP1 fabric's
++      -- atapi.v, free-running on clk1x, so DMA_ATA_readEna is qualified with ce.
++      atapi_dmaRequest     : in  std_logic;
++      DMA_ATA_readEna      : out std_logic := '0';
++      DMA_ATA_read         : in  std_logic_vector(15 downto 0);
++
+       bus_addr             : in  unsigned(6 downto 0); 
+       bus_dataWrite        : in  std_logic_vector(31 downto 0);
+       bus_read             : in  std_logic;
+@@ -134,6 +141,7 @@
+    signal wordAccu            : integer range 0 to 3 := 0;
+    signal DMA_CD_read_accu    : std_logic_vector(23 downto 0);
+    signal DMA_SPU_read_accu   : std_logic_vector(15 downto 0);
++   signal DMA_ATA_read_accu   : std_logic_vector(15 downto 0);   -- 573 ATAPI ch5 low half
+    signal slowcnt             : integer range 0 to 24;
+       
+    signal isOn                : std_logic;
+@@ -223,6 +231,11 @@
+    
+    DMA_SPU_readEna   <= '1' when (dmaState = WORKING and fifoOut_NearFull = '0' and activeChannel = 4 and toDevice = '0') else '0';
+ 
++   -- 573 ATAPI ch5 (psx_patches/0023). Qualified with ce: the wordAccu consume below
++   -- only advances on ce cycles, but the 573 fabric (atapi.v) free-runs on clk1x --
++   -- an un-gated level here would over-drain the sector buffer during pause/savestate.
++   DMA_ATA_readEna   <= '1' when (ce = '1' and dmaState = WORKING and fifoOut_NearFull = '0' and activeChannel = 5 and toDevice = '0') else '0';
++
+    readStall <= '1' when (activeChannel = 2 and toDevice = '0' and gpu_dmaRequest = '0') else '0';
+ 
+    chopsize     <= to_unsigned(1, 8) sll to_integer(dmaSettings.D_CHCR(18 downto 16));
+@@ -360,9 +373,9 @@
+             dmaArray(2).request <= gpu_dmaRequest;
+             dmaArray(3).request <= '1';
+             dmaArray(4).request <= spu_dmaRequest;
+-            dmaArray(5).request <= '0';
++            dmaArray(5).request <= atapi_dmaRequest;   -- 573 ATAPI (psx_patches/0023)
+             dmaArray(6).request <= '1';
+-            
++
+             -- triggers from modules
+             triggerDMA <= (others => '0');
+             if (dmaArray(0).D_CHCR(28) = '1' or mdec_dmaWriteRequest = '1')  then triggerDMA(0) <= '1'; end if;
+@@ -370,6 +383,11 @@
+             if (dmaArray(2).D_CHCR(28) = '1' or gpu_dmaRequest = '1')        then triggerDMA(2) <= '1'; end if;
+             if (dmaArray(3).D_CHCR(28) = '1')                                then triggerDMA(3) <= '1'; end if;
+             if (dmaArray(4).D_CHCR(28) = '1' or spu_dmaRequest = '1')        then triggerDMA(4) <= '1'; end if;
++            -- 573 ATAPI ch5 (psx_patches/0023): the D_CHCR(28) term covers BOTH the
++            -- BIOS's manual arm (CHCR=0x11050100, trigger bit28) AND the chopping
++            -- resume (the chop pause below re-sets bit28; without this line each
++            -- 32-word chop window would pause once and never resume).
++            if (dmaArray(5).D_CHCR(28) = '1' or atapi_dmaRequest = '1')      then triggerDMA(5) <= '1'; end if;
+             if (dmaArray(6).D_CHCR(28) = '1')                                then triggerDMA(6) <= '1'; end if;
+             
+             -- bus read
+@@ -466,11 +484,21 @@
+             
+             if (DMA_SPU_readEna = '1') then
+                case (wordAccu) is
+-                  when 0 => wordAccu <= 1; 
++                  when 0 => wordAccu <= 1;
+                   when 1 => wordAccu <= 0; DMA_SPU_read_accu <= DMA_SPU_read;
+                   when others => null;
+                end case;
+             end if;
++
++            -- 573 ATAPI ch5 16-bit accumulate (psx_patches/0023): LOW half first,
++            -- exactly the SPU pattern above.
++            if (DMA_ATA_readEna = '1') then
++               case (wordAccu) is
++                  when 0 => wordAccu <= 1;
++                  when 1 => wordAccu <= 0; DMA_ATA_read_accu <= DMA_ATA_read;
++                  when others => null;
++               end case;
++            end if;
+             
+             -- chopping wait
+             for i in 0 to 6 loop
+@@ -520,8 +548,15 @@
+                      dmaSettings.D_CHCR <= dmaArray(triggerchannel).D_CHCR;
+                      dmaSettings.D_MADR <= dmaArray(triggerchannel).D_MADR;
+                      dmaSettings.D_BCR  <= dmaArray(triggerchannel).D_BCR;
+-                     
+-                     if (dmaArray(triggerchannel).D_CHCR(0) = '1') then
++
++                     -- 573 ATAPI ch5 (psx_patches/0023) is device->RAM ONLY: force
++                     -- CHCR bit0 clear (and skip the bit0 RAM-read kick below) so the
++                     -- sync1 "bit0=1" arm form cannot turn ch5 into a RAM read.
++                     if (triggerchannel = 5) then
++                        dmaSettings.D_CHCR(0) <= '0';
++                     end if;
++
++                     if (dmaArray(triggerchannel).D_CHCR(0) = '1' and triggerchannel /= 5) then
+                         ram_ena  <= '1';
+                         ram_Adr  <= std_logic_vector(dmaArray(triggerchannel).D_MADR(22 downto 2)) & "00";
+                      end if;
+@@ -542,7 +577,10 @@
+                   if (activeChannel = 4) then
+                      wordAccu <= 1;
+                   end if;
+-                  
++                  if (activeChannel = 5) then   -- 573 ATAPI: 16-bit device (psx_patches/0023)
++                     wordAccu <= 1;
++                  end if;
++
+                   useDataDirect <= '0';
+                   if (activeChannel = 0 or activeChannel = 2) then
+                      useDataDirect <= '1';
+@@ -564,7 +602,9 @@
+                      end if;
+                   end if;
+                   
+-                  if (dmaSettings.D_CHCR(8) = '1' and activeChannel /= 3 and activeChannel /= 6) then
++                  -- the 573 BIOS arms ch5 WITH chopping (CHCR=0x11050100, 32-word chop
++                  -- window) -- legal there, so don't flag it (psx_patches/0023).
++                  if (dmaSettings.D_CHCR(8) = '1' and activeChannel /= 3 and activeChannel /= 5 and activeChannel /= 6) then
+                      errorCHOP <= '1';
+                   end if;
+                   
+@@ -722,7 +762,14 @@
+                               fifoOut_Din(52 downto 32) <= std_logic_vector(dmaSettings.D_MADR(22 downto 2));
+                               fifoOut_Din(31 downto 0)  <= DMA_SPU_read & DMA_SPU_read_accu;
+                            end if;
+-                           
++
++                        when 5 =>   -- 573 ATAPI device->RAM (psx_patches/0023; ch4 read-arm clone)
++                           if (toDevice = '0') then
++                              fifoOut_Wr                <= not dmaSettings.D_MADR(23);
++                              fifoOut_Din(52 downto 32) <= std_logic_vector(dmaSettings.D_MADR(22 downto 2));
++                              fifoOut_Din(31 downto 0)  <= DMA_ATA_read & DMA_ATA_read_accu;
++                           end if;
++
+                         when 6 =>
+                            if (toDevice = '0') then
+                               fifoOut_Wr                <= not dmaSettings.D_MADR(23);
+diff --git a/rtl/psx_top.vhd b/rtl/psx_top.vhd
+--- a/rtl/psx_top.vhd
++++ b/rtl/psx_top.vhd
+@@ -81,6 +81,11 @@
+       exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
+       exp1_reqsize          : out unsigned(1 downto 0);  -- System 573 CPU load width -> EXP1 slave byte-align
+       exp_irq10             : in  std_logic;
++      -- System 573 ATAPI CD-ROM on DMA channel 5 (psx_patches/0023): 16-bit
++      -- device->RAM read trio, threaded to dma.vhd (mirrors the SPU ch4 trio).
++      atapi_dmaRequest      : in  std_logic;
++      DMA_ATA_readEna       : out std_logic;
++      DMA_ATA_read          : in  std_logic_vector(15 downto 0);
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+       ram_dataRead32        : in  std_logic_vector(31 downto 0);
+@@ -1319,12 +1324,17 @@
+       
+       spu_timing_on        => dma_spu_timing_on,   
+       spu_timing_value     => dma_spu_timing_value,
+-      spu_dmaRequest       => spu_dmaRequest, 
+-      DMA_SPU_writeEna     => DMA_SPU_writeEna,   
+-      DMA_SPU_readEna      => DMA_SPU_readEna,    
+-      DMA_SPU_write        => DMA_SPU_write,    
++      spu_dmaRequest       => spu_dmaRequest,
++      DMA_SPU_writeEna     => DMA_SPU_writeEna,
++      DMA_SPU_readEna      => DMA_SPU_readEna,
++      DMA_SPU_write        => DMA_SPU_write,
+       DMA_SPU_read         => DMA_SPU_read,
+-      
++
++      -- System 573 ATAPI ch5 (psx_patches/0023)
++      atapi_dmaRequest     => atapi_dmaRequest,
++      DMA_ATA_readEna      => DMA_ATA_readEna,
++      DMA_ATA_read         => DMA_ATA_read,
++
+       bus_addr             => bus_dma_addr,     
+       bus_dataWrite        => bus_dma_dataWrite,
+       bus_read             => bus_dma_read,     
+diff --git a/rtl/psx_mister.vhd b/rtl/psx_mister.vhd
+--- a/rtl/psx_mister.vhd
++++ b/rtl/psx_mister.vhd
+@@ -77,6 +77,10 @@
+       exp1_wait             : in  std_logic;   -- System 573 flash line-fill stall
+       exp1_reqsize          : out std_logic_vector(1 downto 0);  -- System 573 CPU load width -> EXP1 slave byte-align
+       exp_irq10             : in  std_logic;
++      -- System 573 ATAPI CD-ROM on DMA channel 5 (psx_patches/0023; pass-through)
++      atapi_dmaRequest      : in  std_logic;
++      DMA_ATA_readEna       : out std_logic;
++      DMA_ATA_read          : in  std_logic_vector(15 downto 0);
+       ram_refresh           : out std_logic;
+       ram_dataWrite         : out std_logic_vector(31 downto 0);
+       ram_dataRead32        : in  std_logic_vector(31 downto 0);
+@@ -385,6 +389,9 @@
+       exp1_wait             => exp1_wait,
+       exp1_reqsize          => exp1_reqsize_u,
+       exp_irq10             => exp_irq10,
++      atapi_dmaRequest      => atapi_dmaRequest,   -- 573 ATAPI ch5 (psx_patches/0023)
++      DMA_ATA_readEna       => DMA_ATA_readEna,
++      DMA_ATA_read          => DMA_ATA_read,
+       ram_refresh           => ram_refresh,
+       ram_dataWrite         => ram_dataWrite,
+       ram_dataRead32        => ram_dataRead32, 

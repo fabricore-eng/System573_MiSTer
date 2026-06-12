@@ -29,6 +29,11 @@ module tb_system573_top;
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
         .pcmcia_present(pcmcia_present),
         .cd_present(1'b1),   // this integration test exercises the ATAPI/CD path, so model a drive present
+        .cd_image(1'b0), .cd_hps_req(), .cd_hps_lba(),
+        .cd_hps_ack(1'b0), .cd_hps_write(1'b0), .cd_hps_data(16'h0000),
+        .cd_ti_write(1'b0), .cd_ti_addr(9'd0), .cd_ti_data(32'd0),
+        .cd_img_mounted(1'b0), .cd_img_size(64'd0),
+        .atapi_dma_req(), .atapi_dma_rd(1'b0), .atapi_dma_dout(),
         .adc_ch0(adc_ch0), .adc_ch1(adc_ch1), .adc_ch2(adc_ch2), .adc_ch3(adc_ch3),
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
@@ -36,7 +41,10 @@ module tb_system573_top;
         // SIM_BACKING defaults to 1: inline flash; flash_wait stays 0, SDRAM unused.
         .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
         .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
-        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0)
+        .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0),
+        .sec_cart_type(2'd0),
+        .sec_eep_we(1'b0), .sec_eep_addr(10'd0), .sec_eep_din(8'd0),
+        .sec_ser_we(1'b0), .sec_ser_addr(3'd0), .sec_ser_din(8'd0)
     );
 
     always #5 clk = ~clk;

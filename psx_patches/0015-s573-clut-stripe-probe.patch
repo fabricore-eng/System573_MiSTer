@@ -1,0 +1,32 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -166,6 +166,17 @@
+    -- 491 itself holds stale data at fetch time (a VRAM write-after-read ordering bug). '1' for
+    -- this experiment build; '0' = no-op (normal cache, constant-folds away).
+    constant DISABLE_CLUT_CACHE : std_logic := '1';
++   -- 573 PROBE (0015): CLUT-cache LIVE-CONTENTS probe for the hyperbbc panel garble. The wrong
++   -- (red) palette lives ONLY in the GPU's draw-time CLUT cache -- no savestate captures it, and
++   -- every cold sim renders it correct. For the panel's draws (4bpp, CLUT (0,491)) this OVERRIDES
++   -- the CLUT index with the SCREEN-X position (x>>4 mod 16), so the panel renders the 16 LIVE
++   -- cache entries as readable 16px-wide colour BANDS straight into the framebuffer (which an
++   -- Alt+F1 savestate DOES capture). De-confounded HW capture -> read the band's 16 distinct
++   -- colours: GREEN ramp = the cache holds the CORRECT palette (so the red garble is the
++   -- texel/index path, NOT the CLUT data); RED/other = the live CLUT fetch/cache is CORRUPTED
++   -- (memory contention / coherency). Reuses the existing pixel->VRAM write path (no new
++   -- arbitration). '1' = probe build; '0' = no-op (production, constant-folds away).
++   constant DBG_CLUT_STRIPE : std_logic := '0';
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+@@ -437,7 +448,9 @@
+          q_b         => CLUTDataB(i)
+       );
+       
+-      CLUTaddrB(i) <= x"0" & texdata_raw(i)( 3 downto  0) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "00") else
++      CLUTaddrB(i) <= "0000" & std_logic_vector(stage1_x(7 downto 4))
++                                                          when (DBG_CLUT_STRIPE = '1' and drawMode(7) = '0' and drawMode(8) = '0' and textPalY = 491 and textPalX = 0) else  -- 573 PROBE (0015v3): NARROW gate -- isolate the panel (CLUT row 491) to cleanly verify the 0016 interlock fix
++                      x"0" & texdata_raw(i)( 3 downto  0) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "00") else
+                       x"0" & texdata_raw(i)( 7 downto  4) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "01") else
+                       x"0" & texdata_raw(i)(11 downto  8) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "10") else
+                       x"0" & texdata_raw(i)(15 downto 12) when (drawMode(7) = '0' and stage1_u(i)(1 downto 0) = "11") else

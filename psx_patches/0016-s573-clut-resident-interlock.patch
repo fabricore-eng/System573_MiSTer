@@ -1,0 +1,54 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -177,6 +177,22 @@
+    -- (memory contention / coherency). Reuses the existing pixel->VRAM write path (no new
+    -- arbitration). '1' = probe build; '0' = no-op (production, constant-folds away).
+    constant DBG_CLUT_STRIPE : std_logic := '0';
++   -- 573 PATCH 0016: CLUT-resident INTERLOCK -- the production fix for the hyperbbc panel garble.
++   -- Root cause (HW-probe-confirmed + workflow w99ap0f3o): a consume-before-refill race on the shared
++   -- iCLUTram. A textured QUAD is 2 triangles in ONE GP0 0x2C command; the 2nd triangle (and every
++   -- later scanline) re-enters gpu_poly via nextQuad BYPASSING the IDLE state, so its firstPixel='0'
++   -- barrier (the only thing tying pixels to "my CLUT row is loaded") never fires -> those pixels emit
++   -- WITHOUT waiting for this primitive's CLUT fetch and sample the PRIOR quad's resident palette row
++   -- (the drifting wrong-row the HW DBG_CLUT_STRIPE probe measured -- panel read row ~482 not 491).
++   -- Rects are immune (single primitive => one IDLE-armed firstPixel barrier covers the span); the cold
++   -- gpu_replay sim is immune (no VRAM contention, the fetch always wins before the next pixel) -- which
++   -- is why this is HW-only and 0014 (force-refetch) didn't help (it re-requests but never adds a read
++   -- interlock). FIX: stall stage0/stage1 CLUT-textured pixel consumption (via pipeline_stall) until
++   -- THIS primitive's requested row is resident, AND let the CLUT fetch start even while those pixels
++   -- are parked (else they keep pipeline_busy high and starve the fetch -> deadlock). '1' = fix ON;
++   -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
++   constant CLUT_INTERLOCK  : std_logic := '1';
++   signal   clut_notready   : std_logic;
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+@@ -345,9 +361,16 @@
+    signal stage6_cg           : std_logic_vector(7 downto 0) := (others => '0');
+    signal stage6_cb           : std_logic_vector(7 downto 0) := (others => '0');
+   
+-begin 
++begin
+ 
+-   pipeline_stall <= '1' when (pixelStall = '1' or state /= IDLE or slowdown = '1') else '0';
++   -- 573 PATCH 0016: assert while a CLUT-textured pixel is in stage0/stage1 but its requested palette
++   -- row is not yet resident (fetch pending or mid-fetch). drawMode(8)='0' = palette path (excludes
++   -- 15-bit-direct); stageN_texture excludes flat-shaded pixels. Folded into pipeline_stall below.
++   clut_notready <= '1' when (CLUT_INTERLOCK = '1' and drawMode(8) = '0'
++                              and ((stage0_valid = '1' and stage0_texture = '1') or (stage1_valid = '1' and stage1_texture = '1'))
++                              and (textPalReq = '1' or state = REQUESTPALETTE or state = WAITPALETTE)) else '0';
++
++   pipeline_stall <= '1' when (pixelStall = '1' or state /= IDLE or slowdown = '1' or clut_notready = '1') else '0';
+ 
+    requestVRAMEnable <= '1'         when (requestVRAMIdle = '1' and (state = REQUESTTEXTURE or (state = REQUESTPALETTE and fifoOut_idle = '1'))) else '0';
+    requestVRAMXPos   <= reqVRAMXPos when (requestVRAMIdle = '1' and (state = REQUESTTEXTURE or (state = REQUESTPALETTE and fifoOut_idle = '1'))) else (others => '0');
+@@ -575,7 +598,7 @@
+                      clearCacheBuffer <= '0';
+                      tagValid         <= (others => '0');
+                   end if;
+-                  if (textPalReq = '1' and pipeline_busy = '0') then
++                  if (textPalReq = '1' and (pipeline_busy = '0' or (CLUT_INTERLOCK = '1' and clut_notready = '1'))) then  -- 573 patch 0016: start the CLUT fetch even while interlock-parked pixels hold pipeline_busy high (else deadlock)
+                      textPalReq     <= '0';
+                      state          <= REQUESTPALETTE;
+                      CLUTaddrA      <= (others => '0');

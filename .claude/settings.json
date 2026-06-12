@@ -9,6 +9,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Workflow|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/agent-progress.py"
+          }
+        ]
+      }
     ]
   }
 }

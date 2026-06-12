@@ -23,7 +23,19 @@ module ds2401 #(
     input  wire clk,
     input  wire rst,
     input  wire dq_in,    // resolved 1-Wire level (1 = high / idle)
-    output reg  dq_pd     // 1 = slave pulls the line low
+    output reg  dq_pd,    // 1 = slave pulls the line low
+
+    // ---- boot-time ROM image load (the 8-byte MAME ds2401 serial image) ----
+    // The .u6 file is the raw 64-bit 1-Wire ROM as MAME stores it in m_data[0..7]
+    // and shifts out m_data[7] FIRST (LSB-first). The over-the-wire / our-rom[]
+    // bit order is therefore: file byte 7 (family 0x01) -> rom[7:0], file byte 6
+    // -> rom[15:8], ... file byte 0 (CRC) -> rom[63:56]. So byte k of the file lands
+    // at rom[8*(7-k) +: 8]. The file already carries the device's own CRC8, so the
+    // loaded ROM is streamed verbatim (no internal recompute). load_addr is the file
+    // byte index 0..7; loading any byte makes the loaded ROM authoritative.
+    input  wire        load_we,
+    input  wire [2:0]  load_addr,   // file byte index 0..7
+    input  wire [7:0]  load_data
 );
     // Cycles per microsecond (>=1).
     localparam integer CPUS = (CLK_FREQ_HZ >= 1_000_000) ? CLK_FREQ_HZ/1_000_000 : 1;
@@ -56,6 +68,17 @@ module ds2401 #(
 
     initial begin
         rom = {crc8({SERIAL, FAMILY}), SERIAL, FAMILY};
+    end
+
+    // ----- boot-time ROM image load -----
+    // Overrides the param-built default with the .u6 file's verbatim 64-bit ROM.
+    // file byte k -> rom[8*(7-k) +: 8] (byte 7 = family => rom[7:0], byte 0 = CRC).
+    reg loaded = 1'b0;
+    always @(posedge clk) begin
+        if (load_we) begin
+            loaded                        <= 1'b1;
+            rom[8*(7 - load_addr) +: 8]   <= load_data;
+        end
     end
 
     // ----- microsecond time base -----

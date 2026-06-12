@@ -1,0 +1,33 @@
+diff --git a/rtl/sio.vhd b/rtl/sio.vhd
+index 0af247d..c603ddd 100644
+--- a/rtl/sio.vhd
++++ b/rtl/sio.vhd
+@@ -15,7 +15,15 @@ entity sio is
+       bus_write            : in  std_logic;
+       bus_writeMask        : in  std_logic_vector(3 downto 0);
+       bus_dataRead         : out std_logic_vector(31 downto 0);
+-      
++
++      -- System 573 (psx_patches/0024): SIO1 DSR presence. Every security cassette
++      -- asserts the slot's DSR line electrically (MAME k573cass raises it at
++      -- device_start); the Konami BIOS presence leaf (0x80038A28) polls
++      -- SIO1_STAT (0x1F801054) bit 7 and reports "SECURITY-CASSETTE DOES NOT
++      -- EXIST" (-12) when it reads 0. DEFAULTED '1' (= cassette installed) so
++      -- psx_top.vhd's instantiation compiles unchanged.
++      dsr_in               : in  std_logic := '1';
++
+       loading_savestate    : in  std_logic;
+       SS_reset             : in  std_logic;
+       SS_DataWrite         : in  std_logic_vector(31 downto 0);
+@@ -69,7 +77,10 @@ begin
+             -- bus read
+             if (bus_read = '1') then
+                case (bus_addr(3 downto 1) & '0') is
+-                  when x"4" => bus_dataRead <= SIO_STAT;    
++                  -- System 573 (psx_patches/0024): OR DSR into bit 7 AT READBACK so
++                  -- the CTRL bit22 soft-reset below and savestate loads (both re-force
++                  -- SIO_STAT to x"00000005") can never clear the presence level.
++                  when x"4" => bus_dataRead <= SIO_STAT(31 downto 8) & (SIO_STAT(7) or dsr_in) & SIO_STAT(6 downto 0);
+                   when x"8" => bus_dataRead <= SIO_CTRL & x"00" & SIO_MODE;
+                   when x"A" => bus_dataRead <= x"0000" & SIO_CTRL;                    
+                   when x"E" => bus_dataRead <= x"0000" & SIO_BAUD;  

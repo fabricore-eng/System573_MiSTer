@@ -1,0 +1,369 @@
+diff --git a/rtl/gpu_poly.vhd b/rtl/gpu_poly.vhd
+--- a/rtl/gpu_poly.vhd
++++ b/rtl/gpu_poly.vhd
+@@ -61,7 +61,12 @@
+       pipeline_v11         : out unsigned(7 downto 0) := (others => '0');      
+       pipeline_uAcc        : out unsigned(7 downto 0) := (others => '0');
+       pipeline_vAcc        : out unsigned(7 downto 0) := (others => '0');
+-      
++      -- 573 patch 0018: per-PIXEL CLUT row+x tag, pulsed with pipeline_new at emit time so each
++      -- emitted pixel carries THIS primitive's CLUT row (the shared textPalReqY in the pixelpipeline
++      -- is overwritten by the next quad's decode before these pixels reach their CLUT read).
++      pipeline_textPalXTag : out unsigned(9 downto 0) := (others => '0');
++      pipeline_textPalYTag : out unsigned(8 downto 0) := (others => '0');
++
+       proc_idle            : in  std_logic;
+       fifo_Valid           : in  std_logic;
+       fifo_data            : in  std_logic_vector(31 downto 0);
+@@ -399,6 +404,8 @@
+             textPalY             <= (others => '0');
+             
+             pipeline_new         <= '0';
++            pipeline_textPalXTag <= (others => '0');  -- 573 patch 0018: default 0 (OR-mux friendly)
++            pipeline_textPalYTag <= (others => '0');
+             pipeline_texture     <= '0';
+             pipeline_transparent <= '0';
+             pipeline_rawTexture  <= '0';
+@@ -1114,6 +1121,8 @@
+                      
+                      if (xPos >= to_integer(drawingAreaLeft) and xPos <= to_integer(drawingAreaRight)) then
+                         pipeline_new         <= '1';
++                        pipeline_textPalXTag <= rec_textPalX;  -- 573 patch 0018: tag this pixel with THIS quad's CLUT row+x
++                        pipeline_textPalYTag <= rec_textPalY;
+                         pipeline_texture     <= rec_texture;
+                         pipeline_transparent <= rec_transparency;
+                         pipeline_rawTexture  <= rec_rawTexture;
+diff --git a/rtl/gpu_rect.vhd b/rtl/gpu_rect.vhd
+--- a/rtl/gpu_rect.vhd
++++ b/rtl/gpu_rect.vhd
+@@ -40,7 +40,10 @@
+       pipeline_cb          : out unsigned(7 downto 0) := (others => '0');
+       pipeline_u           : out unsigned(7 downto 0) := (others => '0');
+       pipeline_v           : out unsigned(7 downto 0) := (others => '0');
+-      
++      -- 573 patch 0018: per-PIXEL CLUT row+x tag, pulsed with pipeline_new at emit time.
++      pipeline_textPalXTag : out unsigned(9 downto 0) := (others => '0');
++      pipeline_textPalYTag : out unsigned(8 downto 0) := (others => '0');
++
+       proc_idle            : in  std_logic;
+       fifo_Valid           : in  std_logic;
+       fifo_data            : in  std_logic_vector(31 downto 0);
+@@ -95,9 +98,11 @@
+    signal rec_sizex           : unsigned(9 downto 0) := (others => '0');   
+    signal rec_sizey           : unsigned(8 downto 0) := (others => '0');  
+    
+-   signal rec_u               : unsigned(7 downto 0) := (others => '0');     
++   signal rec_u               : unsigned(7 downto 0) := (others => '0');
++   signal rec_textPalX        : unsigned(9 downto 0) := (others => '0');  -- 573 patch 0018: latch the CLUT row+x for per-pixel tagging
++   signal rec_textPalY        : unsigned(8 downto 0) := (others => '0');
+ 
+-   signal xPos                : signed(11 downto 0) := (others => '0'); 
++   signal xPos                : signed(11 downto 0) := (others => '0');
+    signal yPos                : signed(11 downto 0) := (others => '0');    
+    signal xCnt                : unsigned(9 downto 0) := (others => '0');   
+    signal yCnt                : unsigned(8 downto 0) := (others => '0');  
+@@ -149,6 +154,8 @@
+             CmdDone              <= '0';
+             
+             pipeline_new         <= '0';
++            pipeline_textPalXTag <= (others => '0');  -- 573 patch 0018: default 0 (OR-mux friendly)
++            pipeline_textPalYTag <= (others => '0');
+             pipeline_texture     <= '0';
+             pipeline_transparent <= '0';
+             pipeline_rawTexture  <= '0';
+@@ -235,6 +242,8 @@
+                      rec_u         <= unsigned(fifo_data( 7 downto  0));
+                      textPalX      <= unsigned(fifo_data(21 downto 16)) & "0000";
+                      textPalY      <= unsigned(fifo_data(30 downto 22));
++                     rec_textPalX  <= unsigned(fifo_data(21 downto 16)) & "0000";  -- 573 patch 0018: latch for per-pixel tag
++                     rec_textPalY  <= unsigned(fifo_data(30 downto 22));
+                      textPalNew    <= '1';
+                      if (rec_size = "00") then
+                         state    <= REQUESTSIZE;  
+@@ -346,6 +355,8 @@
+                      
+                      if (xPos >= to_integer(drawingAreaLeft) and xPos <= to_integer(drawingAreaRight) and ypos >= to_integer(drawingAreaTop) and ypos <= to_integer(drawingAreaBottom)) then
+                         pipeline_new         <= '1';
++                        pipeline_textPalXTag <= rec_textPalX;  -- 573 patch 0018: tag this pixel with THIS rect's CLUT row+x
++                        pipeline_textPalYTag <= rec_textPalY;
+                         pipeline_texture     <= rec_texture;
+                         pipeline_transparent <= rec_transparency;
+                         pipeline_rawTexture  <= rec_rawTexture;
+diff --git a/rtl/gpu.vhd b/rtl/gpu.vhd
+--- a/rtl/gpu.vhd
++++ b/rtl/gpu.vhd
+@@ -315,9 +315,11 @@
+    signal rect_vramLineEna          : std_logic;
+    signal rect_vramLineAddr         : unsigned(9 downto 0);
+    signal rect_textPalNew           : std_logic;
+-   signal rect_textPalX             : unsigned(9 downto 0);   
+-   signal rect_textPalY             : unsigned(8 downto 0); 
+-   
++   signal rect_textPalX             : unsigned(9 downto 0);
++   signal rect_textPalY             : unsigned(8 downto 0);
++   signal rect_pipeline_textPalXTag : unsigned(9 downto 0) := (others => '0');
++   signal rect_pipeline_textPalYTag : unsigned(8 downto 0) := (others => '0');
++
+    signal poly_requestFifo          : std_logic; 
+    signal poly_done                 : std_logic;
+    --signal poly_CmdDone              : std_logic;
+@@ -345,9 +347,11 @@
+    signal poly_drawModeRec          : unsigned(11 downto 0);
+    signal poly_drawModeNew          : std_logic;
+    signal poly_textPalNew           : std_logic;
+-   signal poly_textPalX             : unsigned(9 downto 0);   
+-   signal poly_textPalY             : unsigned(8 downto 0); 
+-   
++   signal poly_textPalX             : unsigned(9 downto 0);
++   signal poly_textPalY             : unsigned(8 downto 0);
++   signal poly_pipeline_textPalXTag : unsigned(9 downto 0) := (others => '0');
++   signal poly_pipeline_textPalYTag : unsigned(8 downto 0) := (others => '0');
++
+    signal pipeline_pixelColor       : std_logic_vector(15 downto 0);
+    signal pipeline_pixelColor2      : std_logic_vector(15 downto 0);
+    signal pipeline_pixelAddr        : unsigned(19 downto 0);
+@@ -381,9 +385,11 @@
+    signal pipeline_clearCachePalette: std_logic := '0';
+    
+    signal pipeline_textPalNew       : std_logic;
+-   signal pipeline_textPalX         : unsigned(9 downto 0);   
+-   signal pipeline_textPalY         : unsigned(8 downto 0); 
+-      
++   signal pipeline_textPalX         : unsigned(9 downto 0);
++   signal pipeline_textPalY         : unsigned(8 downto 0);
++   signal pipeline_textPalXTag      : unsigned(9 downto 0) := (others => '0');
++   signal pipeline_textPalYTag      : unsigned(8 downto 0) := (others => '0');
++
+    -- FIFO OUT 
+    signal fifoOut_reset             : std_logic; 
+    signal fifoOut_Din               : std_logic_vector(85 downto 0);
+@@ -1253,11 +1259,13 @@
+       pipeline_cr          => rect_pipeline_cr,         
+       pipeline_cg          => rect_pipeline_cg,         
+       pipeline_cb          => rect_pipeline_cb,         
+-      pipeline_u           => rect_pipeline_u,         
+-      pipeline_v           => rect_pipeline_v,         
+-      
++      pipeline_u           => rect_pipeline_u,
++      pipeline_v           => rect_pipeline_v,
++      pipeline_textPalXTag => rect_pipeline_textPalXTag,
++      pipeline_textPalYTag => rect_pipeline_textPalYTag,
++
+       proc_idle            => proc_idle,
+-      fifo_Valid           => fifoIn_Valid, 
++      fifo_Valid           => fifoIn_Valid,
+       fifo_data            => fifoIn_Dout,
+       requestFifo          => rect_requestFifo,
+       done                 => rect_done,
+@@ -1350,10 +1358,13 @@
+       requestVRAMDone      => reqVRAMDone,
+       
+       textPalNew           => poly_textPalNew,
+-      textPalX             => poly_textPalX,  
+-      textPalY             => poly_textPalY,  
+-      
+-      vramLineEna          => poly_vramLineEna, 
++      textPalX             => poly_textPalX,
++      textPalY             => poly_textPalY,
++
++      pipeline_textPalXTag => poly_pipeline_textPalXTag,
++      pipeline_textPalYTag => poly_pipeline_textPalYTag,
++
++      vramLineEna          => poly_vramLineEna,
+       vramLineAddr         => poly_vramLineAddr
+    );
+    
+@@ -1378,7 +1389,11 @@
+    pipeline_textPalNew  <= rect_textPalNew or poly_textPalNew;
+    pipeline_textPalX    <= rect_textPalX   or poly_textPalX  ;
+    pipeline_textPalY    <= rect_textPalY   or poly_textPalY  ;
+-   
++
++   -- 573 patch 0018: per-pixel CLUT row+x tag (OR-mux; each drawer drives 0 except on its emit cycle).
++   pipeline_textPalXTag <= rect_pipeline_textPalXTag or poly_pipeline_textPalXTag;
++   pipeline_textPalYTag <= rect_pipeline_textPalYTag or poly_pipeline_textPalYTag;
++
+    igpu_pixelpipeline : entity work.gpu_pixelpipeline
+    port map
+    (
+@@ -1434,9 +1449,12 @@
+       vramLineData2        => vramLineData2,
+       
+       textPalInNew         => pipeline_textPalNew,
+-      textPalInX           => pipeline_textPalX,  
+-      textPalInY           => pipeline_textPalY,  
+-      
++      textPalInX           => pipeline_textPalX,
++      textPalInY           => pipeline_textPalY,
++
++      pipeline_textPalXTag => pipeline_textPalXTag,
++      pipeline_textPalYTag => pipeline_textPalYTag,
++
+       pixelStall           => pixelStall,
+       pixelColor           => pipeline_pixelColor,
+       pixelColor2          => pipeline_pixelColor2,
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -59,9 +59,15 @@
+       vramLineData2        : in  std_logic_vector(15 downto 0);
+       
+       textPalInNew         : in  std_logic;
+-      textPalInX           : in  unsigned(9 downto 0);   
+-      textPalInY           : in  unsigned(8 downto 0); 
+-      
++      textPalInX           : in  unsigned(9 downto 0);
++      textPalInY           : in  unsigned(8 downto 0);
++
++      -- 573 patch 0018: per-PIXEL CLUT row+x tag, asserted by the drawer alongside pipeline_new.
++      -- Carries THIS pixel's primitive's CLUT row even after the shared textPalReqY is overwritten
++      -- by a later neighbor's command decode. Snapshotted at pixel entry for the row-lock compare.
++      pipeline_textPalXTag : in  unsigned(9 downto 0) := (others => '0');
++      pipeline_textPalYTag : in  unsigned(8 downto 0) := (others => '0');
++
+       pixelStall           : in  std_logic;
+       pixelColor           : out std_logic_vector(15 downto 0);
+       pixelColor2          : out std_logic_vector(15 downto 0);
+@@ -193,6 +199,39 @@
+    -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
+    constant CLUT_INTERLOCK  : std_logic := '0';
+    signal   clut_notready   : std_logic;
++   -- 573 PATCH 0018 (fix #1): CLUT ROW-LOCK -- the real fix for the hyperbbc panel garble.
++   -- The 0016 interlock stalls stage0/stage1 CLUT pixels while a fetch is pending/in-flight but
++   -- RELEASES them the instant the fetch is "done" regardless of WHICH row became resident, so a
++   -- panel pixel (needs row 491) is released with the later neighbor's row 480 resident -- because
++   -- the SHARED textPalReqY was already overwritten back to 480 (sim-confirmed: a panel PIX reads
++   -- clutDataB=4FDF palY=1E0 palReqY=1E0 palReq='0'). FIX = per-pixel snapshot + resident compare +
++   -- self-healing fetch:
++   --   (1) snapshot textPalReqY into the pixel's tag at the cycle it ENTERS the pipeline (when
++   --       textPalReqY still == THIS primitive's row, before a later neighbor overwrites it), and
++   --       carry that tag down stageS/stage0/stage1 alongside the pixel.
++   --   (2) stall a CLUT-textured pixel (drawMode(8)='0') in stage0/stage1 while the RESIDENT row
++   --       (textPalY) /= that pixel's OWN snapshot tag. Folded into pipeline_stall.
++   --   (3) drive the FETCH from the PARKED pixel's snapshot row (NOT the stale shared textPalReqY):
++   --       when a row-locked pixel is parked and no fetch is pending, re-raise textPalReq for THAT
++   --       pixel's snapshot row so the IDLE fetch loads exactly the row it needs. The fetch is let
++   --       start while parked (deadlock-free, same as 0016).
++   -- NOT gated on textPalFetched (0013 clears it on VRAM writes -> premature release); the gate is
++   -- purely the resident-vs-required compare. '1' = fix ON; '0' = no-op (constant-folds away ->
++   -- netlist + cold-sim bit-identical to the legacy path).
++   constant CLUT_ROWLOCK    : std_logic := '1';
++   signal   rowlock_s0      : std_logic;   -- stage0 CLUT pixel needs a row that is not yet resident
++   signal   rowlock_s1      : std_logic;   -- stage1 CLUT pixel needs a row that is not yet resident
++   signal   rowlock_stall   : std_logic;   -- combined stage0/stage1 row-lock stall
++   signal   rowlock_refetch : std_logic;   -- a parked row-locked pixel wants its row fetched
++   signal   rowlock_refY    : unsigned(8 downto 0);  -- the snapshot row that parked pixel needs
++   signal   rowlock_refX    : unsigned(9 downto 0);  -- the snapshot CLUT-X that parked pixel needs
++   -- per-pixel snapshot of the required CLUT row+x, carried alongside the pixel down the pipeline
++   signal   stageS_palReqY  : unsigned(8 downto 0) := (others => '0');
++   signal   stage0_palReqY  : unsigned(8 downto 0) := (others => '0');
++   signal   stage1_palReqY  : unsigned(8 downto 0) := (others => '0');
++   signal   stageS_palReqX  : unsigned(9 downto 0) := (others => '0');
++   signal   stage0_palReqX  : unsigned(9 downto 0) := (others => '0');
++   signal   stage1_palReqX  : unsigned(9 downto 0) := (others => '0');
+    -- 573 PROBE (0017): NUMERIC CLUT-row dump for the hyperbbc panel garble. Round-1 + round-2 of the
+    -- DBG_CLUT_STRIPE probe established (a) the panel draws in 4bpp-CLUT mode (round-2 widened gate
+    -- FIRED) yet (b) textPalY /= 491 at render (round-1 gate textPalY=491 FIRED NOWHERE). To read the
+@@ -396,8 +435,26 @@
+                               and ((stage0_valid = '1' and stage0_texture = '1') or (stage1_valid = '1' and stage1_texture = '1'))
+                               and (textPalReq = '1' or state = REQUESTPALETTE or state = WAITPALETTE)) else '0';
+ 
+-   pipeline_stall <= '1' when (pixelStall = '1' or state /= IDLE or slowdown = '1' or clut_notready = '1') else '0';
++   -- 573 PATCH 0018: per-pixel ROW-LOCK. A CLUT-textured pixel in stage0/stage1 is NOT ready while
++   -- the resident CLUT row (textPalY) differs from that pixel's OWN snapshot of the required row.
++   -- drawMode(8)='0' = palette path (excludes 15-bit-direct, which never reads the CLUT).
++   rowlock_s0 <= '1' when (CLUT_ROWLOCK = '1' and drawMode(8) = '0'
++                           and stage0_valid = '1' and stage0_texture = '1'
++                           and textPalY /= stage0_palReqY) else '0';
++   rowlock_s1 <= '1' when (CLUT_ROWLOCK = '1' and drawMode(8) = '0'
++                           and stage1_valid = '1' and stage1_texture = '1'
++                           and textPalY /= stage1_palReqY) else '0';
++   rowlock_stall <= rowlock_s0 or rowlock_s1;
+ 
++   -- A parked row-locked pixel wants its snapshot row fetched. Drive the fetch from the PARKED
++   -- pixel's snapshot (stage1 first -- it is older/closer to the read), NOT the shared textPalReqY
++   -- which a later neighbor may have overwritten. Used in IDLE to re-raise textPalReq for that row.
++   rowlock_refetch <= rowlock_stall;
++   rowlock_refY    <= stage1_palReqY when (rowlock_s1 = '1') else stage0_palReqY;
++   rowlock_refX    <= stage1_palReqX when (rowlock_s1 = '1') else stage0_palReqX;
++
++   pipeline_stall <= '1' when (pixelStall = '1' or state /= IDLE or slowdown = '1' or clut_notready = '1' or rowlock_stall = '1') else '0';
++
+    requestVRAMEnable <= '1'         when (requestVRAMIdle = '1' and (state = REQUESTTEXTURE or (state = REQUESTPALETTE and fifoOut_idle = '1'))) else '0';
+    requestVRAMXPos   <= reqVRAMXPos when (requestVRAMIdle = '1' and (state = REQUESTTEXTURE or (state = REQUESTPALETTE and fifoOut_idle = '1'))) else (others => '0');
+    requestVRAMYPos   <= reqVRAMYPos when (requestVRAMIdle = '1' and (state = REQUESTTEXTURE or (state = REQUESTPALETTE and fifoOut_idle = '1'))) else (others => '0');
+@@ -624,7 +681,7 @@
+                      clearCacheBuffer <= '0';
+                      tagValid         <= (others => '0');
+                   end if;
+-                  if (textPalReq = '1' and (pipeline_busy = '0' or (CLUT_INTERLOCK = '1' and clut_notready = '1'))) then  -- 573 patch 0016: start the CLUT fetch even while interlock-parked pixels hold pipeline_busy high (else deadlock)
++                  if (textPalReq = '1' and (pipeline_busy = '0' or (CLUT_INTERLOCK = '1' and clut_notready = '1') or (CLUT_ROWLOCK = '1' and rowlock_stall = '1'))) then  -- 573 patch 0016/0018: start the CLUT fetch even while interlock/row-lock-parked pixels hold pipeline_busy high (else deadlock)
+                      textPalReq     <= '0';
+                      state          <= REQUESTPALETTE;
+                      CLUTaddrA      <= (others => '0');
+@@ -643,6 +700,13 @@
+                      else
+                         reqVRAMSize <= to_unsigned(16, 11);
+                      end if;
++                  -- 573 patch 0018: a row-locked pixel is parked but the shared textPalReq is '0'
++                  -- (a later neighbor consumed/overwrote it). Re-raise the request from the PARKED
++                  -- pixel's snapshot so the next IDLE pass fetches exactly the row it needs.
++                  elsif (CLUT_ROWLOCK = '1' and rowlock_refetch = '1' and textPalReq = '0') then
++                     textPalReq  <= '1';
++                     textPalReqX <= rowlock_refX;
++                     textPalReqY <= rowlock_refY;
+                   elsif (stage0_valid = '1' and stage0_texture = '1' and stage0_filter = '1' and cachehit /= "1111") then
+                      state        <= REQUESTMORETEXTURE;
+                      cacherequest <= not cachehit;
+@@ -749,13 +813,20 @@
+                stageS_vAcc          <= pipeline_vAcc; 
+                stageS_oldPixel      <= vramLineData;
+                stageS_oldPixel2     <= vramLineData2;
+-            end if;
+-            
++               -- 573 patch 0018: snapshot THIS pixel's required CLUT row from the per-pixel tag the
++               -- drawer drives alongside pipeline_new (the shared textPalReqY is already overwritten
++               -- by a later neighbor's command decode, so it is NOT a valid entry-time proxy).
++               stageS_palReqY       <= pipeline_textPalYTag;
++               stageS_palReqX       <= pipeline_textPalXTag;
++            end if;
++
+             if (pipeline_stall = '0') then
+-            
++
+                -- stage 0 - receive
+                if (pipeline_stall_1 = '1') then
+-                  stage0_valid         <= stageS_valid;      
++                  stage0_palReqY       <= stageS_palReqY;   -- 573 patch 0018: carry the snapshot (from the stageS hold)
++                  stage0_palReqX       <= stageS_palReqX;
++                  stage0_valid         <= stageS_valid;
+                   stage0_texture       <= stageS_texture and (not noTexture);    
+                   stage0_transparent   <= stageS_transparent;
+                   stage0_rawTexture    <= stageS_rawTexture; 
+@@ -772,9 +843,11 @@
+                   stage0_v11           <= stageS_v11;                     
+                   stage0_uAcc          <= stageS_uAcc;   
+                   stage0_vAcc          <= stageS_vAcc;                     
+-                  stage0_oldPixel      <= stageS_oldPixel;  
+-                  stage0_oldPixel2     <= stageS_oldPixel2;  
++                  stage0_oldPixel      <= stageS_oldPixel;
++                  stage0_oldPixel2     <= stageS_oldPixel2;
+                else
++                  stage0_palReqY       <= pipeline_textPalYTag;   -- 573 patch 0018: snapshot the per-pixel tag at direct entry
++                  stage0_palReqX       <= pipeline_textPalXTag;
+                   stage0_valid         <= pipeline_new and ((not DrawPixelsMask) or (not vramLineData(15)));
+                   stage0_texture       <= pipeline_texture and (not noTexture);    
+                   stage0_transparent   <= pipeline_transparent;
+@@ -797,8 +870,10 @@
+                end if;
+ 
+                -- stage1 - fetch texture
+-               stage1_valid       <= stage0_valid;      
+-               stage1_texture     <= stage0_texture;    
++               stage1_palReqY     <= stage0_palReqY;   -- 573 patch 0018: carry the snapshot stage0 -> stage1
++               stage1_palReqX     <= stage0_palReqX;
++               stage1_valid       <= stage0_valid;
++               stage1_texture     <= stage0_texture;
+                stage1_transparent <= stage0_transparent;
+                stage1_rawTexture  <= stage0_rawTexture; 
+                stage1_dithering   <= stage0_dithering; 

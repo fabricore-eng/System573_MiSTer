@@ -343,7 +343,23 @@ always @(posedge clk_1x) begin : ffwd
 	fast_forward <= (FFrequest | ff_latch);
 end
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | cdDownloadReset;
+// 573 download-settle reset hold: a .mgl/console launch delivers SEVERAL sequential
+// ioctl downloads (boot.rom autoload + F0 bios + F2 flash + F3 nvram) with ~1s gaps;
+// the per-download reset terms below deassert in every gap, so the CPU boots against
+// PARTIAL flash mid-sequence and those doomed boots run concurrently with later
+// downloads (SDRAM write collisions can corrupt the flash image for the whole
+// session). Hold reset for SETTLE after EVERY download so one clean boot happens
+// after the LAST file. The .mra path pays the same one-time delay (harmless).
+localparam DOWNLOAD_SETTLE_TICKS = 28'd101_606_400;  // 3.0 s @ clk_1x 33.8688 MHz
+wire any_game_download = bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download;
+reg [27:0] settle_cnt = 28'd0;
+always @(posedge clk_1x) begin
+	if (any_game_download)      settle_cnt <= DOWNLOAD_SETTLE_TICKS;
+	else if (settle_cnt != 0)   settle_cnt <= settle_cnt - 1'd1;
+end
+wire download_settle_hold = (settle_cnt != 0);
+
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -358,9 +374,23 @@ parameter CONF_STR = {
 	"PSX;SS3E000000:400000;",
 	"H7S1,CUECHD,Load CD;",
 	"h7-,Reload core for CD;",
+	// F0 (ioctl index 0 = bios_download) lets a .mgl / standalone-console launch load
+	// the 573 BIOS as a normal core file (type="f" index="0"). The arcade .mra loads
+	// the BIOS via <rom index=0>, but a .mgl matches CONF_STR F-entries by index and
+	// there was no F0 -> a bare .mgl never loaded the BIOS (black screen). This unblocks
+	// the CD-installer launch path (mount the CD via the S1 slot, no arcade "unsafe" guard).
+	"F0,BIN,Load 573 BIOS;",
 	"F1,EXE,Load Exe;",
 	"F2,BIN,Load 573 Flash;",
 	"F3,BIN,Load 573 NVRAM;",
+	// F4/F5 = the security-cart pair. WITHOUT an F-slot at an index, MiSTer Main SILENTLY
+	// DROPS an .mgl <file index=N> for it (same rule as S-slots, hub LESSONS) -> the index-N
+	// download pulse never fires. The seceep/secser decode (ioctl_index 4/5) + the whole
+	// x76/ds2401 load chain were all correct, but index 4 had no slot, so the synth .u1 never
+	// reached the chip and hypbbc2p stuck at "-3N" (read pw stayed 0). The unit sim missed it
+	// because the TB drives the load port directly, bypassing CONF_STR delivery.
+	"F4,U1,Load Security Cassette;",
+	"F5,U6,Load Cart Serial;",
 	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
 	"O[94],573 Flash Debug,Off,On;",
 	"O[96:95],573 Dbg Field,ch4Q,expQ,cnt/sz,wrAddr;",
@@ -495,10 +525,14 @@ wire [127:0] status;
 wire [15:0] status_menumask = {(PadPortNeGcon1 | PadPortNeGcon2), hack_480p, filter_on, saving_memcard, (bk_pending | saving_memcard), bk_pending, status[59], multitap, biosMod, ~TURBO_MEM, (status[55] && ~hack_480p), (PadPortDS1 | PadPortDS2), dbg_enabled, (PadPortGunCon1 | PadPortGunCon2 | PadPortJustif1 | PadPortJustif2), SDRAM2_EN, (snacPort1 | snacPort2)};
 wire        forced_scandoubler;
 reg  [31:0] sd_lba0 = 0;
-reg  [31:0] sd_lba1;
+wire [31:0] sd_lba1;                 // System 573: driven by the ATAPI CD reader (u_s573)
 reg  [ 6:0] sd_lba2;
 reg  [ 6:0] sd_lba3;
 reg   [3:0] sd_rd;
+// Dummy sinks for the removed consumer-PSX cd_top outputs (psx_patches/0011 ties them
+// to 0); the 573's own ATAPI CD reader drives sd_rd[1]/sd_lba1 instead.
+wire        psx_cd_hps_req_unused;
+wire [31:0] psx_cd_hps_lba_unused;
 reg   [3:0] sd_wr;
 wire  [3:0] sd_ack;
 wire  [8:0] sd_buff_addr;
@@ -515,6 +549,12 @@ wire [15:0] ioctl_dout;
 wire        ioctl_wr;
 wire  [7:0] ioctl_index;
 reg         ioctl_wait = 0;
+// ioctl UPLOAD (Main arcade_nvm_save -> .mra <nvram index="3">): hps_io reads
+// ioctl_din words FROM the core (M48T58 save-back). See s573_nvram_saver below
+// + docs/audits/2026-06-11-nvram-saveback-gate0.md for the protocol audit.
+wire        ioctl_upload;
+wire [15:0] ioctl_din;
+reg         nvram_dirty = 0;   // game wrote the timekeeper -> request an OSD save
 
 wire [19:0] joy;
 wire [19:0] joy_unmod;
@@ -584,6 +624,15 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(4), .BLKSZ(3)) hps_io
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(ioctl_wait),
 
+	// M48T58 NVRAM save-back (upload, index 3). ioctl_upload_req is EDGE-latched
+	// by hps_io and the latch is cleared when Main polls UIO_CHK_UPLOAD (OSD main
+	// menu, arcade path) -> a level'd dirty flag triggers at most one autosave per
+	// re-arm, no "Saving..." spam (gate-0 audit facts 1.7/2.6).
+	.ioctl_upload(ioctl_upload),
+	.ioctl_din(ioctl_din),
+	.ioctl_upload_req(nvram_dirty),
+	.ioctl_upload_index(8'd3),
+
 	.sd_lba('{sd_lba0, sd_lba1, sd_lba2, sd_lba3}),
 	.sd_blk_cnt('{0,0, 0, 0}),
 	.sd_rd(sd_rd),
@@ -642,18 +691,29 @@ hps_ext hps_ext
 
 reg bios_download, exe_download, cdinfo_download, code_download;
 reg flash_download, nvram_download;
+reg seceep_download, secser_download;
+reg nvram_upload;
 always @(posedge clk_1x) begin
 	bios_download    <= ioctl_download & (ioctl_index[5:0] == 0);
 	exe_download     <= ioctl_download & (ioctl_index == 1);
 	flash_download   <= ioctl_download & (ioctl_index == 2);   // 573 onboard flash (16 MB)
 	nvram_download   <= ioctl_download & (ioctl_index == 3);   // 573 M48T58 NVRAM (8 KB)
+	seceep_download  <= ioctl_download & (ioctl_index == 4);   // security cart EEPROM (.u1: 548 B x76f041 / 112 B x76f100 / 4116 B zs01)
+	secser_download  <= ioctl_download & (ioctl_index == 5);   // security cart DS2401 serial (.u6: 8 B)
 	cdinfo_download  <= ioctl_download & (ioctl_index == 251);
 	code_download    <= ioctl_download & (ioctl_index == 255);
+	nvram_upload     <= ioctl_upload   & (ioctl_index == 3);   // 573 M48T58 NVRAM save-back (8 KB)
 end
 
 reg cart_loaded = 0;
 always @(posedge clk_1x) begin
-	if (exe_download || img_mounted[1]) begin
+	// allow_ss (savestate enable) is gated on this. The upstream PSX cases are an
+	// .EXE upload (exe_download) or a mounted CD image (img_mounted[1]). A 573
+	// FLASH-only game (e.g. hyperbbc) loads via neither -> cart_loaded stayed 0 ->
+	// savestates were silently disabled (Alt-F1 / OSD "Save state" did nothing).
+	// flash_download (ioctl_index==2) is the onboard-flash game-load signal; latch
+	// on it too so savestates work for flash games (needed for the garble capture).
+	if (exe_download || img_mounted[1] || flash_download) begin
 		cart_loaded <= 1;
 	end
 end
@@ -671,6 +731,18 @@ localparam BIOS_START = 8388608;
 // no overlap with RAM (0..2 MB) or BIOS (0x00800000). Line buffer indexes by flat 16-bit
 // word; SDRAM byte address = FLASH_START + (word << 1).
 localparam [26:0] FLASH_START = 27'h0100_0000;
+
+// S573 main RAM is 4 MB (8x KM48V514; MAME mame0288 ksys573.cpp L2600 ram "4M"), but the
+// vendored core natively decodes only 2 MB (ram8mb=0) or 8 MB linear (ram8mb=1) -- so on
+// ram8mb=1 any access at KUSEG 0x00400000+ silently hit the WRONG SDRAM cells (and MAME
+// masks every DMA RAM access with n_adrmask = ramsize-1 = 0x3fffff, cpu/psx/dma.cpp).
+// psx_patches/0022 adds ram4mb: on top of the 8 MB decode it masks RAM-region address
+// bit 22 (CPU + icache + DMA) so +4MB accesses alias the 4 MB image. MAME bus-errors CPU
+// accesses above the 4 MB RAM_SIZE window (psx.cpp update_ram_config case 0xc, the 0xC
+// nibble the Konami BIOS programs); we alias instead (no bus-error machinery) -- the same
+// compromise the core makes for consumer 2 MB. Red/green: sim/system573/run_ram_mirror.sh.
+// Set 1'b0 to restore the old (wrong) 8 MB linear behavior if a regression is suspected.
+localparam S573_RAM4MB = 1'b1;
 
 reg [26:0] ramdownload_wraddr;
 reg [31:0] ramdownload_wrdata;
@@ -741,6 +813,14 @@ always @(posedge clk_1x) begin
       // (nv_hi=0, ioctl_wr=1), drop it on the odd-write cycle (nv_hi=1) so the
       // stream resumes. Same registered back-pressure pattern as the bios path.
       if (nvram_nv_hi)   ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
+   end else if (seceep_download) begin
+      // security-cart EEPROM (.u1): same 2-cycle WIDE unpack as the NVRAM path.
+      if (seceep_nv_hi)  ioctl_wait <= 1'b0;
+      else if (ioctl_wr) ioctl_wait <= 1'b1;
+   end else if (secser_download) begin
+      // security-cart DS2401 serial (.u6): same 2-cycle WIDE unpack.
+      if (secser_nv_hi)  ioctl_wait <= 1'b0;
       else if (ioctl_wr) ioctl_wait <= 1'b1;
    end else begin
       ioctl_wait <= 0;
@@ -871,6 +951,42 @@ savestate_ui savestate_ui
 	.selected_slot  (ss_slot       )
 );
 defparam savestate_ui.INFO_TIMEOUT_BITS = 25;
+
+// ───────────────────── 573 TOOL: AUTONOMOUS SAVESTATE TRIGGER (DBG_AUTOSS) ─────────────────────
+// Reusable autonomous-capture: the CORE itself fires a savestate on an internal condition (no human
+// hotkey), so an exact internal state is captured to a .ss with NO manual timing. The HPS writes the
+// .ss the same way it does for the FPGA's own Alt+F1 save (savestate_ui.ss_save reaches save_state
+// below), so a core-injected pulse OR'd into the same save_state input should produce a .ss file too
+// -- the one thing that needs HW confirmation on the first DBG_AUTOSS=1 build. Ships '0' (no-op).
+// Rewire `autoss_trigger` to ANY internal event (a GPU draw strobe, a PC match, a signal edge) for
+// event-precise capture. Default trigger = a periodic timer that auto-cycles the 4 save slots, so a
+// looping attract mode is sampled across slots 0..3 with nobody pressing a key.
+// SELF-LIMITING capture: fires a bounded BURST (AUTOSS_LIMIT saves cycling the 4 slots) then latches
+// OFF on its own, so the board goes quiet without a reload -- "off until you actually need it". Bump
+// DBG_AUTOSS to 1 only for a probe build that needs a headless panel capture; ships '0' (production).
+localparam        DBG_AUTOSS    = 1'b0;                   // OFF (production) -- no auto-savestate looping
+localparam [31:0] AUTOSS_PERIOD = 32'd168_000_000;       // ~5 s @ ~33.8 MHz clk_1x between captures
+localparam [7:0]  AUTOSS_LIMIT  = 8'd40;                  // total saves, then stop (~200 s; spans boot+attract after the ~25s probe-arm)
+reg  [31:0] autoss_cnt  = 0;
+reg  [1:0]  autoss_slot = 0;
+reg  [7:0]  autoss_num  = 0;                             // how many saves fired so far
+reg         autoss_fire = 1'b0;                          // 1-clk save_state pulse
+wire        autoss_trigger = (autoss_cnt >= AUTOSS_PERIOD) && (autoss_num < AUTOSS_LIMIT);
+always @(posedge clk_1x) begin
+	autoss_fire <= 1'b0;
+	if (DBG_AUTOSS) begin
+		if (autoss_trigger) begin
+			autoss_cnt  <= 32'd0;
+			autoss_fire <= 1'b1;
+			autoss_slot <= autoss_slot + 2'd1;
+			autoss_num  <= autoss_num + 8'd1;
+		end else if (autoss_num < AUTOSS_LIMIT) begin
+			autoss_cnt  <= autoss_cnt + 32'd1;
+		end
+	end
+end
+wire       ss_save_eff = ss_save | (DBG_AUTOSS & autoss_fire);
+wire [1:0] ss_slot_eff = (DBG_AUTOSS & autoss_fire) ? autoss_slot : ss_slot;
 
 ////////////////////////////  PAD  ///////////////////////////////////
 
@@ -1101,7 +1217,8 @@ psx
    .exe_file_size(exe_file_size),
    .exe_stackpointer(exe_stackpointer),
    .fastboot(1'b0),        // S573: Konami BIOS is not an SCPH BIOS -- fastboot patch OFF
-   .ram8mb(1'b1),          // S573: 4 MB main RAM (matches the NVC boot sim)
+   .ram8mb(1'b1),          // 8 MB window decode (the core's only full-width mode) ...
+   .ram4mb(S573_RAM4MB),   // ... masked to the 573's true 4 MB RAM (psx_patches/0022; see S573_RAM4MB)
    .TURBO_MEM(TURBO_MEM),
    .TURBO_COMP(TURBO_COMP),
    .TURBO_CACHE(TURBO_CACHE),
@@ -1153,6 +1270,10 @@ psx
    .exp1_dataRead(exp1_dataRead),
    .exp1_wait(exp1_wait),
    .exp_irq10(exp_irq10),
+   // System 573 ATAPI on DMA ch5 (psx_patches/0023)
+   .atapi_dmaRequest(atapi_dma_req),
+   .DMA_ATA_readEna(atapi_dma_rd),
+   .DMA_ATA_read(atapi_dma_dout),
    .ram_refresh(sdr_refresh),
    .ram_dataWrite(sdr_sdram_din),
    .ram_dataRead32(sdr_sdram_dout32),
@@ -1194,8 +1315,12 @@ psx
    .trackinfo_addr  (ramdownload_wraddr[10:2]),
    .trackinfo_write (ramdownload_wr && cdinfo_download),
    .resetFromCD     (resetFromCD),
-   .cd_hps_req      (sd_rd[1]),
-   .cd_hps_lba      (sd_lba1),
+   // System 573 (Feature B): the CUECHD sd-block channel (index 1) is now driven by
+   // the 573's own ATAPI CD reader (s573_cdimg, inside system573_top), NOT the removed
+   // consumer-PSX cd_top. psx_patches/0011 ties these PSX cd_hps outputs to 0, so route
+   // them to dummies and let system573_top drive sd_rd[1]/sd_lba1 (see u_s573 below).
+   .cd_hps_req      (psx_cd_hps_req_unused),
+   .cd_hps_lba      (psx_cd_hps_lba_unused),
    .cd_hps_ack      (sd_ack[1]),
    .cd_hps_write    (sd_buff_wr),
    .cd_hps_data     (sd_buff_dout),
@@ -1345,9 +1470,9 @@ psx
 	.sound_out_right(AUDIO_R),
    //savestates
    .increaseSSHeaderCount (!status[36]),
-   .save_state            (ss_save),
+   .save_state            (ss_save_eff),
    .load_state            (ss_load),
-   .savestate_number      (ss_slot),
+   .savestate_number      (ss_slot_eff),
    .state_loaded          (),
    .validSStates          (validSStates),
    .rewind_on             (0), //(status[27]),
@@ -1385,12 +1510,36 @@ wire [15:0] exp1_dataRead;
 wire        exp_irq10;
 wire        exp1_wait;          // 573 flash line-fill stall -> psx_mister EXP1 wait
 
+// 573 ATAPI <-> PSX DMA channel 5 (psx_patches/0023). All clk_1x, no CDC: the
+// dma.vhd consume strobe is ce-qualified, atapi.v free-runs on the same clock.
+wire        atapi_dma_req;      // atapi data-phase request -> psx atapi_dmaRequest
+wire        atapi_dma_rd;       // psx DMA_ATA_readEna -> atapi halfword consume
+wire [15:0] atapi_dma_dout;     // atapi prefetched sector halfword -> psx DMA_ATA_read
+
 // 573 onboard-flash SDRAM line-fill bridge (system573_top <-> sdram ch4).
 wire        flash_mem_req;
 wire [26:0] flash_mem_addr;     // flat 16-bit word index into the 16 MB image
 wire [127:0] flash_mem_q;
 wire        flash_mem_ready;
 wire [23:0] flash_dbg;          // s573_flash trigger-state observers (HW bring-up)
+
+// 573 onboard-flash SDRAM WRITE-BACK (NOR program / CD-game install): system573_top
+// -> the SDRAM ch3 writer (free during gameplay -- cheats engine disabled by patch
+// 0008). One 16-bit word per request; flash_wr_ack = the ch3 completion.
+wire        flash_wr_req;       // 1-cycle ch3 request pulse
+wire        flash_wr_busy;      // LEVEL: flash owns ch3 (pulse .. ack) -> mux select
+wire [26:0] flash_wr_addr;      // flat 16-bit word index into the 16 MB image
+wire [15:0] flash_wr_data;
+wire        flash_wr_ack;
+// ch3 byte address for a flash program write: FLASH_START + (word << 1) -- same
+// addressing as the ch4 read path so a programmed word reads back coherently.
+wire [26:0] flash_wr_ch3_addr = FLASH_START + {flash_wr_addr[25:0], 1'b0};
+// ch3 owner select: a HPS download (load time) always wins; otherwise a flash
+// program write-back drives ch3 (cheats engine is disabled, patch 0008).
+wire        ch3_dl    = exe_download | bios_download | flash_download;
+// The flash write-back ch3 completion (sdramCh3_done) is an ack only when flash --
+// not a download -- owns ch3. flash_wr_busy is never high during a download.
+assign      flash_wr_ack = sdramCh3_done & ~ch3_dl & flash_wr_busy;
 
 // 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB). hps_io is WIDE(1): every
 // ioctl_wr delivers a 16-bit word (ioctl_dout[7:0]=file[2k], [15:8]=file[2k+1])
@@ -1415,6 +1564,111 @@ s573_nvram_loader nvram_loader (
    .nvram_din  (nvram_din),
    .nv_hi      (nvram_nv_hi)
 );
+
+// 573 M48T58 NVRAM image SAVE-BACK (ioctl upload, index 3 -> config/nvram/
+// <mra>.nvm via the .mra <nvram index="3" size="8192"> tag). The WIDE(1) inverse
+// of the loader above: hps_io latches ioctl_din = {file[2k+1], file[2k]} AT each
+// FIO_FILE_TX_DAT strobe while ioctl_addr==2k, then advances the addr by 2.
+// s573_nvram_saver free-runs a 4-cycle even/odd byte fetch out of the m48t58
+// write-port idle cycles and commits coherent words atomically, so the game-side
+// RTC/NVRAM read port is never disturbed. Protocol + citations:
+// docs/audits/2026-06-11-nvram-saveback-gate0.md.
+wire [12:0] nvram_sav_addr;
+wire [7:0]  nvram_sav_dout;
+wire        nvram_sav_rd_ok;
+wire        nvram_written;
+s573_nvram_saver nvram_saver (
+   .clk        (clk_1x),
+   .save_en    (nvram_upload),
+   .ioctl_addr (ioctl_addr[12:0]),
+   .ioctl_din  (ioctl_din),
+   .sav_addr   (nvram_sav_addr),
+   .sav_dout   (nvram_sav_dout),
+   .sav_rd_ok  (nvram_sav_rd_ok)
+);
+
+// Dirty flag -> hps_io ioctl_upload_req: ask Main for an autosave (it fires on
+// the next OSD-main-menu visit, with Main's own "Saving..." splash). Set on any
+// game write into the timekeeper; cleared when the upload STARTS (a write racing
+// the snapshot simply re-arms the flag -> a later save picks it up). The ioctl
+// image load (held in reset) never sets it: nvram_written is an EXP1 bus strobe
+// and the CPU is in reset for the whole download.
+reg nvram_upload_d = 0;
+always @(posedge clk_1x) begin
+   nvram_upload_d <= nvram_upload;
+   if (nvram_written & ~reset)            nvram_dirty <= 1'b1;
+   else if (nvram_upload & ~nvram_upload_d) nvram_dirty <= 1'b0;
+end
+
+// -----------------------------------------------------------------------------
+// 573 SECURITY CARTRIDGE image load (Feature A). Two WIDE(1) ioctl channels:
+//   index 4 = EEPROM image (.u1): the X76F041 (548 B) / X76F100 (112 B) / ZS01
+//             (4116 B) secure-serial-flash NVRAM, streamed into s573_seccart's
+//             EEPROM model byte-by-byte (the loader unpacks each WIDE word into 2
+//             byte writes, like the NVRAM path).
+//   index 5 = DS2401 serial (.u6): the 8-byte 1-Wire silicon serial ROM.
+// The cart TYPE is inferred from the EEPROM image SIZE (the loader reports the
+// highest byte index seen): >=560 -> ZS01 (type 2, the 4116-byte gtrfrk5m .u1);
+// >=548 -> X76F041 (type 1); else X76F100 (type 0). Latched once the EEPROM download
+// completes; defaults to type 0 (matches the prior param-only behaviour, so a game
+// with no .u1 -- e.g. flash-only hyperbbc -- is unaffected).
+wire        sec_eep_we;
+wire [12:0] sec_eep_addr;   // 13-bit covers the padded 4116-byte ZS01 .u1
+wire [7:0]  sec_eep_din;
+wire        seceep_nv_hi;
+wire [12:0] sec_eep_max;
+s573_seccart_loader #(.AW(13)) seceep_loader (
+   .clk        (clk_1x),
+   .load_en    (seceep_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[12:0]),
+   .ioctl_dout (ioctl_dout),
+   .byte_we    (sec_eep_we),
+   .byte_addr  (sec_eep_addr),
+   .byte_data  (sec_eep_din),
+   .nv_hi      (seceep_nv_hi),
+   .max_addr   (sec_eep_max)
+);
+
+wire        sec_ser_we;
+wire [2:0]  sec_ser_addr;
+wire [7:0]  sec_ser_din;
+wire        secser_nv_hi;
+wire [2:0]  sec_ser_max;
+s573_seccart_loader #(.AW(3)) secser_loader (
+   .clk        (clk_1x),
+   .load_en    (secser_download),
+   .ioctl_wr   (ioctl_wr),
+   .ioctl_addr (ioctl_addr[2:0]),
+   .ioctl_dout (ioctl_dout),
+   .byte_we    (sec_ser_we),
+   .byte_addr  (sec_ser_addr),
+   .byte_data  (sec_ser_din),
+   .nv_hi      (secser_nv_hi),
+   .max_addr   (sec_ser_max)
+);
+
+// Infer the cart type from the loaded EEPROM size (highest byte index written).
+// Latched after the EEPROM download deasserts so the threshold sees the final
+// max_addr. Size tiers (top byte index):
+//   ZS01      (.u1 = 4116 B, gtrfrk5m)            -> max_addr = 4115     -> type 2
+//   X76F041   (.u1 = 548 B,  pnchmn2)             -> max_addr =  547     -> type 1
+//   X76F100   (.u1 = 132 B,  hyperbbc/hypbbc2p)   -> max_addr <=  131    -> type 0
+// The full MAME X76F100 .u1 is 132 B (4 response-to-reset + 8 write-pw + 8 read-pw +
+// 112 data), NOT 112 -- the old ">=112 -> X76F041" threshold mis-latched a 132-B
+// X76F100 as X76F041 (instantiating the wrong chip model). Split tiers at 256, which
+// is safely between the 132-B X76F100 and the 548-B X76F041.
+//   Thresholds: >=560 -> ZS01; else >=256 -> X76F041; else X76F100.
+reg [1:0] sec_cart_type = 2'd0;
+reg       seceep_download_1 = 1'b0;
+always @(posedge clk_1x) begin
+   seceep_download_1 <= seceep_download;
+   if (seceep_download_1 && !seceep_download) begin   // download just finished
+      sec_cart_type <= (sec_eep_max >= 13'd560) ? 2'd2 :   // ZS01    (4116 B)
+                       (sec_eep_max >= 13'd256) ? 2'd1 : 2'd0;  // X76F041 (548 B) else X76F100 (132 B)
+   end
+end
+
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
 wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
@@ -1612,10 +1866,26 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .flash_mem_addr (flash_mem_addr),
    .flash_mem_q    (flash_mem_q),
    .flash_mem_ready(flash_mem_ready),
+   .flash_wr_req   (flash_wr_req),
+   .flash_wr_busy  (flash_wr_busy),
+   .flash_wr_addr  (flash_wr_addr),
+   .flash_wr_data  (flash_wr_data),
+   .flash_wr_ack   (flash_wr_ack),
    .flash_dbg      (flash_dbg),
    .nvram_we       (nvram_we),
    .nvram_addr     (nvram_addr),
    .nvram_din      (nvram_din),
+   .nvram_sav_addr (nvram_sav_addr),
+   .nvram_sav_dout (nvram_sav_dout),
+   .nvram_sav_rd_ok(nvram_sav_rd_ok),
+   .nvram_written  (nvram_written),
+   .sec_cart_type  (sec_cart_type),
+   .sec_eep_we     (sec_eep_we),
+   .sec_eep_addr   (sec_eep_addr),
+   .sec_eep_din    (sec_eep_din),
+   .sec_ser_we     (sec_ser_we),
+   .sec_ser_addr   (sec_ser_addr),
+   .sec_ser_din    (sec_ser_din),
    // System 573 inputs are ACTIVE-LOW (JAMMA convention: idle = high, pressed =
    // low). MiSTer `joy` is active-high, so invert at this boundary. Tying these to
    // 0 (the prior wiring) read as "held" -> the BIOS saw TEST/SERVICE pressed and
@@ -1642,6 +1912,29 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
                                            // BSY-stuck and the check times out -> CDR BAD -> HARDWARE ERROR.
                                            // Presenting the drive lets atapi.v answer the 0xEB14 signature +
                                            // IDENTIFY PACKET DEVICE (0xA1) so CDR reads OK with the UNMODIFIED BIOS.
+   // Mounted CD image (Feature B): when a .cue/.chd is mounted via the CUECHD slot
+   // (img_mounted[1] -> hasCD), route ATAPI READ(10/12) data from it. s573_cdimg drives
+   // the sd-block channel (sd_rd[1]/sd_lba1) and consumes sd_ack[1]/sd_buff_wr/sd_buff_dout
+   // -- the exact stream the removed cd_top used (raw 2352-byte sectors, 16b/word).
+   .cd_image       (hasCD),
+   .cd_hps_req     (sd_rd[1]),
+   .cd_hps_lba     (sd_lba1),
+   .cd_hps_ack     (sd_ack[1]),
+   .cd_hps_write   (sd_buff_wr),
+   .cd_hps_data    (sd_buff_dout),
+   // Mounted-disc metadata (s573_cdtoc): the Main disk_t blob (ioctl index 251 --
+   // the same stream emu.sv routes to the psx trackinfo_* ports, where it dangles
+   // since cd_top's removal) + img_mounted/img_size for the single-track fallback.
+   // atapi.v serves the GX700's READ TOC / READ CAPACITY from this.
+   .cd_ti_write    (ramdownload_wr && cdinfo_download),
+   .cd_ti_addr     (ramdownload_wraddr[10:2]),
+   .cd_ti_data     (ramdownload_wrdata),
+   .cd_img_mounted (img_mounted[1]),
+   .cd_img_size    (img_size),
+   // ATAPI data phase -> PSX DMA ch5 (psx_patches/0023)
+   .atapi_dma_req  (atapi_dma_req),
+   .atapi_dma_rd   (atapi_dma_rd),
+   .atapi_dma_dout (atapi_dma_dout),
    .adc_ch0        (8'h00),
    .adc_ch1        (8'h00),
    .adc_ch2        (8'h00),
@@ -1748,12 +2041,18 @@ sdram sdram
 	.ch2_be   (sdram_be),
 	.ch2_ready(sdram_writeack),
 
-	.ch3_addr ((exe_download | bios_download | flash_download) ? ramdownload_wraddr : cheats_addr),
-	.ch3_din  ((exe_download | bios_download | flash_download) ? ramdownload_wrdata : cheats_dout),
+	// ch3 priority: HPS download (load time) > flash program write-back (gameplay) >
+	// cheats (disabled, patch 0008). flash_wr_busy is the LEVEL that holds the flash
+	// address/data/be presented to ch3 across the whole transaction; flash_wr_req is
+	// the one-cycle request pulse. A flash word writes the LOWER 16 bits only (be
+	// 4'b0011 masks the upper word of the 32-bit ch3 pair) so the adjacent word is
+	// untouched -- a true single-word NOR program.
+	.ch3_addr (ch3_dl ? ramdownload_wraddr : flash_wr_busy ? flash_wr_ch3_addr        : cheats_addr),
+	.ch3_din  (ch3_dl ? ramdownload_wrdata : flash_wr_busy ? {16'h0000, flash_wr_data} : cheats_dout),
 	.ch3_dout (cheats_din),
-	.ch3_req  ((exe_download | bios_download | flash_download) ? ramdownload_wr     : cheats_ena),
-	.ch3_rnw  (cheats_rnw),
-	.ch3_be   ((exe_download | bios_download | flash_download) ? 4'b1111            : cheats_be),
+	.ch3_req  (ch3_dl ? ramdownload_wr     : flash_wr_busy ? flash_wr_req             : cheats_ena),
+	.ch3_rnw  (                              flash_wr_busy ? 1'b0                      : cheats_rnw),
+	.ch3_be   (ch3_dl ? 4'b1111            : flash_wr_busy ? 4'b0011                  : cheats_be),
 	.ch3_ready(sdramCh3_done),
 
 	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).

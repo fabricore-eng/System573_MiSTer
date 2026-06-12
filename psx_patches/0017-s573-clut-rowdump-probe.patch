@@ -1,0 +1,76 @@
+diff --git a/rtl/gpu_pixelpipeline.vhd b/rtl/gpu_pixelpipeline.vhd
+--- a/rtl/gpu_pixelpipeline.vhd
++++ b/rtl/gpu_pixelpipeline.vhd
+@@ -191,8 +191,34 @@
+    -- THIS primitive's requested row is resident, AND let the CLUT fetch start even while those pixels
+    -- are parked (else they keep pipeline_busy high and starve the fetch -> deadlock). '1' = fix ON;
+    -- '0' = no-op (constant-folds away -> netlist + cold-sim bit-identical to today). HW-A/B-testable.
+-   constant CLUT_INTERLOCK  : std_logic := '1';
++   constant CLUT_INTERLOCK  : std_logic := '0';
+    signal   clut_notready   : std_logic;
++   -- 573 PROBE (0017): NUMERIC CLUT-row dump for the hyperbbc panel garble. Round-1 + round-2 of the
++   -- DBG_CLUT_STRIPE probe established (a) the panel draws in 4bpp-CLUT mode (round-2 widened gate
++   -- FIRED) yet (b) textPalY /= 491 at render (round-1 gate textPalY=491 FIRED NOWHERE). To read the
++   -- ACTUAL row WITHOUT band-colour inference: for every 4bpp-CLUT textured pixel this OVERRIDES the
++   -- final pixelColor with the raw fetched CLUT row number textPalY (encoded 0x7E00 | textPalY, bit15=0
++   -- so no mask-bit blocking). A savestate of the panel then reads back the exact row(s) the panel
++   -- fetched: garble_lib masks &0x1FF -> the row; 491(0x1EB)=correct (bug is downstream/data), anything
++   -- else = the address/latch is wrong (and shows WHICH row, and whether it is one row or many). Also
++   -- the numeric pass/fail for any fix. '1' = probe; '0' = no-op (constant-folds away, production).
++   constant DBG_ROWDUMP     : std_logic := '0';
++   -- 573 PROBE (0017) TIME-GATE: the boot "chip check" self-test RENDERS 4bpp text and READS IT
++   -- BACK to verify the GPU; if the probe corrupts those pixels the check FAILS and the game parks
++   -- on the chip-check screen (HW-confirmed: flashing error bar). So keep the probe OFF for the first
++   -- ~25 s (past the one-time chip check) and arm it only afterwards -- during attract, when the
++   -- garbled panel draws -- so the boot passes un-corrupted but the panel still gets row-tagged.
++   constant PROBE_ARM_CYCLES : unsigned(31 downto 0) := x"5F5E1000";  -- ~1.6e9 clk2x edges ≈ 25-30 s
++   signal   probe_arm_cnt    : unsigned(31 downto 0) := (others => '0');
++   signal   probe_armed      : std_logic := '0';
++   -- 573 PROBE 0017b: STICKY localizers -- after arming, latch '1' the instant row 491 (the panel's
++   -- 0x7ac0 CLUT) appears at each stage, never clear. Resolves WHERE 491 is lost: at the request
++   -- INPUT (textPalInY), the LATCH (textPalReqY), or the FETCH/resident (textPalY). All three set =>
++   -- 491 IS requested+latched+fetched => bug is purely READ-timing (pixels sample iCLUTram before the
++   -- 491 fetch lands). saw_reqY491=0 => the latch drops it. saw_inY491=0 => upstream mux/poly drops it.
++   signal   saw_inY491       : std_logic := '0';
++   signal   saw_reqY491      : std_logic := '0';
++   signal   saw_y491         : std_logic := '0';
+ 
+    signal reqVRAMXPos         : unsigned(9 downto 0)  := (others => '0');
+    signal reqVRAMYPos         : unsigned(8 downto 0)  := (others => '0');
+@@ -1011,7 +1037,35 @@
+       end if;
+    end process; 
+    
+-   pixelColor  <= stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
++   -- 573 PROBE 0017: free-running arm counter (clk2x) -- arms the row-dump only after the boot chip check
++   process (clk2x)
++   begin
++      if rising_edge(clk2x) then
++         if (reset = '1') then
++            probe_arm_cnt <= (others => '0');
++            probe_armed   <= '0';
++            saw_inY491    <= '0';
++            saw_reqY491   <= '0';
++            saw_y491      <= '0';
++         else
++            if (probe_arm_cnt < PROBE_ARM_CYCLES) then
++               probe_arm_cnt <= probe_arm_cnt + 1;
++            else
++               probe_armed   <= '1';
++            end if;
++            if (probe_armed = '1') then  -- sticky: did row 491 reach each stage during attract?
++               if (textPalInNew = '1' and textPalInY = 491) then saw_inY491  <= '1'; end if;
++               if (textPalReqY = 491)                        then saw_reqY491 <= '1'; end if;
++               if (textPalY = 491)                           then saw_y491    <= '1'; end if;
++            end if;
++         end if;
++      end if;
++   end process;
++
++   -- 573 PROBE 0017b: marker bits "011" + 3 sticky-491 flags (inY/reqY/y) + live textPalReqY[8:0].
++   pixelColor  <= ('0' & "11" & saw_inY491 & saw_reqY491 & saw_y491 & '0' & std_logic_vector(textPalReqY))
++                     when (DBG_ROWDUMP = '1' and probe_armed = '1' and drawMode(8) = '0' and drawMode(7) = '0')
++                  else stage6_alphabit & stage6_cb(7 downto 3) & stage6_cg(7 downto 3) & stage6_cr(7 downto 3);
+    pixelColor2 <= "0000000" & stage6_cb(2 downto 0) & stage6_cg(2 downto 0) & stage6_cr(2 downto 0);
+    pixelAddr   <= stage6_y & stage6_x & '0';
+    pixelWrite  <= stage6_valid;

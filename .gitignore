@@ -39,6 +39,14 @@ incremental_db/
 /dumps/**/*.22g
 /dumps/**/*.zip
 
+# Security-cart sim fixtures: $readmemh hex DERIVED from the (gitignored) game
+# dumps by sim/gen_secdata.sh. Copyrighted -- regenerable, never commit.
+sim/secdata/
+
+# CD-image sim fixtures: $readmemh hex sectors DERIVED from the (gitignored) game
+# CHD/CD dumps by sim/gen_cddata.sh. Copyrighted -- regenerable, never commit.
+sim/cddata/
+
 # Full-system sim outputs
 sim/system/out/
 *.rbf
@@ -46,6 +54,10 @@ sim/system/out/
 # NVC sim build artifacts
 sim/nvc/build/
 sim/system573/build/
+sim/system573/build_mirror/
+sim/system573_ssreplay/build/
+sim/gpu_replay/build/
+sim/gpu_replay/__pycache__/
 
 # Stray sim outputs if NVC is ever run outside build/ (run.sh cds to build/ itself)
 /R:*
@@ -78,3 +90,17 @@ s573_check.qsf
 cfg/
 nvram/
 snap/
+
+# gpu_replay rig outputs: per-experiment build dirs/logs + the generated
+# 2MB-proof stream (embeds MAME game data -- never commit)
+/sim/gpu_replay/build*/
+/sim/gpu_replay/build*.runlog
+/sim/gpu_replay/build_vram2mb_cmd.txt
+/sim/gpu_replay/repro_evidence/
+
+# PROTOCOL rule 8: public core repos track ONLY the reviewed .claude bootstrap
+# (settings.json + hooks/); everything else under .claude is local state and the
+# engineering system lives in the private hub.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/

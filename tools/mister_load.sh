@@ -25,8 +25,8 @@ CORE_DIR="${MISTER_CORE_DIR:-/media/fat/_Arcade}"
 DEST="$CORE_DIR/$(basename "$RBF")"
 
 # Prefer the `ssh mister` alias (key + host from ~/.ssh/config); fall back to env.
-if ssh -o ConnectTimeout=5 -o BatchMode=yes mister true 2>/dev/null; then
-  SSH=(ssh mister); SCP_TGT="mister"
+if ssh -o ConnectTimeout=5 -o BatchMode=yes "${MISTER_ALIAS:-mister}" true 2>/dev/null; then
+  SSH=(ssh "${MISTER_ALIAS:-mister}"); SCP_TGT="${MISTER_ALIAS:-mister}"
 else
   KEY="${MISTER_SSH_KEY:-~/.ssh/mister_id_ed25519}"; KEY="${KEY/#\~/$HOME}"
   SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes "${MISTER_USER:-root}@${MISTER_HOST:?set MISTER_HOST}")
