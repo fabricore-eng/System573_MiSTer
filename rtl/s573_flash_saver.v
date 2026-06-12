@@ -114,10 +114,10 @@ module s573_flash_saver #(
     always @(posedge clk) din_q <= buf_mem[sd_buff_addr];
     assign sd_buff_din = din_q;
 
-    // LOAD captures every streamed word into the staging buffer.
-    always @(posedge clk) begin
-        if (sd_buff_wr) buf_mem[sd_buff_addr] <= sd_buff_dout;
-    end
+    // buf_mem's WRITE port is a SINGLE always block (declared below, after the FSM
+    // regs) so Quartus infers block RAM: both the SAVE-fill drain and the LOAD
+    // capture funnel through it. (A second always writing buf_mem here was the
+    // Quartus 10028 "multiple constant drivers" error.)
 
     // -------------------------------------------------------------------------
     // FSM. Mirrors memcard.vhd: an outer block loop (blockCnt = sd_lba) wrapping
@@ -128,7 +128,8 @@ module s573_flash_saver #(
         S_IDLE          = 4'd0,
         // ---- SAVE ----
         SA_FILL_REQ     = 4'd1,   // request burst `burst_cnt` of the block from SDRAM
-        SA_FILL_WAIT    = 4'd2,   // wait mem_ready, latch 8 words into the buffer
+        SA_FILL_WAIT    = 4'd2,   // wait mem_ready, latch the 128-bit burst into fill_q
+        SA_FILL_DRAIN   = 4'd11,  // serialise fill_q -> buf_mem, one word/cycle (M10K)
         SA_WR_REQ       = 4'd3,   // raise sd_wr for this block
         SA_WR_ACKSTART  = 4'd4,   // wait sd_ack rising (Main streaming the block out)
         SA_WR_ACKDONE   = 4'd5,   // wait sd_ack falling (block written to disk)
@@ -144,8 +145,21 @@ module s573_flash_saver #(
     reg [6:0]  burst_cnt = 7'd0;           // 0..63 within a block (save fill)
     reg [9:0]  word_cnt  = 10'd0;          // 0..511 within a block (load drain)
     reg        save_pending = 1'b0;        // a SAVE was triggered while busy/idle
+    reg [127:0] fill_q;                     // latched 128-bit SDRAM burst (SAVE fill)
+    reg [2:0]  fill_sub;                    // 0..7 word within the burst being drained
 
     integer k;
+
+    // ---- buf_mem SINGLE WRITE PORT (block-RAM friendly: one driver) ----
+    // SAVE drains the latched burst one word/cycle in SA_FILL_DRAIN; LOAD captures
+    // Main's streamed words. The two are mutually-exclusive states, so this mux is
+    // safe and Quartus infers a dual-port M10K (this write + the din_q read above).
+    always @(posedge clk) begin
+        if (state == SA_FILL_DRAIN)
+            buf_mem[{burst_cnt[5:0], 3'b000} + fill_sub] <= fill_q[fill_sub*16 +: 16];
+        else if (sd_buff_wr)
+            buf_mem[sd_buff_addr] <= sd_buff_dout;
+    end
 
     always @(posedge clk) begin
         // default 1-cycle strobes
@@ -210,8 +224,15 @@ module s573_flash_saver #(
                 end
                 SA_FILL_WAIT: begin
                     if (mem_ready) begin
-                        for (k = 0; k < 8; k = k + 1)
-                            buf_mem[{burst_cnt[5:0], 3'b000} + k] <= mem_q[k*16 +: 16];
+                        fill_q   <= mem_q;       // latch the 128-bit (8-word) burst
+                        fill_sub <= 3'd0;
+                        state    <= SA_FILL_DRAIN;
+                    end
+                end
+                SA_FILL_DRAIN: begin
+                    // the buf_mem write of word fill_sub happens in the write-port
+                    // block above; here we just advance the sub-word / block index.
+                    if (fill_sub == 3'd7) begin
                         if (burst_cnt == BURSTS_PER_BLOCK-1) begin
                             burst_cnt <= 7'd0;
                             state     <= SA_WR_REQ;
@@ -219,6 +240,8 @@ module s573_flash_saver #(
                             burst_cnt <= burst_cnt + 7'd1;
                             state     <= SA_FILL_REQ;
                         end
+                    end else begin
+                        fill_sub <= fill_sub + 3'd1;
                     end
                 end
                 SA_WR_REQ: begin
