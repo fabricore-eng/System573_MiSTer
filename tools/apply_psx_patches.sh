@@ -128,7 +128,30 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # ALM + 8 DSP so the 16 MB flash-saver (persistence) fits + clears the 100%
           # DSP wall. LOW risk: HPS-configured framework filter, zero boot exposure;
           # drops only the optional audio low-pass. docs/audits/2026-06-12-resource-recovery-scope.md
-          "$ROOT/psx_patches/0025-s573-audio-iir-passthrough.patch" )
+          "$ROOT/psx_patches/0025-s573-audio-iir-passthrough.patch" \
+          # 0026 = resource-recovery candidate #3 (~575 ALM): strip the PSX controller
+          # + light-gun paths. The 573 is a JAMMA/JVS arcade board with NO PSX
+          # controller port -- gameplay input arrives over the JAMMA register in
+          # s573_io.v (0x1f400008, fed by emu.sv ~{joy}), entirely independent of the
+          # PSX SIO0 pad path. Removes joypad.vhd's ijoypad_pad SM (~534 ALM) and the
+          # gpu_videoout.vhd justifier_sensor x2 + gpu_crosshair x2 (~41 ALM), tying
+          # the shared SIO0 OR-bus (receiveValidPad/receiveBufferPad/ackPad/isActivePad)
+          # and the gun overlay/IRQ10 terms to benign idle so the bus + GPU video mux
+          # read exactly as "no pad/gun present". KEEPS joypad_mem + memcard1 (DDR /
+          # Dancing-Stage edit data saves to the PS1 card). NVC-elaborate clean.
+          # docs/audits/2026-06-12-resource-recovery-scope.md (cand #3).
+          "$ROOT/psx_patches/0026-s573-strip-psx-joypad-pad-lightgun.patch" \
+          # 0027 = resource-recovery candidate #4 (~64 ALM): drop the 2nd PS1 memory
+          # card (joypad_mem #2) + the SNAC pad passthrough paths inside joypad.vhd.
+          # Only card 1 is a real 573 use; no 573 game mounts a 2nd card, and the 573
+          # never enables SNAC (a physical DE10 user-IO controller path -- emu.sv ties
+          # snacport1/2 = 0). The mem2 master-port outputs are tied idle (no DDR3
+          # traffic) and the SNAC select/clock lines are tied '0', which is exactly the
+          # "no card-2 / no SNAC" state the surrounding SIO0 logic already special-cases
+          # (selectedPortXSnac=0 -> actionNextCombine=actionNext + stock port select).
+          # Stacks on 0026 (same file, joypad.vhd). NVC-elaborate clean.
+          # docs/audits/2026-06-12-resource-recovery-scope.md (cand #4).
+          "$ROOT/psx_patches/0027-s573-strip-memcard2-snac.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

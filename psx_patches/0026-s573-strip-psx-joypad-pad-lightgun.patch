@@ -1,0 +1,184 @@
+diff --git a/rtl/gpu_videoout.vhd b/rtl/gpu_videoout.vhd
+index 0974300..66c2a9d 100644
+--- a/rtl/gpu_videoout.vhd
++++ b/rtl/gpu_videoout.vhd
+@@ -519,73 +519,22 @@ begin
+       end if;
+    end process;
+   
+-   gpu_crosshair1: entity work.gpu_crosshair
+-   port map
+-   (
+-      clk            => clkvid,
+-      ce             => videoout_out.ce,
+-      vsync          => videoout_out.vsync,
+-      hblank         => videoout_out.hblank,
+-              
+-      xpos_cross     => Gun1X_screen,
+-      ypos_cross     => to_integer(Gun1Y_screen),
+-      xpos_screen    => videoout_request_clkvid.xpos,
+-      ypos_screen    => to_integer(videoout_request_clkvid.lineDisp),
+-      
+-      out_ena        => overlay_Gun1_ena
+-   );
+-   
+-   gpu_crosshair2: entity work.gpu_crosshair
+-   port map
+-   (
+-      clk            => clkvid,
+-      ce             => videoout_out.ce,
+-      vsync          => videoout_out.vsync,
+-      hblank         => videoout_out.hblank,
+-              
+-      xpos_cross     => Gun2X_screen,
+-      ypos_cross     => to_integer(Gun2Y_screen),
+-      xpos_screen    => videoout_request_clkvid.xpos,
+-      ypos_screen    => to_integer(videoout_request_clkvid.lineDisp),
+-      
+-      out_ena        => overlay_Gun2_ena
+-   );
+-   
+-   justifier_sensor1: entity work.justifier_sensor
+-   port map
+-   (
+-      clk            => clk1x,
+-      clkvid         => clkvid,
+-      ce             => videoout_out.ce,
+-      vsync          => videoout_out.vsync,
+-      hblank         => videoout_out.hblank,
+-
+-      offscreen      => Gun1offscreen,
+-      xpos_gun       => Gun1X_screen,
+-      ypos_gun       => to_integer(Gun1Y_screen),
+-      xpos_screen    => videoout_request_clkvid.xpos,
+-      ypos_screen    => to_integer(videoout_request_clkvid.lineDisp),
+-
+-      out_irq10      => Gun1IRQ10
+-   );
+-
+-   justifier_sensor2: entity work.justifier_sensor
+-   port map
+-   (
+-      clk            => clk1x,
+-      clkvid         => clkvid,
+-      ce             => videoout_out.ce,
+-      vsync          => videoout_out.vsync,
+-      hblank         => videoout_out.hblank,
+-
+-      offscreen      => Gun2offscreen,
+-      xpos_gun       => Gun2X_screen,
+-      ypos_gun       => to_integer(Gun2Y_screen),
+-      xpos_screen    => videoout_request_clkvid.xpos,
+-      ypos_screen    => to_integer(videoout_request_clkvid.lineDisp),
+-
+-      out_irq10      => Gun2IRQ10
+-   );
++   -- System 573 (psx_patches/0026): the PSX light-gun overlay/sensor paths
++   -- (gpu_crosshair x2 + justifier_sensor x2) are dead weight on this core -- the
++   -- 573 is a JAMMA/JVS arcade board with no PSX controller port and no GunCon/
++   -- Justifier, and its gameplay input comes from the JAMMA register in s573_io.v
++   -- (0x1f400008), never from the PSX pad/gun path. Removing the four instances
++   -- frees ~41 ALM (justifier_sensor 20+21) plus the crosshair overlay logic on
++   -- the ALM/LAB-bound die. Their outputs are tied to benign idle so the GPU
++   -- video-out mux below collapses the gun overlay terms to constant 0:
++   --   overlay_Gun{1,2}_ena = 0  (no crosshair pixel ever drawn)
++   --   Gun{1,2}IRQ10        = 0  (no Justifier IRQ10; psx_top already AND-gates
++   --                              this with joypadN.PadPortJustif, which the 573
++   --                              never sets, so it was already unreachable).
++   overlay_Gun1_ena <= '0';
++   overlay_Gun2_ena <= '0';
++   Gun1IRQ10        <= '0';
++   Gun2IRQ10        <= '0';
+ 
+    overlay_ena <= overlay_error_ena or overlay_lba_ena or overlay_cd_ena or overlay_fps_ena or debugtextDbg_ena or (overlay_Gun1_ena and Gun1CrosshairOn) or (overlay_Gun2_ena and Gun2CrosshairOn);
+    
+diff --git a/rtl/joypad.vhd b/rtl/joypad.vhd
+index 21f140d..11c1803 100644
+--- a/rtl/joypad.vhd
++++ b/rtl/joypad.vhd
+@@ -395,57 +395,34 @@ begin
+    GunAimOffscreen <= Gun2AimOffscreen when selectedPort2 else Gun1AimOffscreen;
+    portNr          <= 0 when JOY_CTRL(13) = '0' else 1;
+ 
+-   ijoypad_pad : entity work.joypad_pad
+-   port map
+-   (
+-      clk1x                => clk1x,    
+-      ce                   => ce,       
+-      reset                => reset,    
+-       
+-      DSAltSwitchMode      => DSAltSwitchMode,
+-      joypad1              => joypad1,
+-      joypad2              => joypad2,
+-      joypad3              => joypad3,
+-      joypad4              => joypad4,
+-      joypad1_rumble       => joypad1_rumble,
+-      joypad2_rumble       => joypad2_rumble,
+-      joypad3_rumble       => joypad3_rumble,
+-      joypad4_rumble       => joypad4_rumble,
+-      padMode              => padMode,
+-      isMultitap           => multitap,
+-      multitapDigital      => multitapDigital,
+-      multitapAnalog       => multitapAnalog,
+-      portNr               => portNr,
+-      isPal                => isPal,
+-      neGconRumble         => neGconRumble,
+-
+-      selected             => selectedPort,
+-      actionNext           => actionNextPad,
+-      transmitting         => transmitting,
+-      transmitValue        => transmitValue,
+- 
+-      isActive             => isActivePad,
+-      slotIdle             => not (isActiveMem1 or isActiveMem2),
+-
+-      receiveValid         => receiveValidPad,
+-      receiveBuffer        => receiveBufferPad,
+-      ack                  => ackPad,
+-
+-
+-      MouseEvent           => MouseEvent,
+-      MouseLeft            => MouseLeft,
+-      MouseRight           => MouseRight,
+-      MouseX               => MouseX,
+-      MouseY               => MouseY,
+-      GunX                 => GunX,
+-      GunY_scanlines       => GunY_scanlines,
+-      GunAimOffscreen      => GunAimOffscreen,
+-      JustifierIrqEnable   => JustifierIrqEnable,
+-      
+-      ss_in                => ss_in(7),
+-      ss_out               => ss_out(7)
+-   );
+-   
++   -- System 573 (psx_patches/0026): the PSX controller state machine (joypad_pad,
++   -- the digital/analog/DualShock/GunCon/neGcon/mouse/Justifier SIO0 device, ~534 ALM)
++   -- is removed. The 573 is a JAMMA/JVS arcade board: it has NO PSX controller port,
++   -- and gameplay input arrives over the JAMMA register in s573_io.v (0x1f400008,
++   -- fed by emu.sv ~{joy}), entirely independent of this SIO0 pad path. The PS1
++   -- memory cards (joypad_mem below) are KEPT -- DDR/Dancing-Stage edit data saves to
++   -- the PS1 card. The pad's contributions to the shared SIO0 OR-bus are tied to
++   -- benign idle so the bus reads exactly as if no pad device is present:
++   --   receiveValidPad = 0 -> OR-bus receiveValid unaffected by the (absent) pad
++   --   receiveBufferPad = 0 -> OR into receiveBuffer is a no-op
++   --   ackPad           = 0 -> OR into ack is a no-op (no spurious SIO0 ack)
++   --   isActivePad      = 0 -> the memcard slotIdle (not isActivePad) stays asserted
++   -- The pad-only outputs (padMode, joypadN_rumble, JustifierIrqEnable) are tied to
++   -- their reset/idle constants. irqRequest (the JOY/SIO0 IRQ7 line) is unaffected:
++   -- it is driven by the process from JOY_CTRL(12)/waitAck, which only assert when a
++   -- device acks -- with no pad and no card transfer, it never fires.
++   isActivePad        <= '0';
++   receiveValidPad    <= '0';
++   receiveBufferPad   <= (others => '0');
++   ackPad             <= '0';
++   padMode            <= "00";
++   joypad1_rumble     <= (others => '0');
++   joypad2_rumble     <= (others => '0');
++   joypad3_rumble     <= (others => '0');
++   joypad4_rumble     <= (others => '0');
++   JustifierIrqEnable <= "00";
++   ss_out(7)          <= (others => '0');
++
+    ijoypad_mem1 : entity work.joypad_mem
+    port map
+    (
