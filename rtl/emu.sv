@@ -359,7 +359,16 @@ always @(posedge clk_1x) begin
 end
 wire download_settle_hold = (settle_cnt != 0);
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset;
+// Plan D / RISK R1 (the "lost install" guard): while the flash-save LOAD is
+// restoring the persisted 16 MB image into SDRAM over the .mgl blank, hold the
+// CPU in reset so it cannot boot off a half-restored flash. flash_loading is
+// asserted only during a LOAD (saver busy & NOT saving); a SAVE (OSD-open auto
+// -save during gameplay) must NOT reset the running game. (saver_busy /
+// saver_saving are declared with the saver wiring below; both 0 outside a
+// save/load, so this term is inert except during a restore.)
+wire flash_loading = saver_busy & ~saver_saving;
+
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset | flash_loading;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -406,6 +415,14 @@ parameter CONF_STR = {
 	"SC2,SAVMCD,Mount Memory Card 1;",
 	"SC3,SAVMCD,Mount Memory Card 2;",
 	"O[63],Automount Memory Card 1,Yes,No;",
+	// 573 onboard-flash PERSISTENCE (slot 4). A CD-installed game's 16 MB flash is
+	// saved to saves/System573/<name>.sav and restored on the next launch over the
+	// .mgl blank. The .mgl mounts this slot (type="s" index="4"); the save file is
+	// auto-created (Main pre=1/type=2) on the first write-back. "Save Flash" forces
+	// an immediate save; the OSD-open auto-save (Save to SDCard, On Open OSD) saves
+	// automatically after an install when the flash is dirty.
+	"SC4,SAV,Flash Save;",
+	"R[97],Save Flash;",
 	"-;",
 	"O[36],Savestates to SDCard,On,Off;",
 	"O[68],Autoincrement Slot,Off,On;",
@@ -528,19 +545,23 @@ reg  [31:0] sd_lba0 = 0;
 wire [31:0] sd_lba1;                 // System 573: driven by the ATAPI CD reader (u_s573)
 reg  [ 6:0] sd_lba2;
 reg  [ 6:0] sd_lba3;
-reg   [3:0] sd_rd;
+// 573 onboard-flash save (slot 4): CD-style 32-bit LBA (16 MB / 1 KB = 16384
+// blocks; the 7-bit memcard lba is far too narrow). Driven by s573_flash_saver.
+wire [31:0] sd_lba4;
+reg   [4:0] sd_rd;
 // Dummy sinks for the removed consumer-PSX cd_top outputs (psx_patches/0011 ties them
 // to 0); the 573's own ATAPI CD reader drives sd_rd[1]/sd_lba1 instead.
 wire        psx_cd_hps_req_unused;
 wire [31:0] psx_cd_hps_lba_unused;
-reg   [3:0] sd_wr;
-wire  [3:0] sd_ack;
+reg   [4:0] sd_wr;
+wire  [4:0] sd_ack;
 wire  [8:0] sd_buff_addr;
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din2;
 wire [15:0] sd_buff_din3;
+wire [15:0] sd_buff_din4;            // 573 flash save (slot 4) core -> Main
 wire        sd_buff_wr;
-wire  [3:0] img_mounted;
+wire  [4:0] img_mounted;
 wire        img_readonly;
 wire [63:0] img_size;
 wire        ioctl_download;
@@ -595,7 +616,7 @@ wire [127:0] status_in = {status[127:39],ss_slot,status[36:19], 2'b00, status[16
 wire bk_pending;
 wire DIRECT_VIDEO;
 
-hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(4), .BLKSZ(3)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(5), .BLKSZ(3)) hps_io
 (
 	.clk_sys(clk_1x),
 	.HPS_BUS(HPS_BUS),
@@ -633,14 +654,14 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(4), .BLKSZ(3)) hps_io
 	.ioctl_upload_req(nvram_dirty),
 	.ioctl_upload_index(8'd3),
 
-	.sd_lba('{sd_lba0, sd_lba1, sd_lba2, sd_lba3}),
-	.sd_blk_cnt('{0,0, 0, 0}),
+	.sd_lba('{sd_lba0, sd_lba1, {25'd0, sd_lba2}, {25'd0, sd_lba3}, sd_lba4}),
+	.sd_blk_cnt('{0, 0, 0, 0, 0}),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3}),
+	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3, sd_buff_din4}),
 	.sd_buff_wr(sd_buff_wr),
 
 	.TIMESTAMP(RTC_time),
@@ -1538,8 +1559,12 @@ wire [26:0] flash_wr_ch3_addr = FLASH_START + {flash_wr_addr[25:0], 1'b0};
 // program write-back drives ch3 (cheats engine is disabled, patch 0008).
 wire        ch3_dl    = exe_download | bios_download | flash_download;
 // The flash write-back ch3 completion (sdramCh3_done) is an ack only when flash --
-// not a download -- owns ch3. flash_wr_busy is never high during a download.
-assign      flash_wr_ack = sdramCh3_done & ~ch3_dl & flash_wr_busy;
+// not a download and not the higher-priority flash-save LOAD -- owns ch3.
+// flash_wr_busy is never high during a download; the saver exclusion is belt-and
+// -braces (the saver LOAD runs with the CPU in reset, so the installer's program
+// write-back is never in flight at the same time). saver_wr_busy is declared with
+// the saver wiring further below; it is 0 except during a flash-save LOAD.
+assign      flash_wr_ack = sdramCh3_done & ~ch3_dl & ~saver_wr_busy & flash_wr_busy;
 
 // 573 M48T58 NVRAM image load (ioctl_index 3, 8 KB). hps_io is WIDE(1): every
 // ioctl_wr delivers a 16-bit word (ioctl_dout[7:0]=file[2k], [15:8]=file[2k+1])
@@ -1669,9 +1694,129 @@ always @(posedge clk_1x) begin
    end
 end
 
+// -----------------------------------------------------------------------------
+// 573 onboard-flash PERSISTENCE (s573_flash_saver): SAVE the 16 MB SDRAM flash to
+// saves/System573/<name>.sav (slot 4) and LOAD it back over the .mgl blank so a
+// CD-installed game survives reboot. Designed in docs/audits/2026-06-12-flash-
+// persistence-gate0.md (plan A/B/C/D). The saver speaks the SD block protocol on
+// slot 4 and reuses the proven SDRAM ch4 read / ch3 write-back plumbing.
+// -----------------------------------------------------------------------------
+wire        saver_busy;
+wire        saver_saving;
+wire        saver_sd_rd;
+wire        saver_sd_wr;
+// saver SDRAM ch4 read-back (128-bit burst, flat 16-bit word index)
+wire        saver_mem_req;
+wire [26:0] saver_mem_addr;
+// saver SDRAM ch3 write (single 16-bit word, flat word index)
+wire        saver_wr_req;
+wire        saver_wr_busy;
+wire [26:0] saver_wr_addr;
+wire [15:0] saver_wr_data;
+
+// flash-dirty: a CD installer programmed the onboard flash this session (any
+// flash_wr_ack while NOT a save load-write). Set sticky; cleared when a save
+// fires. Drives the OSD-open auto-save the same way nvram_dirty / bk_save_a do.
+reg flash_dirty = 1'b0;
+// save-slot (4) mount latch + size, mirroring the memcard sd_mounted2/img_size.
+reg        flash_save_mounted = 1'b0;
+reg [63:0] flash_save_size    = 64'd0;
+// LOAD arm: a non-empty save is mounted on slot 4 AND the .mgl blank flash
+// download has fully settled (plan D / RISK R1 -- the LOAD must override the
+// blank, so it runs only after flash_download + the 3 s settle hold clear).
+// One-shot: armed once per mount, dropped once the load has been taken.
+reg  flash_load_taken = 1'b0;
+wire flash_load_arm = flash_save_mounted && (flash_save_size > 0)
+                      && ~flash_download && ~download_settle_hold
+                      && ~flash_load_taken;
+
+// SAVE trigger: explicit "Save Flash" R-bit OR the OSD-open auto-save when the
+// flash is dirty (an install happened). Edge-detected to a 1-cycle pulse.
+wire bk_save_flash   = status[97];                 // "R[97],Save Flash;" (CONF_STR)
+wire bk_save_flash_a = OSD_STATUS & bk_autosave & flash_dirty;  // auto on OSD open
+reg  old_sflash = 1'b0, old_sflash_a = 1'b0;
+reg  flash_save_trigger = 1'b0;
+
+always @(posedge clk_1x) begin
+   flash_save_trigger <= 1'b0;
+
+   // a programming write-back to flash during this session marks it dirty.
+   if (flash_wr_ack) flash_dirty <= 1'b1;
+
+   // slot-4 mount: latch presence + size (mirror the memcard mount logic).
+   if (img_mounted[4]) begin
+      flash_load_taken <= 1'b0;            // a new mount re-arms the load
+      if (img_size > 0) begin
+         flash_save_mounted <= 1'b1;
+         flash_save_size    <= img_size;
+      end else begin
+         flash_save_mounted <= 1'b0;       // first boot: empty save (type=2)
+         flash_save_size    <= 64'd0;
+      end
+   end
+
+   // once the load FSM starts (busy rises while armed) mark it taken so it runs
+   // exactly once per mount and never re-loads (which would clobber a later save).
+   old_sflash   <= bk_save_flash;
+   old_sflash_a <= bk_save_flash_a;
+   if (flash_load_arm && saver_busy && ~saver_saving)
+      flash_load_taken <= 1'b1;
+
+   // edge -> 1-cycle save pulse. Saving clears dirty so a single OSD open does
+   // not re-save unchanged flash on the next open.
+   if ((~old_sflash & bk_save_flash) | (~old_sflash_a & bk_save_flash_a)) begin
+      flash_save_trigger <= 1'b1;
+      flash_dirty        <= 1'b0;
+   end
+end
+
+s573_flash_saver #(.NUM_BLOCKS(16384)) u_flash_saver (
+   .clk          (clk_1x),
+   .reset        (RESET | status[0]),
+   .save_trigger (flash_save_trigger),
+   .load_arm     (flash_load_arm),
+   .busy         (saver_busy),
+   .saving       (saver_saving),
+   .sd_rd        (saver_sd_rd),
+   .sd_wr        (saver_sd_wr),
+   .sd_lba       (sd_lba4),
+   .sd_ack       (sd_ack[4]),
+   .sd_buff_wr   (sd_buff_wr),
+   .sd_buff_addr (sd_buff_addr[8:0]),
+   .sd_buff_dout (sd_buff_dout),
+   .sd_buff_din  (sd_buff_din4),
+   .mem_req      (saver_mem_req),
+   .mem_addr     (saver_mem_addr),
+   .mem_q        (flash_mem_q),       // shares ch4 return bus (saver runs alone)
+   .mem_ready    (flash_mem_ready),
+   .wr_req       (saver_wr_req),
+   .wr_busy      (saver_wr_busy),
+   .wr_addr      (saver_wr_addr),
+   .wr_data      (saver_wr_data),
+   .wr_ack       (saver_wr_ack)
+);
+
+assign sd_rd[4] = saver_sd_rd;
+assign sd_wr[4] = saver_sd_wr;
+
+// saver ch3 write-back completion: a ch3 done that belongs to the saver (it owns
+// ch3 only when saver_wr_busy and no HPS download is active).
+wire saver_wr_ack = sdramCh3_done & ~ch3_dl & saver_wr_busy;
+// saver ch3 byte address = FLASH_START + (word << 1) -- same form as flash_wr.
+wire [26:0] saver_wr_ch3_addr = FLASH_START + {saver_wr_addr[25:0], 1'b0};
+
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
-wire [26:0] flash_ch4_addr = FLASH_START + {flash_mem_addr[25:0], 1'b0};
+// The saver shares ch4 for its save read-back. The saver and the BIOS flash
+// line-fill never request concurrently (a SAVE fires at OSD-open, a LOAD holds
+// the CPU in reset, neither overlaps a live BIOS flash read), so a simple
+// request-cycle priority on the saver suffices: present its address whenever it
+// is requesting, else the BIOS line-fill address. Both consume the shared ch4
+// return bus (flash_mem_q / flash_mem_ready). flash_mem_* is the BIOS line-fill.
+wire [26:0] flash_ch4_addr = saver_mem_req
+              ? (FLASH_START + {saver_mem_addr[25:0], 1'b0})
+              : (FLASH_START + {flash_mem_addr[25:0], 1'b0});
+wire        flash_ch4_req  = saver_mem_req | flash_mem_req;
 
 // -----------------------------------------------------------------------------
 // FLASH-PATH DEBUG READBACK  (status[94]=enable, status[96:95]=field select)
@@ -2041,24 +2186,29 @@ sdram sdram
 	.ch2_be   (sdram_be),
 	.ch2_ready(sdram_writeack),
 
-	// ch3 priority: HPS download (load time) > flash program write-back (gameplay) >
-	// cheats (disabled, patch 0008). flash_wr_busy is the LEVEL that holds the flash
-	// address/data/be presented to ch3 across the whole transaction; flash_wr_req is
-	// the one-cycle request pulse. A flash word writes the LOWER 16 bits only (be
-	// 4'b0011 masks the upper word of the 32-bit ch3 pair) so the adjacent word is
-	// untouched -- a true single-word NOR program.
-	.ch3_addr (ch3_dl ? ramdownload_wraddr : flash_wr_busy ? flash_wr_ch3_addr        : cheats_addr),
-	.ch3_din  (ch3_dl ? ramdownload_wrdata : flash_wr_busy ? {16'h0000, flash_wr_data} : cheats_dout),
+	// ch3 priority: HPS download (load time) > flash-save LOAD write-back >
+	// flash program write-back (gameplay) > cheats (disabled, patch 0008). The
+	// flash-save LOAD restores the persisted image into SDRAM with the CPU held in
+	// reset (plan D), so it never overlaps a live install program write-back; it
+	// sits ABOVE flash_wr_busy in priority for clarity. flash_wr_busy / saver_wr_busy
+	// are the LEVELs that hold the address/data/be presented across each
+	// transaction; the *_wr_req signals are the one-cycle request pulses. Each word
+	// writes the LOWER 16 bits only (be 4'b0011 masks the upper word of the 32-bit
+	// ch3 pair) so the adjacent word is untouched -- a true single-word write.
+	.ch3_addr (ch3_dl ? ramdownload_wraddr : saver_wr_busy ? saver_wr_ch3_addr        : flash_wr_busy ? flash_wr_ch3_addr        : cheats_addr),
+	.ch3_din  (ch3_dl ? ramdownload_wrdata : saver_wr_busy ? {16'h0000, saver_wr_data} : flash_wr_busy ? {16'h0000, flash_wr_data} : cheats_dout),
 	.ch3_dout (cheats_din),
-	.ch3_req  (ch3_dl ? ramdownload_wr     : flash_wr_busy ? flash_wr_req             : cheats_ena),
-	.ch3_rnw  (                              flash_wr_busy ? 1'b0                      : cheats_rnw),
-	.ch3_be   (ch3_dl ? 4'b1111            : flash_wr_busy ? 4'b0011                  : cheats_be),
+	.ch3_req  (ch3_dl ? ramdownload_wr     : saver_wr_busy ? saver_wr_req             : flash_wr_busy ? flash_wr_req             : cheats_ena),
+	.ch3_rnw  (                              saver_wr_busy ? 1'b0                      : flash_wr_busy ? 1'b0                      : cheats_rnw),
+	.ch3_be   (ch3_dl ? 4'b1111            : saver_wr_busy ? 4'b0011                  : flash_wr_busy ? 4'b0011                  : cheats_be),
 	.ch3_ready(sdramCh3_done),
 
 	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).
+	// Shared with the flash-save read-back (flash_ch4_addr / flash_ch4_req mux the
+	// saver's save read in above the BIOS line-fill; they never overlap).
 	.ch4_addr (flash_ch4_addr),
 	.ch4_dout (flash_mem_q),
-	.ch4_req  (flash_mem_req),
+	.ch4_req  (flash_ch4_req),
 	.ch4_ready(flash_mem_ready),
 
 	.dmafifo_adr  (sdram_dmafifo_adr),

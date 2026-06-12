@@ -70,9 +70,9 @@ PROG="$(basename "$0")"
 HUB_RUNNER="${MISTER_HUB:-$HOME/Dev/mister-dev-hub}/tools/mame_dell.sh"
 # The 573-specific MAME-on-dell wrapper (fills romset/rompath); we shell to the
 # hub runner directly so we control the exact outfile list + lua.
-ROMSET="hyperbbc"
-ROMPATH="dumps/mame573;dumps"
-DELL_REPO="System573_MiSTer"
+ROMSET="${ROMSET:-hyperbbc}"          # env-overridable: capture any 573 romset (e.g. ROMSET=konam80s)
+ROMPATH="${ROMPATH:-dumps/mame573;dumps}"
+DELL_REPO="${DELL_REPO:-System573_MiSTer}"
 
 # ---------------------------------------------------------------------------
 # --selftest : prove arg parsing + hub-runner presence on synthetic data.
