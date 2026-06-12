@@ -12,9 +12,13 @@
 //          latch writes 0,4,0 then 3 rounds of [RST pulse 8,A,8,0 + 32x
 //          (write 2 / sample the IN1-visible sec_io0 / write 0)] then 4, each
 //          round accumulating the response-to-reset LSB-first == 32'h1900AA55
-//          (X76F100 type-2, our hardcoded RtR). This predicts the post-DSR-fix
-//          silicon screen (the -11N-class state). Uses REAL latch semantics: one
-//          latch_we pulse per value, latch_we low between writes.
+//          (X76F100 type-2, our hardcoded RtR). This proves the BIOS cart-type
+//          IDENTIFY round reads back correctly. (NOTE corrected 2026-06-12: the
+//          on-screen "-11N" wall is NOT this identify round failing -- it is the
+//          BIOS boot-time cassette SIGNATURE check, which needs the authentic
+//          gx908ja.u1 dump (block-1 signature, not synthesizable). HW-confirmed:
+//          with the real dump the board clears -11N and runs.) Uses REAL latch
+//          semantics: one latch_we pulse per value, latch_we low between writes.
 //
 //  Part 0b (OQ3 d_latch hardening): a WATCHDOG KICK (CPU store to 0x1f5c0000 --
 //          d_latch input wiggles while latch_we=0, exactly what system573_top's

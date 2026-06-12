@@ -1,22 +1,32 @@
 `timescale 1ns/1ps
 // -----------------------------------------------------------------------------
-// tb_x76f100_hypbbc2p.v - replay the hypbbc2p CD-installer's X76F100 READ
-// sequence against x76f100.v and assert the gate-relevant bytes.
+// tb_x76f100_hypbbc2p.v - replay the hypbbc2p IN-GAME X76F100 READ sequence
+// against x76f100.v and assert the gate-relevant bytes.
+//
+// *** SCOPE NOTE (corrected 2026-06-12) ***
+//   This TB exercises the IN-GAME security check (fn 0x80036ec4, runs from the
+//   CD-loaded program). It does NOT model the on-screen "-11N" wall: that wall is
+//   the 573 BIOS BOOT-TIME cassette SIGNATURE check (reads cassette blocks 0,0,1,2;
+//   block 1 = 81 00 29 00 00 18 eb 52), which runs BEFORE the CD program loads and
+//   requires the authentic gx908ja.u1 dump. -11N was a missing-DATA (authentic
+//   signature) problem, NOT a read-FSM / byte-pointer / re-auth bug in x76f100.v --
+//   the read path is correct (HW-confirmed 2026-06-12: with the real dump the board
+//   clears -11N, the CD installer runs, and this in-game check passes). The earlier
+//   "byte-pointer" fix and the M10K register-shadow fix were both wrong turns (the
+//   shadow was reverted); the read path was right all along.
 //
 // WHY THIS TB EXISTS:
 //   The standalone in-game security check does ONE authenticated block-0 read
 //   (covered by tb_x76f100 / tb_s573_seccart Part 1, both passing).  The
-//   hypbbc2p CD-INSTALLER instead does the disassembled (workflow wyjubeu7w)
+//   hypbbc2p in-game path (disassembled in workflow wyjubeu7w) instead does a
 //   multi-read sequence:
 //     * a password-auth READ + block-0 8-byte read  (Gate A, fn 0x80036ec4)
 //         checksum:  data[4] == (~(data[0]+data[1]) & 0xff)   (0x74 == 0x74)
 //     * a password-auth READ + TWO 8-byte reads (offset 0 then offset 8)
 //         (Gate B, fn 0x80025adc)   sum: (data[0..7]) & 0xff == 0xff
-//   On silicon the installer hits the -11N ("incorrect security cassette")
-//   wall, which is the Gate-A checksum failing -- i.e. a LATER read returns
-//   wrong-offset bytes than the FIRST read does.  This TB replays exactly that
-//   pattern (the prior TBs only ever did a SINGLE read after auth, so they were
-//   blind to a byte-pointer / read-after-password / re-auth state bug).
+//   This TB replays exactly that pattern as a regression guard for the
+//   read-after-password / multi-read offset behavior (the prior TBs only ever did
+//   a SINGLE read after auth).
 //
 //   The X76F100 has NO host load port, so we seed the three gate-relevant data
 //   bytes the protocol-legal way -- an authenticated WRITE of block 0 with the
@@ -161,7 +171,7 @@ module tb_x76f100_hypbbc2p;
                 $display("FAIL [%0s]: data[1]=%02h (want 41 'A') -> wrong-offset read",
                          tag, rd[1]); errors = errors + 1; end
             if (rd[4] !== cksum) begin
-                $display("FAIL [%0s]: data[4]=%02h != checksum ~(d0+d1)=%02h -> the -11N",
+                $display("FAIL [%0s]: data[4]=%02h != checksum ~(d0+d1)=%02h -> the in-game -3N",
                          tag, rd[4], cksum); errors = errors + 1; end
             else
                 $display("  [%0s] checksum data[4]=%02h == ~(d0+d1)=%02h  OK",

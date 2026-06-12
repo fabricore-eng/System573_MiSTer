@@ -2,9 +2,26 @@
 # -----------------------------------------------------------------------------
 # gen_seccart_u1.py - synthesize a System 573 X76F100 security-cassette .u1 image
 #
-# WHY THIS IS A SYNTHESIZED TOKEN (not a copyrighted dump):
-#   The hypbbc2p security check lives in the GAME PROGRAM (loaded from CD), fn
-#   0x80036ec4 (disassembled in workflow w135q1s92). It:
+# *** SCOPE / IMPORTANT (corrected 2026-06-12 after the first HW boot of hypbbc2p) ***
+#   This synthesized .u1 satisfies ONLY the IN-GAME security check (game fn
+#   0x80036ec4, which runs from the CD-loaded program). It does NOT satisfy the
+#   573 BIOS BOOT-TIME cassette SIGNATURE check -- the wall that shows on-screen
+#   as "-11N". The BIOS reads cassette blocks 0,0,1,2 at boot and verifies an
+#   authentic signature in block 1 (data[8:15] = 81 00 29 00 00 18 eb 52). That
+#   signature is authentic-DUMP data: it is NOT derivable from anything the game
+#   plaintext carries. So to actually BOOT hypbbc2p on hardware you MUST stage the
+#   real gx908ja.u1 dump (as games/System573/hypbbc2p.u1) -- treat it like a BIOS,
+#   a required user-supplied artifact. The MAME-"BAD_DUMP" gx908ja.u1 (crc
+#   8900eaff) is functionally complete and works.
+#
+#   This script remains useful for ANALYZING / unit-testing the in-game check; it
+#   does NOT replace the real dump. (HW-confirmed 2026-06-12: the synth .u1 stalls
+#   at the BIOS -11N before the CD program ever loads, so fn 0x80036ec4 is never
+#   reached; with the real gx908ja.u1 the board boots and runs.)
+#
+# WHAT THE SYNTHESIZED TOKEN COVERS (the in-game check only):
+#   The hypbbc2p in-game security check is fn 0x80036ec4 (disassembled in workflow
+#   w135q1s92). It:
 #     (1) checks DSR presence,
 #     (2) identifies the cart type via the X76F100 response-to-reset
 #         (19 00 AA 55 = X76F100),
@@ -16,9 +33,9 @@
 #         checksum byte data[4] == (~(data[0]+data[1]) & 0xff) (= 0x74 for "JA");
 #         everything else is don't-care,
 #     (5) the write-back path is always skipped.
-#   So the entire authentication token is reconstructable from plaintext the game
-#   itself contains -- no secret we lack. The real gx908ja.u1 in MAME is flagged
-#   BAD_DUMP and is irrelevant: we synthesize the minimal image the check accepts.
+#   The in-game token above is reconstructable from plaintext the game carries --
+#   but, again, that only matters AFTER the CD program loads, which only happens
+#   once the BIOS -11N signature check (real-dump-only) has passed.
 #
 # IMAGE LAYOUT (MAME machine/x76f100.cpp nvram order; 132 bytes total):
 #   [  0:  4] response-to-reset : 19 00 AA 55       (hard-wired in RTL rtr_val())

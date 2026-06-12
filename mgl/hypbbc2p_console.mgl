@@ -5,15 +5,25 @@
   device set to CD-ROM, the BIOS runs the CD installer which re-programs the (now
   WRITABLE) onboard flash from the disc and writes an "installed" signature to NVRAM.
 
-  hypbbc2p DOES run an in-game X76F100 security check (game fn 0x80036ec4, disassembled
-  in workflow w135q1s92): it reads the cassette with the plaintext read password
-  e9 34 df 40 7a d1 a7 ff and checks data[0:2]=="JA" + data[4]==~(d0+d1)&0xff. A blank
-  chip (read pw = 0) NAKs -> the game returns -3 = the on-screen "-3N INCORRECT SECURITY
-  CASSETTE" wall. We therefore load a SYNTHESIZED X76F100 .u1 (tools/gen_seccart_u1.py;
-  132 B, region JAA) on ioctl index 4 (= seceep per emu.sv:693; a 132-B image latches as
-  X76F100 per the >=560 ZS01 / >=256 F041 / else F100 size tiers). The .u1 is a token
-  reconstructed entirely from plaintext the game itself carries -- not a copyrighted dump
-  (the real gx908ja.u1 is BAD_DUMP and irrelevant).
+  SECURITY CASSETTE -- REQUIRES THE REAL gx908ja.u1 DUMP (corrected 2026-06-12):
+  This .mgl loads games/System573/hypbbc2p.u1 on ioctl index 4 (= seceep per emu.sv:693;
+  a 132-B image latches as X76F100 per the >=560 ZS01 / >=256 F041 / else F100 size
+  tiers). That file MUST be the AUTHENTIC gx908ja.u1 dump, staged as hypbbc2p.u1 -- treat
+  it like a BIOS, a required user-supplied artifact. (The MAME-"BAD_DUMP" gx908ja.u1,
+  crc 8900eaff, is functionally complete and works -- HW-confirmed: boots+runs.)
+
+  Why the SYNTH .u1 is NOT enough: there are TWO cassette checks.
+    * BIOS BOOT signature check (runs FIRST, before the CD program loads): the BIOS
+      reads cassette blocks 0,0,1,2 and verifies an authentic signature in block 1
+      (data[8:15] = 81 00 29 00 00 18 eb 52). That signature is authentic-dump data,
+      NOT derivable from game plaintext. A synthesized .u1 (tools/gen_seccart_u1.py)
+      FAILS this and stalls at the on-screen "-11N" wall -- the CD program never loads.
+    * In-game X76F100 check (game fn 0x80036ec4, disassembled in workflow w135q1s92,
+      runs AFTER the CD program loads): plaintext read password e9 34 df 40 7a d1 a7 ff,
+      then data[0:2]=="JA" + data[4]==~(d0+d1)&0xff. THIS is what gen_seccart_u1.py
+      satisfies -- but with the synth .u1 the boot never reaches it.
+  So: gen_seccart_u1.py is useful only for analyzing/unit-testing the in-game check;
+  the real gx908ja.u1 is required to actually boot.
 
   TEST PROCEDURE (de-confounded: warm-reboot the MiSTer, /proc/uptime < 60s, then ONE
   load via this .mgl):
@@ -21,8 +31,12 @@
     3. Let the installer run (it can be lengthy -- the install copies CD -> flash).
     4. After install completes, set "573 Boot Device" -> Flash ROM and reload to run the
        installed game.  (This mirrors the real hardware DIP SW4 install workflow.)
-  NOTE: the CD-read path (s573_cdimg/atapi) has only ever been validated in SIM -- this
-  is also its first real-hardware exercise. Judge every result with frame_diff, not vision.
+  STATUS (2026-06-12): with the real gx908ja.u1 staged as hypbbc2p.u1 this path now WORKS
+  on real hardware (de10) -- it clears the -11N security wall, the CD/ATAPI installer
+  copies the disc to onboard flash (first HW run of the CD path; previously sim-only),
+  the in-game ROM check is all-OK, and the attract/demo loop runs (boot-stage frame
+  progression 1.9KB->29KB->38KB + an unambiguous game frame). Judge results with
+  frame_diff, not vision.
 
   Requires: _Console/Konami_System_573.rbf + games/System573/{573bios.bin,
   flash16m_blank.bin, nvram8k_blank.bin, hypbbc2p.chd}.

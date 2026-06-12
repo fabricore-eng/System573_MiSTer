@@ -36,6 +36,20 @@ The full register map (transcribed from psx-spx) lives in
 
 ## Status — honest accounting
 
+**Latest milestone (2026-06-12): two games boot and run on real hardware.**
+Game #1 **hyperbbc** (flash-only) boots, runs, and has audio. Game #2
+**hypbbc2p** (*Hyper Bishi Bashi Champ 2P*) — the first **CD-install** title —
+now **boots and runs on real hardware** (de10): the authentic `gx908ja.u1`
+security cassette clears the on-screen `-11N` BIOS signature wall, the CD/ATAPI
+installer copies the disc to onboard flash (the **first hardware exercise of the
+CD path**, previously sim-only), the flash programs, the in-game ROM check passes,
+and the attract/demo loop runs. So the **security-cassette + CD-install path is
+validated on hardware**. Note: hypbbc2p requires the real `gx908ja.u1` dump —
+the BIOS reads a boot-time cassette **signature** (cassette block 1) that is
+authentic-dump data, not synthesizable from game plaintext, so the real dump is a
+required user-supplied artifact (treat it like a BIOS). The MAME-`BAD_DUMP`
+`gx908ja.u1` (crc 8900eaff) is functionally complete and works.
+
 The 573-specific hardware is **implemented and unit-tested**, the **PlayStation
 core is integrated over EXP1**, the **Konami BIOS executes in full-system
 simulation**, and — as of 2026-06-02 — **the core boots that BIOS and displays it
