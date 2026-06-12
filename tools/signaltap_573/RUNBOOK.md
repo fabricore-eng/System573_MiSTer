@@ -222,3 +222,83 @@ one HARDWARE ERROR remains n=1 (correlated with armed-through-boot + a
 killed agent).
 .stp variants for the word-boundary probe: clut_race_word_u2anchor.stp
 (U2-anchored) and clut_race_word_u1alt.stp (U1 alternate trigger).
+
+---
+
+# X76F100 SECURITY-CASSETTE READ probe (the hypbbc2p installer -11N)
+
+A SEPARATE probe, same machinery, different target. Files:
+`cassette_read_stp.tcl` (generator), `cassette_read.stp`, `cassette_qsf_gen.tcl`
++ `cassette_signaltap.qsf.snippet` (QSF preserves), `cassette_capture.sh`.
+Debug branch: **dbg-signaltap-cassette** (based on feat-flash-load -- which
+carries the .u1-loading x76f100 + the b2732db read-byte-pointer fix). NEVER
+merge it. feat-flash-load's production QSF stays clean.
+
+## What it answers
+The hypbbc2p CD installer fails its security check with -11N on silicon even
+though SIM passes it: the installer's Gate-A read of X76F100 block 0 should
+return data[0]=0x4a('J') data[1]=0x41('A') data[4]=0x74 (=~(0x4a+0x41)&0xff),
+and the check is data[0..1]=="JA" + the data[4] checksum (game fn 0x80036ec4;
+the synth .u1 from tools/gen_seccart_u1.py supplies exactly these). Three
+hypotheses, decided by the capture:
+  (a) data[] never LOADED right on silicon  -> the boot .u1 load delivered wrong
+      bytes (watch ram_we/ram_waddr/ram_wdata at boot; RECON=load).
+  (b) data[] loaded fine but the READ returns wrong-offset/garbage bytes during
+      the installer's access pattern -> watch the read FSM + the M10K read port.
+  (c) a bit-bang timing/metastability fault on the real cassette lines.
+
+## Watch list (70 bits, ALL clk_1x registers)
+state(3) bitc(4) bytec(8) command(8) shift(8) data_rdata(8) rd_addr(7) rd_oob(1)
+ram_we(1) ram_waddr(7) ram_wdata(8) pw_ok(1) d_q[4:0](5) sda_o(1).
+  - data[] is M10K block RAM -> its cells (data[0] etc.) are UNTAPPABLE. The
+    READ port data_rdata (== what is shifted onto SDA at bitc==0 of an ST_READ
+    byte) and the WRITE port ram_* (== what the .u1 load wrote) are the
+    authoritative loaded-value witnesses.
+  - bit-bang lines are tapped at the REGISTERED seccart latch d_q (s573_seccart.v
+    :88), NOT the folded x76f100 chip pins: Quartus 17.0 QSF REJECTS `KEEP ON`
+    (Error 125048) and a folded comb net is fragile. d_q[0]=SDA d_q[1]=SCL
+    d_q[2]=CS d_q[3]=RST d_q[4]=DS2401. sda_o (device output reg) == sec_io0 for
+    an X76F100 so it doubles as the seccart readback the BIOS samples.
+  - acq clock = clk_1x PLL net outclk_wire[0] (the cassette domain), NOT clk_2x.
+
+## Trigger (default = READ): state==ST_READ(5) && bitc==0
+The cycle the device drives data byte 0 onto SDA. TRIG_POS=post -> ~7/8
+pre-trigger history holds the preceding cmd+password+verify. RECON modes
+(regen-only, NO rebuild -- every node is a trigger input):
+  RECON=load    (hyp a; trigger on a data[] write at boot, qual=ram_we, POS=pre)
+  RECON=anyread (state==ST_READ any bitc -- liveness)
+  RECON=rtr     (state==ST_RTR -- response-to-reset anchor)
+  RECON=verify  (state==ST_VERIFY,bitc==0 -- the auth gate; pw_ok in buffer)
+
+## TURNKEY capture recipe (next board session, de-confounded)
+1. Build is dbg-signaltap-cassette via the hub launcher. Apply ALL post-build
+   gates (above): 136017==0, M10K==baseline+~50, auto_signaltap present, crc[]
+   tie pattern MIXED. (At --enable time these were already verified: SLD_SAMPLE_
+   DEPTH=8192, acq_clk->outclk_wire[0], crc 12 vcc/20 gnd, 174 CONNECT_TO_SLD.)
+2. Deploy the instrumented .rbf; warm-reboot the MiSTer; /proc/uptime<60s; then
+   EXACTLY ONE load via the hypbbc2p install .mgl (mgl/hypbbc2p_console.mgl),
+   OSD -> 573 Boot Device -> CD-ROM so the installer runs.
+3. ARM AT T0+5s (the boot-window flow -- NEVER arm before the load): from the Mac
+       tools/signaltap_573/cassette_capture.sh 300
+   The cassette read fires ONCE early in the installer; ROM streaming delays it
+   enough that arm-at-T0+5s wins the race. If NO-TRIGGER, re-arm after a fresh
+   de-confounded load, or regen with RECON=anyread to catch ANY ST_READ.
+4. Decode + READ THE NUMBER:
+       python3 tools/signaltap_573/read_stp_csv.py <csv> info
+       python3 tools/signaltap_573/read_stp_csv.py <csv> \
+           dump --signals state,command,bytec,rd_addr,rd_oob,data_rdata,sda_o,shift,d_q,pw_ok \
+           --range <trig-300>:<trig+10>
+   (read_stp_csv.py is reference-agnostic; the build-9 storage-qualifier "gold"
+   anchor doesn't apply here but the generic anchors -- cell validity, 8-bit bus
+   stability, sample monotonicity -- calibrate the shift. Pass --shift if needed.)
+
+## Verdict table (what to look for)
+| Observation at the Gate-A block-0 read | Verdict / hypothesis |
+|---|---|
+| RECON=load shows ram_wdata at ram_waddr 0/1/4 != 4a/41/74 | (a) the .u1 LOAD delivered wrong bytes on silicon (load/delivery bug -- e.g. the WIDE byte-unpack, like the old NVRAM odd-byte drop) |
+| Load good (4a@0/41@1/74@4) BUT at ST_READ the read pointer (bytec / rd_addr) for Gate A does NOT start at offset 0 (e.g. lands at 8 -- the b2732db no-repeated-START path) | (b) read-FSM offset bug: the installer's access pattern hits the wrong offset on silicon |
+| Load good, rd_addr==0/1/.. correct, but data_rdata at those offsets != 4a/41/74 | (b) M10K read DELIVERS wrong bytes (read-port silicon bug) |
+| data_rdata correct (4a/41/74) but sda_o's MSB-first drain at each byte != data_rdata bits, or sda_o disagrees across SCL edges | (c) bit-bang/serial timing or metastability on the cassette lines |
+| state never reaches ST_READ while the installer runs (RECON=anyread silent), or pw_ok==0 at ST_VERIFY (RECON=verify) | NOT the checksum at all -- the read never happened / password auth NAK'd (a different, upstream gate) |
+Quote sample indices + the decoded bytes in any status post -- NEVER "looks
+right". This build is NOT proven until a capture decodes a number.
