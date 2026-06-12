@@ -123,7 +123,12 @@ PATCHES=( "$ROOT/psx_patches/0001-s573-exp1-widening.patch" \
           # 0024 = SIO1 DSR cassette presence: the BIOS leaf 0x80038A28 polls SIO1_STAT
           # (0x1F801054) bit 7 (DSR); every real security cassette asserts slot DSR
           # (local/seccart_presence/) show ZERO SIO1 writes, so no IRQ work is needed.
-          "$ROOT/psx_patches/0024-s573-sio1-dsr-presence.patch" )
+          "$ROOT/psx_patches/0024-s573-sio1-dsr-presence.patch" \
+          # 0025 = audio IIR low-pass -> PASSTHROUGH (resource recovery): frees ~436
+          # ALM + 8 DSP so the 16 MB flash-saver (persistence) fits + clears the 100%
+          # DSP wall. LOW risk: HPS-configured framework filter, zero boot exposure;
+          # drops only the optional audio low-pass. docs/audits/2026-06-12-resource-recovery-scope.md
+          "$ROOT/psx_patches/0025-s573-audio-iir-passthrough.patch" )
 
 if [ ! -e "$PSX/.git" ]; then
   echo "error: psx submodule not initialised. Run: git submodule update --init psx" >&2

@@ -1,0 +1,40 @@
+diff --git a/sys/audio_out.v b/sys/audio_out.v
+index 0f748e0..54c8218 100644
+--- a/sys/audio_out.v
++++ b/sys/audio_out.v
+@@ -176,28 +176,13 @@ always @(posedge clk, posedge reset) begin
+ 	end
+ end
+ 
+-wire [15:0] acl, acr;
+-IIR_filter #(.use_params(0)) IIR_filter
+-(
+-	.clk(clk),
+-	.reset(reset),
+-
+-	.ce(flt_ce & a_en1),
+-	.sample_ce(sample_ce),
+-
+-	.cx(cx),
+-	.cx0(cx0),
+-	.cx1(cx1),
+-	.cx2(cx2),
+-	.cy0(cy0),
+-	.cy1(cy1),
+-	.cy2(cy2),
+-
+-	.input_l({~is_signed ^ cl[15], cl[14:0]}),
+-	.input_r({~is_signed ^ cr[15], cr[14:0]}),
+-	.output_l(acl),
+-	.output_r(acr)
+-);
++// S573 psx_patch 0025: IIR low-pass -> PASSTHROUGH. Frees ~436 ALM + 8 DSP (clears
++// the 100% DSP wall + the LAB-packing hotspot) so the 16 MB flash-saver fits.
++// Keeps the sign adjustment + DC_blocker + mixer; drops only the optional audio
++// low-pass (an HPS-configured framework filter the BIOS/game cannot address ->
++// zero functional/boot exposure). See docs/audits/2026-06-12-resource-recovery-scope.md.
++wire [15:0] acl = {~is_signed ^ cl[15], cl[14:0]};
++wire [15:0] acr = {~is_signed ^ cr[15], cr[14:0]};
+ 
+ wire [15:0] adl;
+ DC_blocker dcb_l
