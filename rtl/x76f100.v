@@ -91,6 +91,20 @@ module x76f100 #(
     reg [7:0] rpw  [0:7];   // read password
     reg [7:0] wbuf [0:7];   // input byte buffer (password / write data)
 
+    // ---- block-0 REGISTER SHADOW (silicon-robust read path) ----
+    // The security gates (game fn 0x80036ec4 / installer fn 0x8003854c) only ever
+    // read BLOCK 0 (offsets 0..7: region "JA" at 0/1, checksum at 4). data[] is M10K
+    // block RAM, and on silicon the M10K read path delivers the WRONG bytes for that
+    // gate read even though SIM passes bit-exact vs MAME (the -11N wall: the password,
+    // which lives in a REGISTER file, loads fine -> we get past -3N; only the M10K
+    // data[] read fails -> -11N). So mirror every write to block 0 (whether from the
+    // boot .u1 load port or the protocol WRITE burst) into an 8-byte REGISTER file --
+    // the same flip-flop path that loads rpw correctly on silicon -- and serve block-0
+    // reads from it, bypassing the M10K entirely. 8 bytes = 64 FFs (the full 112-byte
+    // FF array is what blew up synth in d0d9f61; 8 bytes is trivial and fits). Blocks
+    // 1..13 still read from the M10K (only block 0 is security-critical).
+    reg [7:0] data0_shadow [0:7];
+
     // ---- image-load byte-offset map (MAME x76f100 nvram layout) ----
     // 4-byte RTR header at [0:3] is consumed but not stored (RTR is constant).
     localparam integer LD_WPW  = 4;     // write password [4:11]
@@ -110,6 +124,8 @@ module x76f100 #(
         end
         for (k = 0; k < 112; k = k + 1)
             data[k] = k[7:0]; // deterministic default pattern for simulation
+        for (k = 0; k < 8; k = k + 1)
+            data0_shadow[k] = k[7:0]; // mirror data[0..7] default (block-0 register shadow)
     end
 
     // ---- data[] single write port + registered read port (block-RAM friendly) ----
@@ -171,6 +187,9 @@ module x76f100 #(
         rd_oob     <= rd_oob_next;
         data_rdata <= data[rd_addr];
         if (ram_we) data[ram_waddr] <= ram_wdata;
+        // mirror block-0 writes into the register shadow (same write source as the
+        // M10K cell, so the shadow always equals data[0..7] -- in sim AND on silicon).
+        if (ram_we && ram_waddr < 7'd8) data0_shadow[ram_waddr[2:0]] <= ram_wdata;
     end
 
     always @(posedge clk) begin
@@ -384,10 +403,15 @@ module x76f100 #(
                     end else if (state == ST_READ) begin
                         if (bitc < 4'd8) begin
                             if (bitc == 4'd0)
-                                // registered read: data_rdata == data[off] (rd_addr
-                                // tracked the offset one cycle ahead); rd_oob streams
-                                // 0x00 for offsets past the 112-byte body.
-                                s = rd_oob ? 8'h00 : data_rdata;
+                                // Block 0 (offset 0..7, the security-critical block) is
+                                // served from the REGISTER shadow -- the silicon-robust
+                                // path that bypasses the M10K read (see data0_shadow).
+                                // rd_off_next == {command[4:1],3'b000}+bytec is the offset
+                                // of the byte now being shifted out (stable at bitc==0).
+                                // Other blocks: registered M10K read (data_rdata, rd_addr
+                                // tracked one cycle ahead); rd_oob streams 0x00 past 112 B.
+                                s = (rd_off_next < 8'd8) ? data0_shadow[rd_off_next[2:0]]
+                                                         : (rd_oob ? 8'h00 : data_rdata);
                             else
                                 s = shift;
                             sda_o <= s[7];
