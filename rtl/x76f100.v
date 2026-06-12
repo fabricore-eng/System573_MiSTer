@@ -297,6 +297,16 @@ module x76f100 #(
                                     wbuf[bytec] <= shift;
                                     if (bytec == 8'd7) begin
                                         state <= ST_VERIFY;
+                                        // MAME parity: the password load is
+                                        // m_write_buffer[m_byte++], so after the 8th
+                                        // byte m_byte == 8 -- and is NOT reset by the
+                                        // verify.  A subsequent READ with no repeated
+                                        // START therefore begins at block_base+8 (the
+                                        // installer's repeated START before the 0x55
+                                        // resets it to 0; this only matters for the
+                                        // no-repeated-START path).  Advance bytec to 8
+                                        // here too instead of leaving it at 7.
+                                        bytec <= 8'd8;
                                         // compare against selected password
                                         // (read pw if (cmd & 0xe1)==0x81)
                                         match = 1'b1;
