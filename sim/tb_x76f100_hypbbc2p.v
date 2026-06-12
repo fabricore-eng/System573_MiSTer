@@ -1,43 +1,44 @@
 `timescale 1ns/1ps
 // -----------------------------------------------------------------------------
-// tb_x76f100_hypbbc2p.v - RED/GREEN reproduction of the hypbbc2p in-game security
-// check (game fn 0x80036ec4, disassembled in workflow w135q1s92), proving the new
-// x76f100.v image-LOAD port turns the "-3N INCORRECT SECURITY CASSETTE" wall green.
+// tb_x76f100_hypbbc2p.v - replay the hypbbc2p CD-installer's X76F100 READ
+// sequence against x76f100.v and assert the gate-relevant bytes.
 //
-// The game program (loaded from CD) authenticates the X76F100 by sending an 8-byte
-// READ PASSWORD it carries in plaintext:  e9 34 df 40 7a d1 a7 ff
-// On a mismatch the chip NAKs the 0x55 verify byte and the game returns -3. On a
-// match it READs the cassette and checks ONLY:
-//   data[0] == 0x4a && data[1] == 0x41          ("JA" region)
-//   data[4] == (~(data[0] + data[1]) & 0xff)     (= 0x74 for "JA")
+// WHY THIS TB EXISTS:
+//   The standalone in-game security check does ONE authenticated block-0 read
+//   (covered by tb_x76f100 / tb_s573_seccart Part 1, both passing).  The
+//   hypbbc2p CD-INSTALLER instead does the disassembled (workflow wyjubeu7w)
+//   multi-read sequence:
+//     * a password-auth READ + block-0 8-byte read  (Gate A, fn 0x80036ec4)
+//         checksum:  data[4] == (~(data[0]+data[1]) & 0xff)   (0x74 == 0x74)
+//     * a password-auth READ + TWO 8-byte reads (offset 0 then offset 8)
+//         (Gate B, fn 0x80025adc)   sum: (data[0..7]) & 0xff == 0xff
+//   On silicon the installer hits the -11N ("incorrect security cassette")
+//   wall, which is the Gate-A checksum failing -- i.e. a LATER read returns
+//   wrong-offset bytes than the FIRST read does.  This TB replays exactly that
+//   pattern (the prior TBs only ever did a SINGLE read after auth, so they were
+//   blind to a byte-pointer / read-after-password / re-auth state bug).
 //
-//   RED   : no image loaded (read pw defaults to 0) -> verify NAKs -> BIOS code -3.
-//   GREEN : load the synth .u1 -> verify ACCEPTs -> read data -> all predicates pass.
-//   CONTROLS: a zero-password image still NAKs (-3 calibration); a correct-pw image
-//             whose data[4] is wrong fails the checksum predicate (-11N calibration).
+//   The X76F100 has NO host load port, so we seed the three gate-relevant data
+//   bytes the protocol-legal way -- an authenticated WRITE of block 0 with the
+//   synth-.u1 contents (data[0]=0x4a 'J', data[1]=0x41 'A', data[4]=0x74) -- then
+//   replay the installer reads against that NVRAM.
 //
-// Pure-Verilog -- the X76F100 model is Verilog, so no VHDL/NVC is needed. The host
-// bit-bang primitives mirror tb_x76f100.v exactly.
+// SDA is split into host-driven (sda_m -> dut.sda_i) and device-driven
+// (dut.sda_o), exactly as tb_x76f100.v does.
 // -----------------------------------------------------------------------------
 module tb_x76f100_hypbbc2p;
-    // The game's plaintext read password (sent MSB-first as 8 bytes).
-    localparam [63:0] HYPBBC2P_READ_PW = 64'he934_df40_7ad1_a7ff;
+    // The synth .u1 carries the read password in plaintext (gen_seccart_u1.py).
+    localparam [63:0] READ_PASSWORD  = 64'he934_df40_7ad1_a7ff;
+    localparam [63:0] WRITE_PASSWORD = 64'h0000_0000_0000_0000;
 
     reg  clk = 0, rst = 1;
     reg  cs = 1, sec_rst = 0, scl = 0, sda_m = 1;
     wire sda_o;
-    // image-load port
-    reg        load_we   = 0;
-    reg [9:0]  load_addr = 0;
-    reg [7:0]  load_data = 0;
     integer errors = 0;
 
-    // NOTE: the params default to 0 (a blank chip), exactly the silicon wall. The
-    // GREEN case overrides them via the new load port -- never via the params.
-    x76f100 dut (
+    x76f100 #(.READ_PASSWORD(READ_PASSWORD), .WRITE_PASSWORD(WRITE_PASSWORD)) dut (
         .clk(clk), .rst(rst), .cs(cs), .sec_rst(sec_rst),
-        .scl(scl), .sda_i(sda_m), .sda_o(sda_o),
-        .load_we(load_we), .load_addr(load_addr), .load_data(load_data)
+        .scl(scl), .sda_i(sda_m), .sda_o(sda_o)
     );
 
     always #5 clk = ~clk;
@@ -47,11 +48,10 @@ module tb_x76f100_hypbbc2p;
         pwbyte = pw[8*(7-i) +: 8];
     endfunction
 
-    // ---- I2C-like master primitives (identical to tb_x76f100.v) ----
+    // ---- I2C-like master primitives (mirror tb_x76f100.v) ----
     task i2c_start; begin
         scl = 0; tk; sda_m = 1; tk; scl = 1; tk; sda_m = 0; tk; scl = 0; tk;
     end endtask
-
     task i2c_stop; begin
         scl = 0; tk; sda_m = 0; tk; scl = 1; tk; sda_m = 1; tk;
     end endtask
@@ -62,9 +62,7 @@ module tb_x76f100_hypbbc2p;
             for (i = 7; i >= 0; i = i - 1) begin
                 scl = 0; tk; sda_m = d[i]; tk; scl = 1; tk;
             end
-            scl = 0; tk; sda_m = 1; tk; scl = 1; tk; // 9th clock: read ack
-            ack = sda_o;
-            scl = 0; tk;
+            scl = 0; tk; sda_m = 1; tk; scl = 1; tk; ack = sda_o; scl = 0; tk;
         end
     endtask
 
@@ -76,183 +74,205 @@ module tb_x76f100_hypbbc2p;
                 scl = 0; tk; sda_m = 1; tk; scl = 1; tk;
                 d[i] = sda_o;
             end
-            scl = 0; tk; sda_m = ack_bit; tk; scl = 1; tk; // 9th clock: master ack
+            scl = 0; tk; sda_m = ack_bit; tk; scl = 1; tk;
             scl = 0; tk; sda_m = 1;
         end
     endtask
 
-    task read_rtr_byte(output [7:0] d);
-        integer i;
-        begin
-            d = 8'h00;
-            for (i = 0; i < 8; i = i + 1) begin
-                scl = 1; tk; scl = 0; tk;
-                d[i] = sda_o;
-            end
-        end
-    endtask
-
-    // Authenticate (command + 8 password bytes + 0x55 verify). ack = 0 accept, 1 NAK.
+    // Authenticate: command, 8 password bytes, 0x55 verify. ack = accept(0)/reject(1).
     task authenticate(input [7:0] cmd, input [63:0] pw, output ack);
         integer i; reg a;
         begin
             send_byte(cmd, a);
             for (i = 0; i < 8; i = i + 1) send_byte(pwbyte(pw, i), a);
-            send_byte(8'h55, ack); // verify; ack reflects accept(0)/reject(1)
+            send_byte(8'h55, ack);
         end
     endtask
 
-    // ---- the synthesized .u1 image (must match tools/gen_seccart_u1.py) ----
-    reg [7:0] u1 [0:131];
-
-    // Stream a 132-byte X76F100 .u1 image through the boot load port (byte at a time).
-    task load_image(input [8:0] len);
-        integer i;
+    // EXACT hypbbc2p installer framing (disassembled read primitive 0x8003854c):
+    //   START, command, 8 password bytes, REPEATED START, 0x55 verify, READ.
+    // The repeated START sits BEFORE the 0x55 verify byte -- this is what resets the
+    // device byte pointer to 0 so the data read starts at the block base (offset 0).
+    // (The in-game check uses the SAME primitive, hence the same framing.)
+    task authenticate_installer(input [7:0] cmd, input [63:0] pw, output ack);
+        integer i; reg a;
         begin
-            for (i = 0; i < len; i = i + 1) begin
-                @(posedge clk);
-                load_we   <= 1'b1;
-                load_addr <= i[9:0];
-                load_data <= u1[i];
-                @(posedge clk);
-                load_we   <= 1'b0;
-            end
-            @(posedge clk);
+            send_byte(cmd, a);
+            for (i = 0; i < 8; i = i + 1) send_byte(pwbyte(pw, i), a);
+            i2c_start;                       // repeated START before the verify byte
+            send_byte(8'h55, ack);
         end
     endtask
 
-    integer m;
-    task build_u1(input [7:0] d0, input [7:0] d1, input [7:0] d4);
+    // ---- seed three data bytes via an authenticated block-0 WRITE ----
+    // After this, data[0]=4a, data[1]=41, data[4]=74 (rest 0) -- the synth .u1.
+    reg [7:0] seed [0:7];
+    task seed_block0;
+        integer i; reg a;
         begin
-            for (m = 0; m < 132; m = m + 1) u1[m] = 8'h00;
-            u1[0]=8'h19; u1[1]=8'h00; u1[2]=8'haa; u1[3]=8'h55;        // RtR (dropped)
-            // [4:12] write password = 0 (already cleared)
-            u1[12]=8'he9; u1[13]=8'h34; u1[14]=8'hdf; u1[15]=8'h40;    // read pw
-            u1[16]=8'h7a; u1[17]=8'hd1; u1[18]=8'ha7; u1[19]=8'hff;
-            u1[20]=d0; u1[21]=d1; u1[24]=d4;                           // data[0],[1],[4]
-        end
-    endtask
-
-    task expect_eq(input [7:0] got, input [7:0] exp, input [127:0] what);
-        begin
-            if (got !== exp) begin
-                $display("FAIL: %0s = %02h (expected %02h)", what, got, exp);
+            for (i = 0; i < 8; i = i + 1) seed[i] = 8'h00;
+            seed[0] = 8'h4a; seed[1] = 8'h41; seed[4] = 8'h74;
+            i2c_start;
+            authenticate_installer(8'h80, WRITE_PASSWORD, a);  // 0x80 = WRITE block 0
+            if (a !== 1'b0) begin
+                $display("FAIL: seed write password not accepted (ack=%b)", a);
                 errors = errors + 1;
             end
-        end
-    endtask
-
-    integer i;
-    reg [7:0] r0, r1, r2, r3, d;
-    reg [7:0] dat [0:7];
-    reg       ack, pred_region, pred_csum, bios_pass;
-    reg       reset_dut;
-
-    // Pulse a system reset (clears only the volatile bit-bang state, NOT NVRAM).
-    task pulse_reset; begin
-        rst = 1; cs = 1; sec_rst = 0; scl = 0; sda_m = 1; tk; tk;
-        @(negedge clk); rst = 0; tk;
-    end endtask
-
-    // Run the full game-style check against the currently loaded NVRAM. Returns
-    // ack (verify NAK -> -3) and, on accept, the read-data predicates.
-    task run_check(output verify_ack, output [7:0] od0, output [7:0] od1, output [7:0] od4);
-        begin
-            cs = 0; tk;
-            sec_rst = 1; tk;                       // RtR
-            read_rtr_byte(r0); read_rtr_byte(r1);
-            read_rtr_byte(r2); read_rtr_byte(r3);
-            expect_eq(r0, 8'h19, "rtr0"); expect_eq(r1, 8'h00, "rtr1");
-            expect_eq(r2, 8'haa, "rtr2"); expect_eq(r3, 8'h55, "rtr3");
-            // step (3): authenticated READ with the game's plaintext read password.
-            i2c_stop; i2c_start;
-            authenticate(8'h81, HYPBBC2P_READ_PW, verify_ack);  // 0x81 = READ block 0
-            od0 = 8'h00; od1 = 8'h00; od4 = 8'h00;
-            if (verify_ack === 1'b0) begin
-                i2c_start;                          // repeated start: byte = 0
-                for (i = 0; i < 8; i = i + 1)
-                    read_byte((i == 7) ? 1'b1 : 1'b0, dat[i]);
-                od0 = dat[0]; od1 = dat[1]; od4 = dat[4];
-            end
+            for (i = 0; i < 8; i = i + 1) send_byte(seed[i], a);
             i2c_stop;
-            sec_rst = 0; cs = 1; tk;
         end
     endtask
 
-    reg [7:0] g0, g1, g4;
+    // A full installer-style "auth + read N bytes from block <cmd>" cycle, using the
+    // EXACT installer framing (repeated START before the 0x55 verify, then read with
+    // NO further repeated start -- the pointer is already reset).  Captures rd[].
+    reg [7:0] rd [0:15];
+    task auth_read_installer(input [7:0] cmd, input integer nbytes, input [127:0] tag);
+        integer i; reg a;
+        begin
+            i2c_start;
+            authenticate_installer(cmd, READ_PASSWORD, a);
+            if (a !== 1'b0) begin
+                $display("FAIL [%0s]: read password not accepted (ack=%b)", tag, a);
+                errors = errors + 1;
+            end
+            for (i = 0; i < nbytes; i = i + 1)
+                read_byte((i == nbytes-1) ? 1'b1 : 1'b0, rd[i]);
+            i2c_stop;
+        end
+    endtask
+
+    // The exact block-0 read cycle the installer/in-game checks use.
+    task auth_read_block0(input integer nbytes, input dummy, input [127:0] tag);
+        begin auth_read_installer(8'h81, nbytes, tag); end
+    endtask
+
+    // assert the Gate-A checksum on the captured block-0 bytes.
+    task check_gateA(input [127:0] tag);
+        reg [7:0] cksum;
+        begin
+            cksum = (~(rd[0] + rd[1])) & 8'hff;
+            $display("  [%0s] read block0 = %02h %02h %02h %02h %02h %02h %02h %02h",
+                     tag, rd[0],rd[1],rd[2],rd[3],rd[4],rd[5],rd[6],rd[7]);
+            if (rd[0] !== 8'h4a) begin
+                $display("FAIL [%0s]: data[0]=%02h (want 4a 'J') -> wrong-offset read",
+                         tag, rd[0]); errors = errors + 1; end
+            if (rd[1] !== 8'h41) begin
+                $display("FAIL [%0s]: data[1]=%02h (want 41 'A') -> wrong-offset read",
+                         tag, rd[1]); errors = errors + 1; end
+            if (rd[4] !== cksum) begin
+                $display("FAIL [%0s]: data[4]=%02h != checksum ~(d0+d1)=%02h -> the -11N",
+                         tag, rd[4], cksum); errors = errors + 1; end
+            else
+                $display("  [%0s] checksum data[4]=%02h == ~(d0+d1)=%02h  OK",
+                         tag, rd[4], cksum);
+        end
+    endtask
 
     initial begin
-        // =========================== RED ===========================
-        // No image loaded: the read password defaults to 0. The game sends
-        // e9 34 df 40 ... -> the chip NAKs the 0x55 verify -> game returns -3.
-        pulse_reset;
-        run_check(ack, g0, g1, g4);
-        $display("RED  : ack=%b (NAK=1 expected)  -> BIOS code %0d", ack, ack ? -3 : 0);
-        if (ack !== 1'b1) begin
-            $display("FAIL: RED expected NAK (the -3 wall) but the blank chip ACCEPTED");
-            errors = errors + 1;
+        repeat (4) @(posedge clk); @(negedge clk); rst = 0; tk;
+        cs = 0; tk;
+
+        // ---- seed the synth-.u1 bytes ----
+        seed_block0;
+
+        // =====================================================================
+        // The installer sequence: SEVERAL consecutive auth+read cycles.  The first
+        // read is the in-game-style single read (must pass).  The SUBSEQUENT reads
+        // are what the installer adds -- the suspected wrong-offset regression.
+        // =====================================================================
+
+        // (1) FIRST authenticated block-0 read -- the in-game path; must be correct.
+        auth_read_block0(8, 1'b1, "read#1");
+        check_gateA("read#1");
+
+        // (2) SECOND authenticated block-0 read immediately after #1 (re-auth).
+        //     This is Gate B's first read -- the installer re-runs the whole
+        //     auth+read with the SAME block 0.  A read-after-password / pointer
+        //     state bug shows up here as wrong bytes.
+        auth_read_block0(8, 1'b1, "read#2");
+        check_gateA("read#2");
+
+        // (3) THIRD authenticated block-0 read (Gate A is later called AGAIN).
+        auth_read_block0(8, 1'b1, "read#3");
+        check_gateA("read#3");
+
+        // (4) Gate-B: ONE installer-framed auth, then read block 0 (8 bytes); then a
+        //     SECOND installer-framed auth+read of block 0 (Gate B re-reads).  Each
+        //     read is its own auth+repeated-START+verify+read cycle (matching the
+        //     disassembled 0x80038be8 -> 0x8003854c twice).  The sum check uses the
+        //     block-0 bytes: 4a+41+00+00+74+00+00+00 = 0xff.
+        auth_read_installer(8'h81, 8, "read#4-gateB-r1");
+        if (((rd[0]+rd[1]+rd[2]+rd[3]+rd[4]+rd[5]+rd[6]+rd[7]) & 8'hff) !== 8'hff) begin
+            $display("FAIL [read#4-gateB-r1]: sum(data[0..7])&ff=%02h (want ff) -> Gate B -2",
+                (rd[0]+rd[1]+rd[2]+rd[3]+rd[4]+rd[5]+rd[6]+rd[7]) & 8'hff);
+            errors = errors + 1; end
+        else
+            $display("  [read#4-gateB-r1] block0 = %02h %02h %02h %02h %02h .. sum&ff = ff  OK",
+                rd[0],rd[1],rd[2],rd[3],rd[4]);
+        if (rd[0] !== 8'h4a || rd[1] !== 8'h41 || rd[4] !== 8'h74) begin
+            $display("FAIL [read#4-gateB-r1]: block0 = %02h %02h .. %02h (want 4a 41 .. 74)",
+                rd[0], rd[1], rd[4]); errors = errors + 1; end
+
+        // (5) Gate-B's second 8-byte read (re-auth + block 1, offset 8).
+        auth_read_installer(8'h83, 8, "read#5-gateB-r2");
+        $display("  [read#5-gateB-r2] block1 = %02h %02h %02h %02h %02h %02h %02h %02h",
+            rd[0],rd[1],rd[2],rd[3],rd[4],rd[5],rd[6],rd[7]);
+
+        // (6) THE INSTALL-CART TWO-ATTEMPT AUTH (per MAME x76f100.cpp comment): the 573
+        //     boot first tries the GAME password (NAK for an install cart), THEN the
+        //     INSTALL password (ACK).  This is the read-after-FAILED-password path that
+        //     a single-read TB never exercised.  After the wrong-pw NAK, the RIGHT-pw
+        //     read must still return the correct offset-0 bytes (4a 41 .. 74).
+        begin : two_attempt
+            integer i; reg a;
+            // attempt 1: WRONG (game) password -> must NAK, increments retry counter
+            i2c_start;
+            authenticate_installer(8'h81, 64'hDEAD_BEEF_CAFE_F00D, a);
+            if (a !== 1'b1) begin
+                $display("FAIL [read#6-attempt1]: wrong pw was ACCEPTED (ack=%b, want 1=NAK)", a);
+                errors = errors + 1; end
+            else
+                $display("  [read#6-attempt1] wrong (game) pw NAKed  OK");
+            i2c_stop;
+            // attempt 2: RIGHT (install) password -> must ACK and read correct bytes
+            auth_read_installer(8'h81, 8, "read#6-attempt2");
+            check_gateA("read#6-attempt2");
         end
 
-        // =========================== GREEN =========================
-        // Load the synth .u1 (correct read pw + JA region + valid checksum), then the
-        // identical game check now passes the password AND every data predicate.
-        build_u1(8'h4a, 8'h41, 8'h74);             // "JA", data[4]=~(4a+41)&ff=0x74
-        load_image(132);
-        pulse_reset;
-        run_check(ack, g0, g1, g4);
-        pred_region = (g0 == 8'h4a) && (g1 == 8'h41);
-        pred_csum   = ((~(g0 + g1)) & 8'hff) == g4;
-        bios_pass   = (ack === 1'b0) && pred_region && pred_csum;
-        $display("GREEN: ack=%b (ACCEPT=0)  data[0]=%02h data[1]=%02h data[4]=%02h",
-                 ack, g0, g1, g4);
-        $display("GREEN: region(\"JA\")=%b checksum=%b -> BIOS code %0d",
-                 pred_region, pred_csum, bios_pass ? 0 : -1);
-        if (ack !== 1'b0) begin
-            $display("FAIL: GREEN read password not accepted (ack=%b)", ack); errors = errors + 1;
-        end
-        expect_eq(g0, 8'h4a, "GREEN data[0]");
-        expect_eq(g1, 8'h41, "GREEN data[1]");
-        expect_eq(g4, 8'h74, "GREEN data[4]");
-        if (!pred_region) begin $display("FAIL: GREEN region predicate"); errors = errors + 1; end
-        if (!pred_csum)   begin $display("FAIL: GREEN checksum predicate"); errors = errors + 1; end
-        if (!bios_pass)   begin $display("FAIL: GREEN BIOS would not return 0"); errors = errors + 1; end
-
-        // ===================== CONTROL A: zero-pw image still NAKs (-3) ============
-        // An image whose READ PASSWORD is all-zero must NAK exactly like the blank
-        // chip -- proves the GREEN accept comes from the loaded password, not the load
-        // port short-circuiting authentication.
-        build_u1(8'h4a, 8'h41, 8'h74);
-        u1[12]=8'h00; u1[13]=8'h00; u1[14]=8'h00; u1[15]=8'h00;
-        u1[16]=8'h00; u1[17]=8'h00; u1[18]=8'h00; u1[19]=8'h00;
-        load_image(132);
-        pulse_reset;
-        run_check(ack, g0, g1, g4);
-        $display("CTRL-A: zero-pw image ack=%b -> BIOS code %0d (NAK/-3 expected)",
-                 ack, ack ? -3 : 0);
-        if (ack !== 1'b1) begin
-            $display("FAIL: CTRL-A zero-pw image should NAK (-3)"); errors = errors + 1;
-        end
-
-        // ===================== CONTROL B: correct pw but bad data[4] -> predicate fail
-        // The password matches (verify ACCEPTs, the read succeeds) but data[4] is wrong,
-        // so the game's checksum predicate fails -- this calibrates the -11N path
-        // (auth OK, data invalid), distinct from the -3 (auth) wall.
-        build_u1(8'h4a, 8'h41, 8'h00);             // checksum byte deliberately wrong
-        load_image(132);
-        pulse_reset;
-        run_check(ack, g0, g1, g4);
-        pred_csum = ((~(g0 + g1)) & 8'hff) == g4;
-        $display("CTRL-B: correct-pw bad-csum ack=%b data[4]=%02h checksum=%b -> BIOS code %0d",
-                 ack, g4, pred_csum, (ack === 1'b0 && pred_csum) ? 0 : -11);
-        if (ack !== 1'b0) begin
-            $display("FAIL: CTRL-B password should still be accepted"); errors = errors + 1;
-        end
-        if (pred_csum) begin
-            $display("FAIL: CTRL-B checksum should FAIL with data[4]=00"); errors = errors + 1;
+        // (7) MAME-PARITY of the read byte-pointer after the 8-byte password load,
+        //     exercised via the NO-repeated-start framing (read straight after the
+        //     0x55 verify ack).  MAME's m_byte is left at 8 after the password load
+        //     (m_write_buffer[m_byte++]), so a block-0 read with no repeated start
+        //     returns data[8],data[9],... (offset 8).  This is NOT the installer
+        //     path (the installer issues a repeated START before the verify, which
+        //     resets the pointer to 0) -- it is a pure protocol-accuracy check that
+        //     the RTL's post-password byte counter matches the authoritative model.
+        //     Ground truth from the standalone MAME x76f100.cpp port:
+        //         GateA-norstart -> 08 09 0a 0b 0c 0d 0e 0f   (offset 8)
+        begin : mame_parity
+            integer i; reg a;
+            i2c_start;
+            authenticate(8'h81, READ_PASSWORD, a);   // NO repeated start before verify
+            if (a !== 1'b0) begin
+                $display("FAIL [read#7-mame-parity]: pw not accepted (ack=%b)", a);
+                errors = errors + 1; end
+            for (i = 0; i < 8; i = i + 1) rd[i] = 8'hxx;
+            for (i = 0; i < 8; i = i + 1) read_byte((i==7)?1'b1:1'b0, rd[i]);
+            i2c_stop;
+            $display("  [read#7-mame-parity] no-rstart block0 read = %02h %02h %02h %02h %02h %02h %02h %02h (MAME=08 09 0a 0b 0c 0d 0e 0f)",
+                rd[0],rd[1],rd[2],rd[3],rd[4],rd[5],rd[6],rd[7]);
+            // MAME leaves m_byte=8 after the password load -> first read byte = data[8]=0x08.
+            if (rd[0] !== 8'h08) begin
+                $display("FAIL [read#7-mame-parity]: post-password read offset != MAME (got data[?]=%02h, MAME data[8]=08) -- RTL byte pointer off-by-one",
+                    rd[0]);
+                errors = errors + 1; end
+            else
+                $display("  [read#7-mame-parity] post-password byte pointer == MAME (offset 8)  OK");
         end
 
         if (errors == 0)
-            $display("RESULT: PASS (x76f100_hypbbc2p)  RED=-3  GREEN=0  ctrls calibrate -3/-11");
+            $display("RESULT: PASS (x76f100_hypbbc2p)");
         else
             $display("RESULT: FAIL (x76f100_hypbbc2p, %0d errors)", errors);
         $finish;
