@@ -823,6 +823,12 @@ begin
       exp1_dataRead         => exp1_dataRead,
       exp1_wait             => '0',   -- NVC harness has no flash backing: never stall
       exp_irq10             => exp_irq10,
+      -- 573 ATAPI CD-ROM on DMA channel 5 (psx_patches/0023). This boot harness does not
+      -- exercise the CD-DMA datapath, so tie the inputs off and leave the read-enable open;
+      -- the real .rbf wires these to atapi.v (DMAREQ / DMA ch5 read strobe + data).
+      atapi_dmaRequest      => '0',
+      DMA_ATA_readEna       => open,
+      DMA_ATA_read          => (others => '0'),
       ram_refresh           => ram_refresh,
       ram_dataWrite         => ram_dataWrite,
       ram_dataRead32        => ram_dataRead32,
