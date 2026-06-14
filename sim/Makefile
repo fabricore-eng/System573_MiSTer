@@ -99,10 +99,22 @@ all:
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; \
 	else echo "SOME TESTS FAILED"; exit 1; fi
 
+# Optional `make S573_FLASH_OLD_AND=1 s573_flash_sdram` compiles s573_flash.v with
+# -DS573_FLASH_OLD_AND, restoring the buggy faithful-NOR AND on the SDRAM-backed
+# program path. The FIX-2 red/green test (tb_s573_flash_sdram #11) is RED under that
+# define and GREEN with the default (overwrite) build -- proof the test exercises the
+# fix without hand-reverting RTL. Default builds (and `all`) never set it.
+S573_FLASH_OLD_AND ?=
+ifeq ($(S573_FLASH_OLD_AND),1)
+DEFS := -DS573_FLASH_OLD_AND
+else
+DEFS :=
+endif
+
 # Template: compile tb_<name>.v + SRC_<name>, run, require "RESULT: PASS".
 define RUN_TEST
 $(1): | $(BUILD)
-	@$(IV) $(IVFLAGS) -o $(BUILD)/$(1).vvp $(SRC_$(1)) tb_$(1).v 2> $(BUILD)/$(1).log; \
+	@$(IV) $(IVFLAGS) $(DEFS) -o $(BUILD)/$(1).vvp $(SRC_$(1)) tb_$(1).v 2> $(BUILD)/$(1).log; \
 	out=$$$$($(VVP) $(BUILD)/$(1).vvp 2>> $(BUILD)/$(1).log); \
 	echo "$$$$out" | grep -q "RESULT: PASS"; \
 	if [ $$$$? -eq 0 ]; then \

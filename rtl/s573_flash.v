@@ -93,8 +93,12 @@ module s573_flash #(
     // ch3 completion) ends it. Array reads stall (flash_ready=0) while a write is in
     // flight, so the BIOS's post-program AMD data-poll read serialises each
     // program -> SDRAM commit -> next program (no lost writes). ERASE is a no-op
-    // against the 0xFF-preloaded blank image (the command FSM still completes, and
-    // verify reads return 0xFFFF), so a single-pass install needs program only.
+    // here (the command FSM still completes, but the SDRAM backing is NOT preset to
+    // 0xFF). Because erase is a no-op, program must OVERWRITE the cell with the
+    // intended data, NOT apply a faithful NOR AND against the stale backing -- an
+    // AND against a 0x0000-backed cell would commit 0x0000 and corrupt the install
+    // (see the prog_now block below). A single-pass erase-then-program install
+    // therefore reaches the correct final image.
     output reg         flash_wr_req,     // pulse: request a 16-bit SDRAM write-back
     output reg         flash_wr_busy,    // LEVEL: held high for the whole write-back
                                          // transaction (req pulse .. ack). The parent
@@ -103,7 +107,7 @@ module s573_flash #(
                                          // presented until the SDRAM controller services
                                          // it (it samples the bus continuously).
     output reg  [26:0] flash_wr_addr,    // flat 16-bit word index (parent adds base)
-    output reg  [15:0] flash_wr_data,    // the programmed 16-bit word (NOR-ANDed)
+    output reg  [15:0] flash_wr_data,    // the programmed 16-bit word (overwrite, not NOR-ANDed)
     input  wire        flash_wr_ack,     // 1-cycle: the ch3 write completed
 
     // DEBUG (HW bring-up): observe WHY the fill FSM does/doesn't trigger. Round-2
@@ -273,20 +277,40 @@ module s573_flash #(
                 flash_wr_req  <= 1'b0;
 
                 // ---- NOR program write-back (write-through cache + ch3 write) ----
-                // prog_now is a one-cycle strobe on the program data write. Apply the
-                // NOR rule (cell &= data) against the cached word -- or 0xFFFF (erased)
-                // if this word's line isn't currently buffered, which is exactly right
-                // for a single-pass install into the 0xFF-preloaded blank image. Write
-                // the line buffer THROUGH (so the BIOS's verify read HITs the new value)
-                // and kick one 16-bit SDRAM write-back. Array reads stall while
-                // wr_pending (flash_ready below), so that verify read serialises this
-                // program's SDRAM commit before the next program can start.
-                // (prog_now never coincides with a fill: the bus is stalled during a
-                // fill, so the CPU cannot issue the program store until F_IDLE.)
+                // prog_now is a one-cycle strobe on the program data write. OVERWRITE
+                // the target word with the intended data (NOT cell &= data).
+                //
+                // Why overwrite, not a faithful NOR AND: in this SDRAM-backed mode the
+                // installer does erase-then-program-ONCE, and ERASE is treated as a
+                // no-op here (the SDRAM backing is NOT pre-set to 0xFF on erase). So a
+                // faithful AND corrupts the install: any word whose stale SDRAM/line
+                // backing is 0x0000 (rather than the 0xFF erased value the NOR rule
+                // assumes) would program to 0x0000 & data == 0x0000. A .sav-vs-MAME-
+                // golden diff confirmed exactly this signature -- a perfect bit-subset
+                // (hw & ~golden == 0), ~38% of data WORDS dropped to 0x0000, never a
+                // partial AND. Writing the data unconditionally matches the real
+                // erase-then-program-once install. Write the line buffer THROUGH (so the
+                // BIOS's verify read HITs the new value) and kick one 16-bit SDRAM
+                // write-back. Array reads stall while wr_pending (flash_ready below), so
+                // that verify read serialises this program's SDRAM commit before the
+                // next program can start. (prog_now never coincides with a fill: the bus
+                // is stalled during a fill, so the CPU cannot issue the program store
+                // until F_IDLE.) NOTE: the SIM_BACKING=1 inline flash_nor path keeps the
+                // faithful NOR AND for the unit tests; only this SDRAM-backed path
+                // overwrites.
                 if (prog_now) begin
+`ifdef S573_FLASH_OLD_AND
+                    // RED reference for the FIX-2 red/green test ONLY (never synthesised
+                    // -- no .sdc/.qsf define): the buggy faithful-NOR AND against stale
+                    // SDRAM backing that corrupted installs (tb_s573_flash_sdram #11).
                     if (tag_hit) line[req_idx] <= line[req_idx] & win_din;
                     flash_wr_addr <= {4'b0000, flash_word};
                     flash_wr_data <= (tag_hit ? line[req_idx] : 16'hFFFF) & win_din;
+`else
+                    if (tag_hit) line[req_idx] <= win_din;          // overwrite cache
+                    flash_wr_addr <= {4'b0000, flash_word};
+                    flash_wr_data <= win_din;                       // overwrite SDRAM (was: cached & win_din)
+`endif
                     flash_wr_req  <= 1'b1;
                     flash_wr_busy <= 1'b1;
                 end else if (flash_wr_ack) begin
