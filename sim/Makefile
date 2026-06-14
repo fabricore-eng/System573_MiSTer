@@ -10,7 +10,7 @@ IVFLAGS := -g2005-sv -Wall
 RTL     := ../rtl
 BUILD   := build
 
-TESTS := watchdog adc0834 m48t58 s573_nvram_loader s573_nvram_saver s573_seccart_loader ds2401 adc0838 x76f100 x76f100_hypbbc2p x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck s573_cdimg s573_cdtoc atapi_cdread cdboot
+TESTS := watchdog adc0834 m48t58 s573_nvram_loader s573_nvram_saver s573_flash_saver s573_ch4_arb s573_seccart_loader ds2401 adc0838 x76f100 x76f100_hypbbc2p x76f041 crc16 zs01 k573dio k573_mp3dec k573_mp3stream atapi irqdeliver s573_flash s573_flash_sdram s573_flash_image flash_nor s573_seccart s573_bus s573_io system573_top drivecheck s573_cdimg s573_cdtoc atapi_cdread cdboot
 
 # Per-test RTL dependencies
 SRC_watchdog      := $(RTL)/watchdog.v
@@ -19,6 +19,8 @@ SRC_adc0838       := $(RTL)/adc0838.v
 SRC_m48t58        := $(RTL)/m48t58.v
 SRC_s573_nvram_loader := $(RTL)/s573_nvram_loader.v $(RTL)/m48t58.v
 SRC_s573_nvram_saver  := $(RTL)/s573_nvram_saver.v $(RTL)/s573_nvram_loader.v $(RTL)/m48t58.v
+SRC_s573_flash_saver  := $(RTL)/s573_flash_saver.v
+SRC_s573_ch4_arb      := $(RTL)/s573_ch4_arb.v
 SRC_s573_seccart_loader := $(RTL)/s573_seccart_loader.v
 SRC_ds2401        := $(RTL)/ds2401.v
 SRC_x76f100       := $(RTL)/x76f100.v
@@ -98,10 +100,30 @@ all:
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; \
 	else echo "SOME TESTS FAILED"; exit 1; fi
 
+# Optional `make S573_FLASH_OLD_AND=1 s573_flash_sdram` compiles s573_flash.v with
+# -DS573_FLASH_OLD_AND, restoring the buggy faithful-NOR AND on the SDRAM-backed
+# program path. The FIX-2 red/green test (tb_s573_flash_sdram #11) is RED under that
+# define and GREEN with the default (overwrite) build -- proof the test exercises the
+# fix without hand-reverting RTL. Default builds (and `all`) never set it.
+# Optional `make S573_CH4_NOARB=1 s573_ch4_arb` compiles tb_s573_ch4_arb.v with
+# -DS573_CH4_NOARB, swapping the arbiter for the old bare ch4 mux. That TB is RED
+# under the define (the SAVE read samples the wrong offset at service time) and
+# GREEN by default (the arbiter holds the address) -- proof the test exercises the
+# fix without hand-reverting RTL. Default builds (and `all`) never set it.
+S573_FLASH_OLD_AND ?=
+S573_CH4_NOARB ?=
+DEFS :=
+ifeq ($(S573_FLASH_OLD_AND),1)
+DEFS += -DS573_FLASH_OLD_AND
+endif
+ifeq ($(S573_CH4_NOARB),1)
+DEFS += -DS573_CH4_NOARB
+endif
+
 # Template: compile tb_<name>.v + SRC_<name>, run, require "RESULT: PASS".
 define RUN_TEST
 $(1): | $(BUILD)
-	@$(IV) $(IVFLAGS) -o $(BUILD)/$(1).vvp $(SRC_$(1)) tb_$(1).v 2> $(BUILD)/$(1).log; \
+	@$(IV) $(IVFLAGS) $(DEFS) -o $(BUILD)/$(1).vvp $(SRC_$(1)) tb_$(1).v 2> $(BUILD)/$(1).log; \
 	out=$$$$($(VVP) $(BUILD)/$(1).vvp 2>> $(BUILD)/$(1).log); \
 	echo "$$$$out" | grep -q "RESULT: PASS"; \
 	if [ $$$$? -eq 0 ]; then \

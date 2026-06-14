@@ -253,21 +253,55 @@ module tb_s573_flash_sdram;
         flash_read(21'h300, v); chk(v, 16'h0F0F, "program 0x300 PERSISTED after evict");
         if (last_stall == 0) begin $display("FAIL: evicted 0x300 should MISS+refill"); errors=errors+1; end
 
-        // 9) CACHED program with the NOR AND rule: read word 0x305 (caches its line
-        //    with the factory value), then program 0xFF00 into it. The committed word
-        //    must be factory(0x305) & 0xFF00 (NOR only clears bits), and read back so.
+        // 9) CACHED program OVERWRITES (not NOR AND) on the SDRAM-backed path. Read
+        //    word 0x305 (caches its line with the factory value), then program 0xFF00
+        //    into it. The committed word must be exactly 0xFF00 -- the data, regardless
+        //    of the cached/backing prior value. (This deliberately ASSERTS the FIX-2
+        //    overwrite semantics: the SDRAM-backed flash treats ERASE as a no-op, so a
+        //    faithful NOR AND against stale backing corrupts the install. The faithful
+        //    NOR AND still lives in the SIM_BACKING=1 inline flash_nor path, covered by
+        //    s573_flash / flash_nor. Test #11 below proves the install-corruption case
+        //    red-vs-green.)
         flash_read(21'h305, v);            // cache 0x305's line (factory value)
         flash_program(21'h305, 16'hFF00);
         flash_read(21'h305, v);
-        chk(v, backing(23'h305) & 16'hFF00, "program cached 0x305 = factory & data");
+        chk(v, 16'hFF00, "program cached 0x305 OVERWRITES to data");
         // persist check after eviction
         flash_read(21'h980, v);            // evict
         flash_read(21'h305, v);
-        chk(v, backing(23'h305) & 16'hFF00, "program 0x305 PERSISTED (NOR AND) after evict");
+        chk(v, 16'hFF00, "program 0x305 PERSISTED (overwrite) after evict");
 
         // 10) program does NOT disturb the adjacent word (single-word, be=0011).
         //     0x300 was programmed; its pair-neighbour 0x301 must still be factory.
         flash_read(21'h301, v); chk(v, backing(23'h301), "neighbour 0x301 untouched by 0x300 program");
+
+        // 11) ★ FIX-2 RED/GREEN: install corruption over a 0x0000-backed cell.
+        //     Reproduces the HW signature (.sav-vs-MAME-golden: ~38% of data WORDS
+        //     dropped to exactly 0x0000, perfect bit-subset, never a partial AND).
+        //     The 573 installer ERASES then PROGRAMS ONCE; the SDRAM-backed flash
+        //     treats ERASE as a no-op, so the cell's prior backing is whatever stale
+        //     value was there -- here 0x0000, NOT the 0xFF erased value the NOR rule
+        //     assumes. Under the OLD `cached & win_din` code, programming 0xABCD into a
+        //     0x0000-backed cell commits 0x0000 & 0xABCD == 0x0000 (the corruption).
+        //     Under the FIX (overwrite), it commits 0xABCD. We assert 0xABCD, so the
+        //     test is GREEN on the fix and RED on the old AND-code (verified by
+        //     `make S573_FLASH_OLD_AND=1 s573_flash_sdram`, which compiles the old
+        //     SDRAM path via -DS573_FLASH_OLD_AND -- see s573_flash.v + Makefile).
+        //
+        //     Stage a 0x0000 backing: program 0x0000 into a fresh (erased/0xFFFF)
+        //     word, which under BOTH code paths commits 0x0000 (0xFFFF & 0 = 0, and
+        //     overwrite of 0 = 0). Evict, then program the real data over it.
+        flash_program(21'h700, 16'h0000);  // stage: cell backing now 0x0000
+        flash_read(21'h9C0, v);            // evict 0x700's line (different far line)
+        flash_read(21'h700, v); chk(v, 16'h0000, "staged 0x700 backing == 0x0000");
+        // Now the install: program real data over the 0x0000-backed cell.
+        flash_program(21'h700, 16'hABCD);
+        flash_read(21'h700, v);
+        chk(v, 16'hABCD, "install over 0x0000-backed 0x700 OVERWRITES (not & == 0)");
+        // persist across eviction (the SDRAM commit, not just the line buffer)
+        flash_read(21'h9C0, v);            // evict again
+        flash_read(21'h700, v);
+        chk(v, 16'hABCD, "install 0x700 PERSISTED after evict (overwrite committed)");
 
         if (errors == 0) $display("RESULT: PASS (s573_flash_sdram)");
         else             $display("RESULT: FAIL (s573_flash_sdram, %0d errors)", errors);

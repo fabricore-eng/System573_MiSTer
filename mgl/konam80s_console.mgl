@@ -1,0 +1,44 @@
+<!--
+  konam80s (Konami 80's AC Special) -- a CD-INSTALLER game, the 2nd CD-install
+  title and the FIRST X76F041-cassette title on the core. Reuses exactly the
+  hypbbc2p (game #2) path: standalone console core (is_arcade_type=0), BLANK 16MB
+  flash + BLANK 8KB NVRAM, the CD in the S1 (CUECHD) slot, and the AUTHENTIC
+  security cassette on ioctl index 4. On first boot with Boot Device = CD-ROM the
+  BIOS runs the CD installer (re-programs the onboard flash from the disc) + writes
+  an installed signature to NVRAM, then the game runs from flash.
+
+  CASSETTE: konam80s uses an X76F041 (512B + separate read/write/config passwords)
+  -- a DIFFERENT chip than hypbbc2p's X76F100. The 548-byte .u1 latches as X76F041
+  per emu.sv's size tiers (>=256 -> F041). Like every cassette title, it REQUIRES
+  the AUTHENTIC dump: stage the real gc826ea.u1 as games/System573/konam80s.u1.
+  The BIOS boot-time SIGNATURE check (the -11N wall) needs authentic-cassette data
+  not derivable from plaintext -- see docs/2026-06-12-game2-hypbbc2p-cd-install.md
+  + tools/gen_seccart_u1.py. (gc826ea.u1 is MAME-"BAD_DUMP"/NEEDS REDUMP but is the
+  best-available authentic set -- same status as hypbbc2p's gx908ja.u1, which worked.)
+
+  TEST PROCEDURE (de-confounded: warm-reboot, /proc/uptime < 60s, ONE load):
+    1. Launch this .mgl.  2. OSD set "573 Boot Device" -> CD-ROM (status O[93]).
+    3. Let the installer run (CD -> flash; lengthy).
+    4. After install, set "573 Boot Device" -> Flash ROM and reload to run the game.
+  Judge every result with frame_diff, not vision. konam80s is the FIRST HW exercise
+  of the X76F041 model (sim-proven; rtl/x76f041.v) -- watch for cassette-auth faults.
+
+  Requires: _Console/Konami_System_573.rbf + games/System573/{573bios.bin,
+  flash16m_blank.bin, nvram8k_blank.bin, konam80s.u1 (= real gc826ea.u1), konam80s.chd}.
+-->
+<mistergamedescription>
+  <rbf>_Console/Konami_System_573</rbf>
+  <setname>System573</setname>
+  <file delay="1" type="f" index="0" path="/media/fat/games/System573/573bios.bin"/>
+  <file delay="1" type="f" index="2" path="/media/fat/games/System573/flash16m_blank.bin"/>
+  <file delay="1" type="f" index="3" path="/media/fat/games/System573/nvram8k_blank.bin"/>
+  <file delay="1" type="f" index="4" path="/media/fat/games/System573/konam80s.u1"/>
+  <file delay="2" type="s" index="1" path="/media/fat/games/System573/konam80s.chd"/>
+  <!-- FLASH PERSISTENCE (slot 4): see hypbbc2p_console.mgl for the full rationale.
+       Auto-created on first write-back; LOADed over the blank on later launches.
+       *** PARENT VERIFY ON HW (gate-0 RISK R4): a .mgl type="s" at a not-yet-existent
+       saves/ path must trigger Main pre-allocate auto-create; fallback = one
+       user_io_file_mount(savepath, 4, 1, 16*1024*1024) in the PSX support file. -->
+  <file delay="3" type="s" index="4" path="/media/fat/saves/System573/konam80s.sav"/>
+  <reset delay="1"/>
+</mistergamedescription>

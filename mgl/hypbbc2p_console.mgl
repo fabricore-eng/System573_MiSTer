@@ -51,5 +51,16 @@
   <file delay="1" type="f" index="3" path="/media/fat/games/System573/nvram8k_blank.bin"/>
   <file delay="1" type="f" index="4" path="/media/fat/games/System573/hypbbc2p.u1"/>
   <file delay="2" type="s" index="1" path="/media/fat/games/System573/hypbbc2p.chd"/>
+  <!-- FLASH PERSISTENCE (slot 4): mount the 16 MB save so a CD install survives a
+       reboot. On first launch the file does not exist; the core/Main auto-creates
+       it (pre=1/type=2) on the first write-back, so the blank flash stands until
+       the installer programs it, then the save is created. On later launches the
+       saver LOADs it over the .mgl blank (held under CPU reset, plan D).
+       *** PARENT VERIFY ON HW (gate-0 RISK R4): confirm a .mgl type="s" entry can
+       point at a NOT-YET-EXISTENT saves/ path AND trigger Main's pre-allocate
+       auto-create. If the .mgl schema rejects it, the fallback is one
+       user_io_file_mount(savepath, 4, 1, 16*1024*1024) in the PSX support file's
+       load callback. Path = saves/System573/<basename>.sav per FileGenerateSavePath. -->
+  <file delay="3" type="s" index="4" path="/media/fat/saves/System573/hypbbc2p.sav"/>
   <reset delay="1"/>
 </mistergamedescription>
