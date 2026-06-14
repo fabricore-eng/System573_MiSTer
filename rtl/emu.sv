@@ -2050,6 +2050,20 @@ always @(posedge clk_vid) begin
    end
 end
 
+// Headless operator-TEST via keyboard 'T'. The 573 operator TEST is normally
+// joy[11] -- a P1 gamepad bit, which is unreachable when driving the board
+// headlessly (no physical pad / no OSD button assigned) and is also P1-only.
+// ps2_key (from hps_io) encodes: [10]=toggle/strobe (flips per key event),
+// [9]=pressed(1)/released(0), [8]=extended, [7:0]=PS/2 set-2 make code
+// ('T' = 0x2C). ps2_key is produced in the clk_1x (clk_sys) domain by hps_io,
+// so latch it here in clk_1x. key_test tracks T held (1 while down, 0 on release)
+// and is OR'd into the active-low test_btn below, independent of controller/player.
+reg key_test = 1'b0, ps2_tgl_d = 1'b0;
+always @(posedge clk_1x) begin
+   ps2_tgl_d <= ps2_key[10];
+   if (ps2_tgl_d != ps2_key[10] && ps2_key[7:0] == 8'h2C) key_test <= ps2_key[9];
+end
+
 system573_top #(.FLASH_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
@@ -2102,7 +2116,9 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .p2_ctrl        (~{joy2[9], joy2[6], joy2[5], joy2[4], joy2[2], joy2[3], joy2[0], joy2[1]}),
    .coin_sw        (~{joy2[8], joy[8]}),   // P2/P1 coin = Select (active-low); Start is JAMMA START
    .service_btn    (~joy[10]),             // service button, active-low
-   .test_btn       (~joy[11]),             // test button, active-low (idle = boot game)
+   .test_btn       (~(joy[11] | key_test)),// test button, active-low (idle = boot game). key_test =
+                                           // headless install TEST via keyboard 'T' (PS/2 0x2C), since
+                                           // joy[11] is a P1-only gamepad input (see key_test above).
    .pcmcia_present (2'b00),
    .cd_present     (1'b1),                 // CD drive present (empty). A real 573 -- even for flash/no_cdrom
                                            // games -- has a CR-589 on the IDE bus, and the GX700 POST "DRIVE
