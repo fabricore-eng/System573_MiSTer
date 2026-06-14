@@ -1841,8 +1841,8 @@ s573_flash_saver #(.NUM_BLOCKS(16384)) u_flash_saver (
    .sd_buff_din  (sd_buff_din4),
    .mem_req      (saver_mem_req),
    .mem_addr     (saver_mem_addr),
-   .mem_q        (flash_mem_q),       // shares ch4 return bus (saver runs alone)
-   .mem_ready    (flash_mem_ready),
+   .mem_q        (flash_mem_q),       // shared ch4 data bus (latched on saver_mem_ready)
+   .mem_ready    (saver_mem_ready),   // arbiter-routed (A); never the BIOS line-fill's
    .wr_req       (saver_wr_req),
    .wr_busy      (saver_wr_busy),
    .wr_addr      (saver_wr_addr),
@@ -1861,16 +1861,37 @@ wire [26:0] saver_wr_ch3_addr = FLASH_START + {saver_wr_addr[25:0], 1'b0};
 
 // ch4 byte address: FLASH_START + (word << 1). ch4 reads ch4_addr[25:1] as the
 // word address and ch4_addr[26] as the chip select (same form as ch1 cache reads).
-// The saver shares ch4 for its save read-back. The saver and the BIOS flash
-// line-fill never request concurrently (a SAVE fires at OSD-open, a LOAD holds
-// the CPU in reset, neither overlaps a live BIOS flash read), so a simple
-// request-cycle priority on the saver suffices: present its address whenever it
-// is requesting, else the BIOS line-fill address. Both consume the shared ch4
-// return bus (flash_mem_q / flash_mem_ready). flash_mem_* is the BIOS line-fill.
-wire [26:0] flash_ch4_addr = saver_mem_req
-              ? (FLASH_START + {saver_mem_addr[25:0], 1'b0})
-              : (FLASH_START + {flash_mem_addr[25:0], 1'b0});
-wire        flash_ch4_req  = saver_mem_req | flash_mem_req;
+// The saver shares ch4 with the BIOS onboard-flash line-fill. They DO contend: the
+// install-complete auto-save fires while the CPU is live (its INITIALIZE-COMPLETE
+// wait loop reads onboard flash). The SDRAM samples ch4_addr at SERVICE time
+// (sdram.sv ch4 arm), many cycles after the 1-cycle req pulse, so a bare
+// "addr = req ? saver : bios" mux let the saver's address revert to the BIOS one
+// before service -> the SAVE read the wrong offset, and the lone ch4_ready
+// cross-latched into both clients. That deterministically corrupted the .sav
+// (~38% words zeroed, bank-3 worst; HW-confirmed 2026-06-14). s573_ch4_arb owns
+// ch4: it serialises the two clients, HOLDS the owner's address until ch4_ready,
+// and routes ch4_ready to only that owner. The data bus (flash_mem_q) is shared
+// straight to both; each latches it on its own *_ready. The CPU is NOT paused
+// (a 16 MB save spans seconds -> a stall that long trips the watchdog).
+wire [26:0] flash_ch4_addr;       // arbiter -> sdram ch4 (held req .. ready)
+wire        flash_ch4_req;        // arbiter -> sdram ch4 (1-cycle request)
+wire        ch4_ready_raw;        // raw sdram.ch4_ready (un-routed)
+wire        saver_mem_ready;      // arbiter -> saver (A) read-ready
+// flash_mem_ready (declared above) is now the arbiter's B (BIOS) read-ready.
+
+s573_ch4_arb u_ch4_arb (
+   .clk      (clk_1x),
+   .rst      (RESET | status[0]),       // match the saver's reset
+   .a_req    (saver_mem_req),
+   .a_addr   (FLASH_START + {saver_mem_addr[25:0], 1'b0}),
+   .a_ready  (saver_mem_ready),
+   .b_req    (flash_mem_req),
+   .b_addr   (FLASH_START + {flash_mem_addr[25:0], 1'b0}),
+   .b_ready  (flash_mem_ready),
+   .ch4_addr (flash_ch4_addr),
+   .ch4_req  (flash_ch4_req),
+   .ch4_ready(ch4_ready_raw)
+);
 
 // -----------------------------------------------------------------------------
 // FLASH-PATH DEBUG READBACK  (status[94]=enable, status[96:95]=field select)
@@ -2274,12 +2295,12 @@ sdram sdram
 	.ch3_ready(sdramCh3_done),
 
 	// ch4 (psx_patches/0007): 573 onboard-flash line fill (read-only 128-bit burst).
-	// Shared with the flash-save read-back (flash_ch4_addr / flash_ch4_req mux the
-	// saver's save read in above the BIOS line-fill; they never overlap).
+	// Shared with the flash-save read-back via s573_ch4_arb (holds the owner's addr
+	// to service time + routes ch4_ready to only that client; data bus is shared).
 	.ch4_addr (flash_ch4_addr),
 	.ch4_dout (flash_mem_q),
 	.ch4_req  (flash_ch4_req),
-	.ch4_ready(flash_mem_ready),
+	.ch4_ready(ch4_ready_raw),
 
 	.dmafifo_adr  (sdram_dmafifo_adr),
 	.dmafifo_data (sdram_dmafifo_data),

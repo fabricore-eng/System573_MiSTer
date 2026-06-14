@@ -20,6 +20,7 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s57
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/flash_nor.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_nvram_loader.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_flash_saver.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_ch4_arb.v]
 
 # ---------------------------------------------------------------------------
 # Vendored PlayStation core (psx/), with the EXP1 widening from psx_patches/
