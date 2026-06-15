@@ -106,7 +106,7 @@ ssh mister cat /proc/uptime        # f2sdram bridge otherwise; require < ~60 s
 
 Boot hyperbbc, get to the capture scene of record: the operator MAIN MENU
 (one R/Test press while the game runs — headless press injector if landed,
-else coordinate with cockpit/the human). The menu redraws every frame, so the
+else coordinate with tools/the human). The menu redraws every frame, so the
 trigger has fresh quads continuously.
 
 ## 4. HEISENBUG GATE — no capture is trusted before this number
