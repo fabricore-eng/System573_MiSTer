@@ -62,5 +62,14 @@
        user_io_file_mount(savepath, 4, 1, 16*1024*1024) in the PSX support file's
        load callback. Path = saves/System573/<basename>.sav per FileGenerateSavePath. -->
   <file delay="3" type="s" index="4" path="/media/fat/saves/System573/hypbbc2p.sav"/>
+  <!-- NVRAM PERSISTENCE (slot 5): mount the 8 KB M48T58 save so the CD-install
+       "installed" signature survives a reboot. WITHOUT this the flash restores fine
+       (slot 4) but the game still shows the FLASH-ROM init prompt, because the .mgl
+       console launch has no .mra <nvram> tag for the arcade ioctl save-back -> the
+       signature in NVRAM was never persisted. s573_nvram_blocksave LOADs this over
+       the .mgl blank nvram (held under CPU reset) and auto-saves it on install/play.
+       Same pre-allocate/auto-create behavior as slot 4 (first boot: file absent ->
+       size 0 -> no load -> blank stands -> created on the first auto-save). -->
+  <file delay="3" type="s" index="5" path="/media/fat/saves/System573/hypbbc2p.nvram.sav"/>
   <reset delay="1"/>
 </mistergamedescription>

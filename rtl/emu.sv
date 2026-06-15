@@ -367,8 +367,14 @@ wire download_settle_hold = (settle_cnt != 0);
 // saver_saving are declared with the saver wiring below; both 0 outside a
 // save/load, so this term is inert except during a restore.)
 wire flash_loading = saver_busy & ~saver_saving;
+// Same guard for the M48T58 NVRAM restore (s573_nvram_blocksave): hold the CPU in
+// reset while the persisted 8 KB image is being written into the NVRAM over the
+// .mgl blank, so the game can't read a half-restored "installed" signature. Asserted
+// only during a LOAD (nvblk busy & NOT saving); an OSD/auto SAVE must not reset the
+// running game. (nvblk_busy/nvblk_saving are declared with the blocksave below.)
+wire nvram_loading = nvblk_busy & ~nvblk_saving;
 
-wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset | flash_loading;
+wire reset_or = RESET | buttons[1] | status[0] | bios_download | exe_download | flash_download | nvram_download | seceep_download | secser_download | download_settle_hold | cdDownloadReset | flash_loading | nvram_loading;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 
@@ -563,20 +569,25 @@ reg  [ 6:0] sd_lba3;
 // 573 onboard-flash save (slot 4): CD-style 32-bit LBA (16 MB / 1 KB = 16384
 // blocks; the 7-bit memcard lba is far too narrow). Driven by s573_flash_saver.
 wire [31:0] sd_lba4;
-reg   [4:0] sd_rd;
+// 573 M48T58 NVRAM save (slot 5): 8 KB / 1 KB = 8 blocks. Driven by s573_nvram_blocksave.
+// Persists the CD-install "installed" signature for the console .mgl path (no .mra
+// <nvram> tag exists -> the arcade ioctl save-back can't fire; see s573_nvram_blocksave).
+wire [31:0] sd_lba5;
+reg   [5:0] sd_rd;
 // Dummy sinks for the removed consumer-PSX cd_top outputs (psx_patches/0011 ties them
 // to 0); the 573's own ATAPI CD reader drives sd_rd[1]/sd_lba1 instead.
 wire        psx_cd_hps_req_unused;
 wire [31:0] psx_cd_hps_lba_unused;
-reg   [4:0] sd_wr;
-wire  [4:0] sd_ack;
+reg   [5:0] sd_wr;
+wire  [5:0] sd_ack;
 wire  [8:0] sd_buff_addr;
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din2;
 wire [15:0] sd_buff_din3;
 wire [15:0] sd_buff_din4;            // 573 flash save (slot 4) core -> Main
+wire [15:0] sd_buff_din5;            // 573 NVRAM save (slot 5) core -> Main
 wire        sd_buff_wr;
-wire  [4:0] img_mounted;
+wire  [5:0] img_mounted;
 wire        img_readonly;
 wire [63:0] img_size;
 wire        ioctl_download;
@@ -631,7 +642,7 @@ wire [127:0] status_in = {status[127:39],ss_slot,status[36:19], 2'b00, status[16
 wire bk_pending;
 wire DIRECT_VIDEO;
 
-hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(5), .BLKSZ(3)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(6), .BLKSZ(3)) hps_io
 (
 	.clk_sys(clk_1x),
 	.HPS_BUS(HPS_BUS),
@@ -669,14 +680,14 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(5), .BLKSZ(3)) hps_io
 	.ioctl_upload_req(nvram_dirty),
 	.ioctl_upload_index(8'd3),
 
-	.sd_lba('{sd_lba0, sd_lba1, {25'd0, sd_lba2}, {25'd0, sd_lba3}, sd_lba4}),
-	.sd_blk_cnt('{0, 0, 0, 0, 0}),
+	.sd_lba('{sd_lba0, sd_lba1, {25'd0, sd_lba2}, {25'd0, sd_lba3}, sd_lba4, sd_lba5}),
+	.sd_blk_cnt('{0, 0, 0, 0, 0, 0}),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3, sd_buff_din4}),
+	.sd_buff_din('{0, 0, sd_buff_din2, sd_buff_din3, sd_buff_din4, sd_buff_din5}),
 	.sd_buff_wr(sd_buff_wr),
 
 	.TIMESTAMP(RTC_time),
@@ -1894,6 +1905,95 @@ s573_ch4_arb u_ch4_arb (
 );
 
 // -----------------------------------------------------------------------------
+// 573 M48T58 NVRAM PERSISTENCE (s573_nvram_blocksave): the console .mgl path has no
+// .mra <nvram> tag, so the arcade ioctl save-back (s573_nvram_saver -> config/nvram/
+// <mra>.nvm) has no destination and never fires -> the CD-install "installed"
+// signature in the M48T58 is lost every reboot, and the game re-shows the FLASH-ROM
+// init prompt EVEN THOUGH the 16 MB flash is correctly restored. This persists the
+// 8 KB NVRAM the way the flash is persisted: an SD block-protocol mounted .sav on
+// slot 5 (.mgl type="s" index="5"), independent of the .mra path. See
+// rtl/s573_nvram_blocksave.v + docs/audits/2026-06-12-flash-persistence-gate0.md.
+// -----------------------------------------------------------------------------
+wire        nvblk_busy;
+wire        nvblk_saving;
+wire        nvblk_save_done;     // 1-cycle: a SAVE completed (toast)
+wire        nvblk_auto_saved;    // 1-cycle: a self-fired auto-save completed
+wire        nvblk_sd_rd, nvblk_sd_wr;
+wire [12:0] nvblk_sav_addr;      // m48t58 SAVE read addr (muxed into u_s573 below)
+wire        nvblk_ld_we;         // m48t58 LOAD write (muxed into u_s573 below)
+wire [12:0] nvblk_ld_addr;
+wire [7:0]  nvblk_ld_din;
+
+// save-slot (5) mount latch + size (mirror the flash slot-4 logic at :1784).
+reg        nvram_save_mounted = 1'b0;
+reg [63:0] nvram_save_size    = 64'd0;
+reg        nvram_load_taken   = 1'b0;
+// LOAD arm: a non-empty .sav mounted on slot 5, the .mgl blank NVRAM download
+// settled, and -- so the two boot LOADs never stream concurrently on the shared
+// sd_buff bus -- the flash-save LOAD has finished (~saver_busy). One-shot per mount.
+wire nvram_load_arm = nvram_save_mounted && (nvram_save_size > 0)
+                      && ~nvram_download && ~download_settle_hold
+                      && ~saver_busy && ~nvram_load_taken;
+
+always @(posedge clk_1x) begin
+   if (img_mounted[5]) begin
+      nvram_load_taken <= 1'b0;            // a new mount re-arms the load
+      if (img_size > 0) begin
+         nvram_save_mounted <= 1'b1;
+         nvram_save_size    <= img_size;
+      end else begin
+         nvram_save_mounted <= 1'b0;       // first boot: empty save (type=2)
+         nvram_save_size    <= 64'd0;
+      end
+   end
+   if (nvram_load_arm && nvblk_busy && ~nvblk_saving)
+      nvram_load_taken <= 1'b1;            // the load runs exactly once per mount
+end
+
+s573_nvram_blocksave #(.NUM_BLOCKS(8)) u_nvram_blocksave (
+   .clk          (clk_1x),
+   .reset        (RESET | status[0]),
+   .save_trigger (1'b0),                   // auto-save only (install + play writes
+                                           // self-fire on dirty+quiet; no OSD button)
+   .nvram_act    (nvram_written),          // game wrote the timekeeper -> arms auto-save
+   .autosave_en  (~status[99]),            // shares the flash "Auto Save Install" toggle
+   .auto_saved   (nvblk_auto_saved),
+   .load_arm     (nvram_load_arm),
+   .busy         (nvblk_busy),
+   .saving       (nvblk_saving),
+   .save_done    (nvblk_save_done),
+   .sd_rd        (nvblk_sd_rd),
+   .sd_wr        (nvblk_sd_wr),
+   .sd_lba       (sd_lba5),
+   .sd_ack       (sd_ack[5]),
+   .sd_buff_wr   (sd_buff_wr),
+   .sd_buff_addr (sd_buff_addr[8:0]),
+   .sd_buff_dout (sd_buff_dout),
+   .sd_buff_din  (sd_buff_din5),
+   .nv_sav_addr  (nvblk_sav_addr),
+   .nv_sav_dout  (nvram_sav_dout),         // shared m48t58 SAVE return bus
+   .nv_sav_rd_ok (nvram_sav_rd_ok),
+   .nv_ld_we     (nvblk_ld_we),
+   .nv_ld_addr   (nvblk_ld_addr),
+   .nv_ld_din    (nvblk_ld_din)
+);
+
+assign sd_rd[5] = nvblk_sd_rd;
+assign sd_wr[5] = nvblk_sd_wr;
+
+// m48t58 LOAD-port mux into u_s573: the ioctl blank-download loader (s573_nvram_
+// loader: nvram_we/addr/din) normally drives it; during a .sav restore the blocksave
+// does (nvram_loading = nvblk_busy & ~saving, declared up at reset_or). They never
+// overlap (the restore is gated on ~nvram_download + settle), so a clean priority mux.
+wire        m48_ld_we   = nvram_loading ? nvblk_ld_we   : nvram_we;
+wire [12:0] m48_ld_addr = nvram_loading ? nvblk_ld_addr : nvram_addr;
+wire [7:0]  m48_ld_din  = nvram_loading ? nvblk_ld_din  : nvram_din;
+// m48t58 SAVE-read-port addr mux: the blocksave SAVE (nvblk_saving) vs the .mra ioctl
+// saver (nvram_sav_addr, never active on the .mgl path). Both read the shared
+// nvram_sav_dout/rd_ok return bus; only the presented address is serviced.
+wire [12:0] m48_sav_addr = nvblk_saving ? nvblk_sav_addr : nvram_sav_addr;
+
+// -----------------------------------------------------------------------------
 // FLASH-PATH DEBUG READBACK  (status[94]=enable, status[96:95]=field select)
 // Distinguishes "flash never written to SDRAM (A)" from "ch4 read returns wrong
 // data (B)" by capturing, in the clk_1x domain, what each stage actually saw and
@@ -2106,10 +2206,10 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .flash_wr_data  (flash_wr_data),
    .flash_wr_ack   (flash_wr_ack),
    .flash_dbg      (flash_dbg),
-   .nvram_we       (nvram_we),
-   .nvram_addr     (nvram_addr),
-   .nvram_din      (nvram_din),
-   .nvram_sav_addr (nvram_sav_addr),
+   .nvram_we       (m48_ld_we),    // ioctl blank loader OR (during .sav restore) the blocksave
+   .nvram_addr     (m48_ld_addr),
+   .nvram_din      (m48_ld_din),
+   .nvram_sav_addr (m48_sav_addr), // .mra ioctl saver OR (during a SAVE) the blocksave
    .nvram_sav_dout (nvram_sav_dout),
    .nvram_sav_rd_ok(nvram_sav_rd_ok),
    .nvram_written  (nvram_written),
