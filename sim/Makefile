@@ -70,7 +70,7 @@ atapi_cdread: cddata
 # Live sim marker (cockpit 'simulating' indicator, hub 4e87e6b): push-not-scrape —
 # the suite self-reports start/stop; trap guarantees stop on crash/^C. Best-effort:
 # a missing hub tool must never break the suite.
-COORD := $(HOME)/Dev/mister-dev-hub/tools/dell_coord.sh
+COORD := $(HOME)/Dev/tools/tools/dell_coord.sh
 SIMKEY ?= 573
 
 # Progress marker (control-room contract §1c, cockpit f339e46): after EACH test, push

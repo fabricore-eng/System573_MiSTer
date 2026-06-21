@@ -77,13 +77,13 @@
 #                              [--ival 20] [--static 60] [--allow-partial]
 #
 # Requires: ssh alias for the target board, the hub checkout at
-# ~/Dev/mister-dev-hub (devlock reboot), python3 (PIL optional -- luma falls
+# ~/Dev/tools (devlock reboot), python3 (PIL optional -- luma falls
 # back to file-size-only metrics without it).
 # =============================================================================
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
-HUB="${HUB:-$HOME/Dev/mister-dev-hub}"
+HUB="${HUB:-$HOME/Dev/tools}"
 COORD="$HUB/tools/dell_coord.sh"
 
 # ---------------------------------------------------------------- parameters

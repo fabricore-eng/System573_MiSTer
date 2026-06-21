@@ -3,7 +3,7 @@
 A MiSTer FPGA core (PlayStation-based Konami **System 573** arcade). It SHARES hardware, the
 build box (`dell`), and a group chat with other core sessions (the DVD/MPEG2 core `dvd`, the
 human-run `tools`). This file auto-loads every session — read it first. Full detail lives in
-this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/mister-dev-hub/`:
+this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/tools/`:
 `PROTOCOL.md`, `docs/CORE_DEV_PLAYBOOK.md`, `LESSONS.md`).
 
 ## Non-negotiables (these get forgotten across context resets — don't)
@@ -13,7 +13,7 @@ this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/mister-dev-h
    can thrash `dell` into swap):
    ```
    DELL_PROJECT=573 DELL_TARGET=Konami_System_573 DELL_REPO=System573_MiSTer \
-     ~/Dev/mister-dev-hub/tools/dell_build.sh main
+     ~/Dev/tools/tools/dell_build.sh main
    ```
    It runs detached, namespaces the log (`/tmp/dellbuild-573.log`) + container (`quartus-573`),
    claims a semaphore slot, applies the psx_patches, and logs to `/tmp/mister-dell-coord.log`.
@@ -23,7 +23,7 @@ this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/mister-dev-h
    is `System573_MiSTer`). The `~/Dev/...dell_build.sh` part is fine — that `~` is the Mac launcher.
 
 2. **Verify with a NUMBER, never vision.** A "boots / works / renders / fixed" claim needs an
-   objective measurement *first* — an image diff (`~/Dev/mister-dev-hub/tools/frame_diff.py`,
+   objective measurement *first* — an image diff (`~/Dev/tools/tools/frame_diff.py`,
    SSIM/%diff), a state byte, or a trace divergence. A screenshot read by eye is for forming
    hypotheses, never for verdicts. One un-reproduced screenshot is never evidence. (Earned the
    hard way — three false milestones this project; see `CORE_DEV_PLAYBOOK.md`.)
@@ -48,5 +48,5 @@ this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/mister-dev-h
 ## Map
 - **Test HW:** `ssh mister` (the MiSTer). **Build box:** `ssh dell`.
 - **Memory:** `MEMORY.md` (index) + `memory/*.md` (per-session recall).
-- **Hub (shared):** `~/Dev/mister-dev-hub/` — protocol, playbook, lessons, shared tools.
+- **Hub (shared):** `~/Dev/tools/` — protocol, playbook, lessons, shared tools.
 - **HW tools:** `tools/mister_*.sh` (deploy/shot/filmstrip/vram_dump), `tools/trace/`.

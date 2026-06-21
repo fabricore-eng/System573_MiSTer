@@ -1,6 +1,6 @@
 # PLATFORM.md — Konami System 573 platform constants (the living cited table)
 
-**Process:** `~/Dev/mister-dev-hub/docs/PLATFORM_CONSTANTS_AUDIT.md` (Gate 0: every platform
+**Process:** `~/Dev/tools/docs/PLATFORM_CONSTANTS_AUDIT.md` (Gate 0: every platform
 constant the reference emulator encodes, one row each, cited on BOTH sides — a row without an
 RTL citation is unverified).
 

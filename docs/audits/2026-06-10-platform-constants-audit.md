@@ -1,6 +1,6 @@
 # Platform-constants audit — full sweep, 2026-06-10
 
-**Process doc:** `~/Dev/mister-dev-hub/docs/PLATFORM_CONSTANTS_AUDIT.md` (Gate 0).
+**Process doc:** `~/Dev/tools/docs/PLATFORM_CONSTANTS_AUDIT.md` (Gate 0).
 **Living table:** `PLATFORM.md` at the repo root (this file is the frozen sweep record; the
 table below is the snapshot as of this date — future edits land in PLATFORM.md).
 

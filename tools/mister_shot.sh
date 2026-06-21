@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$OUT")"
 # = MISTER_ALIAS. See memory/de10-vram-observability-broken.md (RESOLVED). The capture
 # daemon runs ONLY from a camera-permissioned Terminal (NOT here); grab_card just reads it.
 BOARD="${MISTER_BOARD:-${MISTER_ALIAS:-mister}}"
-GRAB_CARD="${HUB:-$HOME/Dev/mister-dev-hub}/tools/grab_card.sh"
+GRAB_CARD="${HUB:-$HOME/Dev/tools}/tools/grab_card.sh"
 if [ -x "$GRAB_CARD" ]; then
   if card_png="$("$GRAB_CARD" "$BOARD" 2>/dev/null)" && [ -n "$card_png" ] && [ -f "$card_png" ]; then
     cp "$card_png" "$OUT"

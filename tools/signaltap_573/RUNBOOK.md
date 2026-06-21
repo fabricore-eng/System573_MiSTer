@@ -73,7 +73,7 @@ A hollow build is detectable WITHOUT deploying: fit.rpt has no
 
 ```sh
 DELL_PROJECT=573 DELL_TARGET=Konami_System_573 DELL_REPO=System573_MiSTer \
-  ~/Dev/mister-dev-hub/tools/dell_build.sh dbg-signaltap-clut
+  ~/Dev/tools/tools/dell_build.sh dbg-signaltap-clut
 ```
 
 (`DELL_REPO` is a BARE dir name — never `~/...`.) Expect a slower fit
@@ -117,7 +117,7 @@ a different machine):
 
 ```sh
 tools/mister_shot.sh                       # grab the menu frame
-python3 ~/Dev/mister-dev-hub/tools/frame_diff.py \
+python3 ~/Dev/tools/tools/frame_diff.py \
     <new_shot.png> local/de10_menu_watch/20260610_000842-screen.png
 ```
 

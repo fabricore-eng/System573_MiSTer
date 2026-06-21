@@ -32,7 +32,7 @@ def main():
         return
     label = ti.get("description") or ti.get("title") or ("workflow" if tool == "Workflow" else "agent")
     label = str(label)[:60]
-    coord = os.path.expanduser("~/Dev/mister-dev-hub/tools/dell_coord.sh")
+    coord = os.path.expanduser("~/Dev/tools/tools/dell_coord.sh")
     if not os.access(coord, os.X_OK):
         return
     try:

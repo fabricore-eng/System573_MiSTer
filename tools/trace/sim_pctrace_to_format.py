@@ -4,7 +4,7 @@
 #
 # Post-process the NVC full-system sim's existing pc_trace.log (emitted by the
 # pc_tap process in sim/system573/tb_system573.vhd) into the SHARED trace
-# format consumed by ~/Dev/mister-dev-hub/tools/trace_diff.py, so our sim's PC
+# format consumed by ~/Dev/tools/tools/trace_diff.py, so our sim's PC
 # stream can be diffed against MAME's golden PC log.
 #
 # SAFE, low-risk: this is a pure post-processor. It does NOT touch the VHDL.
@@ -90,7 +90,7 @@
 #   tools/trace/sim_pctrace_to_format.py sim/system573/build/pc_trace.log \
 #       -o /tmp/sim.trace --rom hyperbbc
 #   # then diff vs a MAME golden in the same format:
-#   ~/Dev/mister-dev-hub/tools/trace_diff.py /tmp/mame.trace /tmp/sim.trace
+#   ~/Dev/tools/tools/trace_diff.py /tmp/mame.trace /tmp/sim.trace
 # =============================================================================
 import argparse
 import re

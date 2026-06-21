@@ -5,7 +5,7 @@
 #                    pillar, AV_EVAL_TOOLING_SPEC.md section 6).
 #
 # WHAT IT IS. A thin, 573-specific wrapper over the SHARED hub MAME-on-dell
-# runner (~/Dev/mister-dev-hub/tools/mame_dell.sh) so reference capture runs on
+# runner (~/Dev/tools/tools/mame_dell.sh) so reference capture runs on
 # the headless `dell` box, OFF the Mac (MAME on the Mac steals input/focus and
 # competes with the human's own workstation use; see mame573.sh). It produces the
 # objective ground-truth artifacts the framebuffer diff compares OUR core's
@@ -67,7 +67,7 @@
 set -euo pipefail
 
 PROG="$(basename "$0")"
-HUB_RUNNER="${MISTER_HUB:-$HOME/Dev/mister-dev-hub}/tools/mame_dell.sh"
+HUB_RUNNER="${MISTER_HUB:-$HOME/Dev/tools}/tools/mame_dell.sh"
 # The 573-specific MAME-on-dell wrapper (fills romset/rompath); we shell to the
 # hub runner directly so we control the exact outfile list + lua.
 ROMSET="${ROMSET:-hyperbbc}"          # env-overridable: capture any 573 romset (e.g. ROMSET=konam80s)
@@ -315,7 +315,7 @@ fi
 # The hub runner must exist (live path needs it).
 if [ ! -x "$HUB_RUNNER" ]; then
   echo "error: hub runner not found/executable: $HUB_RUNNER" >&2
-  echo "       (expected the shared mister-dev-hub mame_dell.sh)" >&2
+  echo "       (expected the shared tools mame_dell.sh)" >&2
   exit 1
 fi
 

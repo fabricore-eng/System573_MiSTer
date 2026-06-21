@@ -2,7 +2,7 @@
 # =============================================================================
 # hw_display_frame.py -- 573 HW DISPLAY-FRAME producer (A/V eval suite, pillar 2)
 #
-# Spec: ~/Dev/mister-dev-hub/docs/AV_EVAL_TOOLING_SPEC.md  section 6 (video).
+# Spec: ~/Dev/tools/docs/AV_EVAL_TOOLING_SPEC.md  section 6 (video).
 #
 # Convert OUR core's raw HW VRAM dump (1024x512 RGB555 LE, stride 2048) into the
 # NATIVE-RESOLUTION displayed frame -- the rectangle the GPU actually scans out --

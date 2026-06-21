@@ -16,7 +16,7 @@
 # =============================================================================
 set -euo pipefail
 # live sim marker (cockpit 'simulating' indicator; push-not-scrape, hub 4e87e6b). Best-effort.
-COORD="$HOME/Dev/mister-dev-hub/tools/dell_coord.sh"
+COORD="$HOME/Dev/tools/tools/dell_coord.sh"
 [ -x "$COORD" ] && "$COORD" sim 573 start "NVC system573 boot ($(basename "$0") ${1:-2ms})" >/dev/null 2>&1 || true
 trap '[ -x "$COORD" ] && "$COORD" sim 573 stop >/dev/null 2>&1 || true' EXIT INT TERM
 

@@ -27,7 +27,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-HUB="${HUB:-$HOME/Dev/mister-dev-hub}"
+HUB="${HUB:-$HOME/Dev/tools}"
 
 if [ $# -lt 2 ]; then
   sed -n '23,33p' "$0"; exit 2

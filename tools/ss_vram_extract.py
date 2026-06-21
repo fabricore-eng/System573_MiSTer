@@ -21,13 +21,13 @@
 # firmware writes for an Alt-F1 HW savestate, and to ddrram_model's ss_out.ss.
 #
 # The extracted VRAM .bin is EXACTLY the raw format tools/hw_display_frame.py +
-# ~/Dev/mister-dev-hub/tools/frame_diff_regions.py already consume (1024x512
+# ~/Dev/tools/tools/frame_diff_regions.py already consume (1024x512
 # RGB555 LE, stride 2048), so the whole Stage-0 pipeline is:
 #
 #   tools/ss_vram_extract.py state.ss --vram local/ss_vram.bin
 #   tools/hw_display_frame.py local/ss_vram.bin   --window 0,0,1024,512 --out local/ss_vram.png
 #   tools/hw_display_frame.py local/mame_vram.bin --window 0,0,1024,512 --out local/mame_vram.png
-#   ~/Dev/mister-dev-hub/tools/frame_diff_regions.py \
+#   ~/Dev/tools/tools/frame_diff_regions.py \
 #       local/mame_vram.png local/ss_vram.png --grid 16x16 --heatmap local/vram_heat.png --json
 #
 # ...or just run the turnkey wrapper:  tools/ss_garble_probe.sh state.ss mame_vram.bin
