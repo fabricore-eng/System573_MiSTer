@@ -83,8 +83,24 @@ module s573_io (
     // error/status" -- the JVS serial-packet I/O path is a separate thing; see
     // 0x1f680000.) TODO multi-BIOS: 700B's h8b01.bin varies, so it needs a
     // clock-stepped ROM-backed shift register here instead of this constant.
+    // [15:8] high byte = the MAME IN1 (0x1f400004) bit map, konami/ksys573.cpp
+    // PORT_START("IN1"): [8]=cassette ADC0834 DO, [9]=cassette ADC0834 SARS (NO cassette
+    // ADC on a DIGITAL cart -> 0), [12]="Network?"=1 (Off; no network board present),
+    // [14]=cassette DS2401 serial (read_line_ds2401) = sec_in[0] = the .u6 1-wire line.
+    // The DS2401 was previously placed on [8] (the whole sec_in byte); hyperbbc passed
+    // anyway -- it has NO cassette DS2401 and reads X76 SDA on bit18 (=0x1f400006[2]=sec_io0,
+    // unchanged) -- but ddrsbm (GQ894, cassette DS2401 gq894ja.u6 / ioctl 5) samples its
+    // serial line on [14] and the network flag on [12], and the old mapping returned 0 on
+    // both -> the installer's "BOOT CHECK" never passed. MAME-oracle confirmed: MAME reads
+    // 0x50c7 here (bit14=1 idle, bit12=1) and reaches the INITIALIZE-FLASH prompt; this
+    // mapping makes the de10 return the same 0x50 high byte. (tools/trace/exp1_trace.lua.)
     wire [15:0] r_status =
-        { sec_in,                 // [15:8] security I0-I7
+        { 1'b0,                   // [15]
+          sec_in[0],              // [14] cassette DS2401 1-wire serial line (read_line_ds2401)
+          1'b0,                   // [13]
+          1'b1,                   // [12] "Network?" = Off (no network board present)
+          2'b00,                  // [11:10]
+          2'b00,                  // [9:8]  cassette ADC SARS/DO (absent on a digital cart)
           4'b1100,                // [7:4]  H8/18E response nibble = 0xC (h8a01.bin)
           dip_sw };               // [3:0]  DIP switches
 
