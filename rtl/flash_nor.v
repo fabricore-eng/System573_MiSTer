@@ -24,8 +24,12 @@
 module flash_nor #(
     parameter integer WORDS        = 2048,
     parameter integer SECTOR_WORDS = 512,
-    parameter [15:0]  MFR_ID       = 16'h0004,   // Fujitsu
-    parameter [15:0]  DEV_ID       = 16'h00AD,   // MBM29F016
+    // JEDEC autoselect IDs as driven on the (x16) data bus. For a single x16 die this
+    // is the ID byte in the low lane (0x0004 / 0x00AD, high lane 0x00). A board that
+    // builds each 16-bit word from TWO x8 chips (System 573: .31x low / .27x high)
+    // drives the ID into BOTH lanes -- override to 0x0404 / 0xADAD (see s573_flash.v).
+    parameter [15:0]  MFR_ID       = 16'h0004,   // Fujitsu (low lane)
+    parameter [15:0]  DEV_ID       = 16'h00AD,   // MBM29F016A (low lane)
     parameter [10:0]  ADDR1        = 11'h555,
     parameter [10:0]  ADDR2        = 11'h2AA,
     // BACKING_EXTERNAL=0 (default): the array lives in the local mem[] BRAM and is
