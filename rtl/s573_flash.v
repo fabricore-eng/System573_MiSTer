@@ -146,7 +146,12 @@ module s573_flash #(
         wire [15:0] chip_dout [0:NUM_BANKS-1];
         genvar gi;
         for (gi = 0; gi < NUM_BANKS; gi = gi + 1) begin : chips
+            // Two x8 chips (.31x low lane / .27x high lane) form each 16-bit word, so
+            // autoselect drives the ID into BOTH lanes: MFR 0x0404, DEV 0xADAD (a single
+            // x16 die would read 0x0004/0x00AD). Matches MAME umask16 0x00ff/0xff00 and
+            // 573in1's low==high two-x8-chips-per-bank detect.
             flash_nor #(.WORDS(WIN_WORDS), .SECTOR_WORDS(SECTOR_WORDS),
+                        .MFR_ID(16'h0404), .DEV_ID(16'hADAD),
                         .BACKING_EXTERNAL(0)) chip (
                 .clk(clk), .rst(rst),
                 // select internal bank by the raw control value (BIOS bank index)
@@ -212,7 +217,10 @@ module s573_flash #(
         wire        id_read;
         wire        prog_now;
         wire [15:0] line_word = line[req_idx];
+        // Dual-lane autoselect ID (two x8 chips per 16-bit word): MFR 0x0404, DEV 0xADAD
+        // (see the g_sim instance above for the rationale).
         flash_nor #(.WORDS(WIN_WORDS), .SECTOR_WORDS(SECTOR_WORDS),
+                    .MFR_ID(16'h0404), .DEV_ID(16'hADAD),
                     .BACKING_EXTERNAL(1)) cmd (
             .clk(clk), .rst(rst),
             .ce(win_sel && internal),

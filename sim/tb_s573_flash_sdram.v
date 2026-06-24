@@ -221,12 +221,12 @@ module tb_s573_flash_sdram;
         win_write(21'h2AA, 16'h0055);
         win_write(21'h555, 16'h0090);      // autoselect
         // ID read at offset 0: must be ready in the same access (flash_ready=1).
-        flash_read(21'h000, v); chk(v, 16'h0004, "autoselect MFR id");
+        flash_read(21'h000, v); chk(v, 16'h0404, "autoselect MFR id");
         if (last_stall != 0) begin
             $display("FAIL: autoselect MFR id read must NOT stall");
             errors = errors + 1;
         end
-        flash_read(21'h001, v); chk(v, 16'h00AD, "autoselect DEV id");
+        flash_read(21'h001, v); chk(v, 16'hADAD, "autoselect DEV id");
         if (last_stall != 0) begin
             $display("FAIL: autoselect DEV id read must NOT stall");
             errors = errors + 1;
