@@ -87,13 +87,16 @@ module s573_io (
     // PORT_START("IN1"): [8]=cassette ADC0834 DO, [9]=cassette ADC0834 SARS (NO cassette
     // ADC on a DIGITAL cart -> 0), [12]="Network?"=1 (Off; no network board present),
     // [14]=cassette DS2401 serial (read_line_ds2401) = sec_in[0] = the .u6 1-wire line.
-    // The DS2401 was previously placed on [8] (the whole sec_in byte); hyperbbc passed
-    // anyway -- it has NO cassette DS2401 and reads X76 SDA on bit18 (=0x1f400006[2]=sec_io0,
-    // unchanged) -- but ddrsbm (GQ894, cassette DS2401 gq894ja.u6 / ioctl 5) samples its
-    // serial line on [14] and the network flag on [12], and the old mapping returned 0 on
-    // both -> the installer's "BOOT CHECK" never passed. MAME-oracle confirmed: MAME reads
-    // 0x50c7 here (bit14=1 idle, bit12=1) and reaches the INITIALIZE-FLASH prompt; this
-    // mapping makes the de10 return the same 0x50 high byte. (tools/trace/exp1_trace.lua.)
+    // The DS2401 was previously placed on [8] (the whole sec_in byte) -- a REAL bug: per
+    // MAME these bits ARE the cassette DS2401 / network / cassette-ADC lines, and the old
+    // mapping returned 0 on all of them. hyperbbc was unaffected (no cassette DS2401; it
+    // reads X76 SDA on bit18 = 0x1f400006[2] = sec_io0, unchanged). Keep as a correctness fix.
+    // CORRECTION (supersedes commit bcaf9a4's message, which billed this as "the ddrsbm
+    // BOOT CHECK gate" -- it is NOT): disassembling the installer (tools/trace/dump_code.lua
+    // + capstone) showed its input routine reads 0x1f400004 but uses only `& 0xf` (the DIP
+    // nibble) -- never this high byte. The real ddrsbm BOOT CHECK gate is the DRIVE CHECK /
+    // CD-ATAPI path (bracketed via the DBG_FORCE_BARS bands: atapi_seen+idecmd_seen=1,
+    // bankctl_wr=0 -> issues a CD command then spins, never reaching flash).
     wire [15:0] r_status =
         { 1'b0,                   // [15]
           sec_in[0],              // [14] cassette DS2401 1-wire serial line (read_line_ds2401)
