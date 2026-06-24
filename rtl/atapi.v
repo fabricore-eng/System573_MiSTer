@@ -130,16 +130,18 @@ module atapi #(
 
     // IDENTIFY PACKET DEVICE (0xA1) data: 256 words. The 573 BIOS drive check
     // only validates the handshake (DRQ set, byte count <= 0x800, ERR clear at
-    // end) -- it does not check any identify field -- but the identity now
-    // reports the drive the whole 573 library was tested against (Matsushita
-    // CR-589): word0 0x85C0 (ATAPI, CD-ROM, removable, 12-byte packet), fw rev
-    // words 23-26, model words 27-46 (ATA byte order: 1st char in the HIGH
+    // end) -- it does not check any identify field -- BUT ddrsbm's digital-board
+    // POST drive check reads the block and is stricter, so these fields are now
+    // EXACT per the real Matsushita CR-589 (captured from the MAME oracle's
+    // IDENTIFY trace, local/ddrsbm_ata.txt): word0 0x8500 (ATAPI, CD-ROM, 12-byte
+    // packet -- was a loose 0x85C0), fw rev words 23-26 = "1.0     " (was "1.0b"),
+    // model words 27-46 = "MATSHITA CR-589" (ATA byte order: 1st char in the HIGH
     // byte), and word49 capabilities bit10 = DMA supported (ch5).
     function [15:0] ident_word(input [12:0] bidx);
         case (bidx[8:1])             // word index 0..255
-            8'd0:    ident_word = 16'h85C0;
-            8'd23:   ident_word = "1.";        // firmware revision "1.0b    "
-            8'd24:   ident_word = "0b";
+            8'd0:    ident_word = 16'h8500;    // exact per CR-589 (was loose 0x85C0)
+            8'd23:   ident_word = "1.";        // firmware revision "1.0     " (exact per CR-589)
+            8'd24:   ident_word = "0 ";
             8'd25:   ident_word = "  ";
             8'd26:   ident_word = "  ";
             8'd27:   ident_word = "MA";        // model "MATSHITA CR-589"

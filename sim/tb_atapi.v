@@ -109,7 +109,7 @@ module tb_atapi;
         io_read(4'd2, v); chk(v, 16'h0002, "IDENT ireason");    // I/O=1, C/D=0
         io_read(4'd4, v); chk(v, 16'h0000, "IDENT bc lo");      // byte count 0x0200
         io_read(4'd5, v); chk(v, 16'h0002, "IDENT bc hi");
-        io_read(4'd0, word[0]); chk(word[0], 16'h85C0, "IDENT word0"); // ATAPI CD-ROM config
+        io_read(4'd0, word[0]); chk(word[0], 16'h8500, "IDENT word0"); // ATAPI CD-ROM config, exact per real CR-589 (MAME oracle); ddrsbm POST is stricter than the BIOS check
         io_read(4'd0, v);       chk(v, 16'h0000, "IDENT word1");        // zero-filled
         for (i = 2; i < 255; i = i + 1) io_read(4'd0, v);   // drain to the last word
         io_read(4'd0, v);                                   // 256th word -> completion
