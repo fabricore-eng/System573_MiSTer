@@ -73,6 +73,21 @@ if {[info exists ::env(RECON)] && $::env(RECON) eq "drain"} {
     set TRIGGER_TERMS [list [list "$AT|ridx\[3\]" high]]
     puts "RECON=drain: trigger = ridx\[3\] high (>=8 words drained)"
 }
+# RECON=pc : trigger on PC == PC_TRIG (default 0x803cb2dc, the ATAPI handler
+# entry). pre-pos -> capture the handler's execution forward; ridx advancing
+# afterwards = the handler DOES drain (bug = the ~96us deferral); ridx stuck =
+# the handler runs but does NOT drain (bug = handler logic / our core's path).
+if {[info exists ::env(RECON)] && $::env(RECON) eq "pc"} {
+    set tw 0x803cb2dc
+    if {[info exists ::env(PC_TRIG)]} { set tw $::env(PC_TRIG) }
+    set tw [expr {$tw + 0}]
+    set TRIGGER_TERMS {}
+    for {set b 31} {$b >= 0} {incr b -1} {
+        set pol [expr {(($tw >> $b) & 1) ? "high" : "low"}]
+        lappend TRIGGER_TERMS [list "$CP|PC\[$b\]" $pol]
+    }
+    puts [format "RECON=pc MODE: trigger = PC==0x%08X (ATAPI handler entry)" $tw]
+}
 
 # ---------------------------------------------------------------------------
 # generation (identical machinery to atapi_irq_stp.tcl)
