@@ -129,6 +129,16 @@ if {[info exists ::env(RECON)] && $::env(RECON) eq "any"} {
     set TRIGGER_TERMS [list [list "$AT|irq_event" high]]
     puts "RECON=any: trigger = any irq_event pulse"
 }
+# RECON=gate : the GAME's IRQ-driven drive check ONLY -- fire on a fresh ATAPI
+# event while IRQ10 is ENABLED (I_MASK[10]=1). The BIOS + the polling games
+# leave IRQ10 masked, so this ignores their (polled) completions and catches
+# exactly ddrsbm's TEST-UNIT-READY wait regardless of boot timing.
+if {[info exists ::env(RECON)] && $::env(RECON) eq "gate"} {
+    set TRIGGER_TERMS [list \
+        [list "$AT|irq_event"   high] \
+        [list "$IQ|I_MASK\[10\]" high] ]
+    puts "RECON=gate: trigger = irq_event & I_MASK\[10\] (game IRQ-driven context)"
+}
 # RECON=istat10 : did IRQ10 EVER latch? fire when I_STATUS bit10 is high.
 if {[info exists ::env(RECON)] && $::env(RECON) eq "istat10"} {
     set TRIGGER_TERMS [list [list "$IQ|I_STATUS\[10\]" high]]
