@@ -11,6 +11,7 @@ module tb_s573_io;
     reg [7:0]  p1_ctrl = 8'h5A, p2_ctrl = 8'hC3;
     reg [1:0]  coin_sw = 2'b10;
     reg        service_btn = 1, test_btn = 1;
+    reg        btn5_p1 = 1, btn5_p2 = 1;     // active-low, idle (not pressed)
     reg [1:0]  pcmcia_present = 2'b01;
     reg [7:0]  sec_in = 8'hE7;
     reg        sec_io0 = 1, sec_irdy = 1, sec_drdy = 0;
@@ -26,6 +27,7 @@ module tb_s573_io;
         .din(din), .dout(dout),
         .dip_sw(dip_sw), .p1_ctrl(p1_ctrl), .p2_ctrl(p2_ctrl),
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
+        .btn5_p1(btn5_p1), .btn5_p2(btn5_p2),
         .pcmcia_present(pcmcia_present),
         .sec_in(sec_in), .sec_io0(sec_io0), .sec_irdy(sec_irdy), .sec_drdy(sec_drdy),
         .adc_do(adc_do), .adc_sars(adc_sars),
@@ -102,8 +104,14 @@ module tb_s573_io;
             errors = errors + 1;
         end
 
-        // 0x04 status: {sec_in, H8/18E response nibble = 0xC, dip}
-        rd_reg(4'h4, r); chk(r, {sec_in, 4'b1100, dip_sw}, "status");
+        // 0x04 status -- MAME IN1 (konami/ksys573.cpp) low half: [14] = cassette
+        // DS2401 (read_line_ds2401 = sec_in[0]), [12] = "Network?" = Off(1),
+        // [9:8] = cassette ADC0834 SARS/DO (absent on a digital cart -> 0),
+        // [7:4] = H8/18E response nibble 0xC, [3:0] = DIP. (bcaf9a4 remapped the
+        // RTL to this layout; this check previously expected the pre-fix
+        // {sec_in, 0xC, dip} placement.)
+        rd_reg(4'h4, r);
+        chk(r, {1'b0, sec_in[0], 1'b0, 1'b1, 2'b00, 2'b00, 4'b1100, dip_sw}, "status");
         // explicit 18E gate: bits[7:4] must read the H8 response nibble 0xC (h8a01.bin)
         chk({12'h0, r[7:4]}, 16'h000C, "h8_18E_nibble");
 
@@ -126,10 +134,39 @@ module tb_s573_io;
         chk({14'h0, r[7:6]}, 16'h0003, "h8_hi_classifier");   // .04[7:6]=11 (hi of 0xC)
         detect_decision;
 
-        // 0x0c extra (P1): test@bit10; buttons 4/5/6 idle HIGH (active-low, not pressed)
-        rd_reg(4'hc, r); chk(r, {4'b0, 1'b1, test_btn, 2'b11, 8'b0}, "extra 0x0c");
-        // 0x0e extra (P2): bit10 = RAM-layout strap (0=new); buttons 4/5/6 idle HIGH
-        rd_reg(4'he, r); chk(r, {4'b0, 1'b1, 1'b0,      2'b11, 8'b0}, "extra 0x0e");
+        // 0x0c extra (P1): test@bit10; button5@bit9 (Solo "Select L"); 4/6 idle HIGH
+        rd_reg(4'hc, r); chk(r, {4'b0, 1'b1, test_btn, btn5_p1, 1'b1, 8'b0}, "extra 0x0c");
+        // 0x0e extra (P2): bit10 = RAM-layout strap (0=new); button5@bit9 ("Select R")
+        rd_reg(4'he, r); chk(r, {4'b0, 1'b1, 1'b0,      btn5_p2, 1'b1, 8'b0}, "extra 0x0e");
+
+        // --- IO-004 SEPARATION CONTRACT ---------------------------------------------
+        // On a DDR Solo cabinet the song wheel and the dance panels live in DIFFERENT
+        // registers: the wheel is IN3 bit9 (0x0c / 0x0e), the panels are the JAMMA word
+        // (0x08). Each must move ONLY its own. This is the whole IO-004 bug expressed as
+        // assertions -- with the Select lines pinned to a constant, pressing them moved
+        // nothing at all, so the first two checks below are the discriminators.
+        begin : io004_separation
+            reg [15:0] b08, b0c, b0e;
+            rd_reg(4'h8, b08); rd_reg(4'hc, b0c); rd_reg(4'he, b0e);
+
+            btn5_p1 = 0; #1;                                   // press "Select L"
+            rd_reg(4'hc, r); chk(r ^ b0c, 16'h0200, "selL->IN3lo b9");
+            rd_reg(4'h8, r); chk(r ^ b08, 16'h0000, "selL !JAMMA");
+            rd_reg(4'he, r); chk(r ^ b0e, 16'h0000, "selL !IN3hi");
+            btn5_p1 = 1; #1;
+
+            btn5_p2 = 0; #1;                                   // press "Select R"
+            rd_reg(4'he, r); chk(r ^ b0e, 16'h0200, "selR->IN3hi b9");
+            rd_reg(4'h8, r); chk(r ^ b08, 16'h0000, "selR !JAMMA");
+            rd_reg(4'hc, r); chk(r ^ b0c, 16'h0000, "selR !IN3lo");
+            btn5_p2 = 1; #1;
+
+            // converse: stepping on a panel must move ONLY the JAMMA word
+            p1_ctrl = 8'hA5; #1;
+            rd_reg(4'hc, r); chk(r ^ b0c, 16'h0000, "panel !IN3lo");
+            rd_reg(4'he, r); chk(r ^ b0e, 16'h0000, "panel !IN3hi");
+            p1_ctrl = 8'h5A; #1;                               // restore
+        end
 
         if (errors == 0) $display("RESULT: PASS (s573_io)");
         else             $display("RESULT: FAIL (s573_io, %0d errors)", errors);

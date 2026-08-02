@@ -15,7 +15,11 @@ module system573_top #(
     parameter integer WDOG_TIMEOUT     = 32'd1_000_000,
     // SIM_BACKING=1 (default, iverilog): inline flash_nor BRAM (flash_wait=0).
     // 0 (Quartus/HW, set from emu.sv): 16 MB SDRAM-backed flash line buffer.
-    parameter integer FLASH_SIM_BACKING = 1
+    parameter integer FLASH_SIM_BACKING = 1,
+    // 1 (default, iverilog): k573dio keeps its small inline DRAM array.
+    // 0 (Quartus/HW, set from emu.sv): the DIO board's 32 MiB sample RAM lives
+    // in DDR3 behind the dio_mem_* channels (s573_ddram_arb client).
+    parameter integer DIO_SIM_BACKING = 1
 )(
     input  wire        clk,
     input  wire        rst,
@@ -57,6 +61,27 @@ module system573_top #(
     // DEBUG passthrough: s573_flash trigger-state observers (HW bring-up).
     output wire [23:0] flash_dbg,
 
+    // EXP1 read wait for a DIO-RAM b4 read miss (DIO_SIM_BACKING=0; always 0
+    // otherwise). Same patch-0006 contract as flash_wait: emu.sv ORs the two
+    // into the psx exp1_wait. Never asserts for writes or other offsets.
+    output wire        dio_wait,
+
+    // DIO-RAM external backing channels (DIO_SIM_BACKING=0; idle otherwise):
+    // 4-phase level handshakes to emu.sv's DDR3 arbiter DIO client.
+    output wire        dio_mem_rd_req,
+    output wire [21:0] dio_mem_rd_addr,   // 64-bit beat index in the 32 MiB window
+    input  wire [63:0] dio_mem_rd_q,
+    input  wire        dio_mem_rd_ack,
+    output wire        dio_mem_wr_req,
+    output wire [23:0] dio_mem_wr_addr,   // 16-bit word index in the window
+    output wire [15:0] dio_mem_wr_data,
+    input  wire        dio_mem_wr_ack,
+    // sticky DIO posted-write FIFO overflow (fault observer, never silent)
+    output wire        dio_dbg_ovf,
+    output wire        dio_dbg_hi_write,  // game wrote above real-board DRAM (P4b ring guard)
+    // MP3 descramble scheme (MAME set_ddrsbm_fpga); emu.sv ties 0 until P4
+    input  wire        cfg_ddrsbm,
+
     // M48T58 NVRAM image load (e.g. hyperbbc 876ea.22h), streamed in at reset.
     input  wire        nvram_we,
     input  wire [12:0] nvram_addr,
@@ -88,6 +113,11 @@ module system573_top #(
     input  wire [1:0]  coin_sw,
     input  wire        service_btn,
     input  wire        test_btn,
+    input  wire        btn5_p1,         // JAMMA P1 BUTTON5 line, ACTIVE-LOW (idle high).
+    input  wire        btn5_p2,         // JAMMA P2 BUTTON5 line, ACTIVE-LOW (idle high).
+                                        //   Unused on a standard cab (JAMMA carries three
+                                        //   buttons per player); on a DDR Solo cab these are
+                                        //   "P1 Select L"/"P1 Select R" -- the song wheel.
     input  wire [1:0]  pcmcia_present,
     input  wire        cd_present,      // 1 = ATAPI CD drive attached; 0 = no_cdrom flash config (MAME konami573 no_cdrom)
 
@@ -132,8 +162,29 @@ module system573_top #(
     output wire        wdog_reset,      // watchdog bite (board reset request)
     output wire        cdrom_irq,       // ATAPI INTRQ (IRQ10)
     output wire [31:0] lamp_out,        // BEMANI Digital I/O lamp lines
+    input  wire        dio_mp3_ready,   // MP3 sink back-pressure (P4b HPS FIFO not-full)
     output wire [7:0]  dio_mp3_byte,    // descrambled MP3 byte stream -> MAS3507D
-    output wire        dio_mp3_valid
+    output wire        dio_mp3_valid,
+    // MP3 decode-counter drivers (P4b HPS minimp3 + PCM-drain transport); emu.sv
+    // ties them 0 until the HPS decode service is wired -> counters read 0.
+    input  wire        dio_dec_frame_sync,   // 1-cyc: one MPEG frame decoded
+    input  wire        dio_dec_frame_idle,   // 1-cyc: a decode produced no frame
+    input  wire        dio_pcm_sample_tick,  // 1-cyc per PCM sample drained @44100Hz
+
+    // P4b option (c): the descramble config exported to the SPI mailbox so the
+    // HPS can reproduce the fabric's byte stream. Pure fan-out of k573dio
+    // registers -- nothing here feeds back into the core.
+    output wire [15:0] dio_key1,
+    output wire [15:0] dio_key2,
+    output wire [15:0] dio_key3,
+    output wire [31:0] dio_mp3_start,
+    output wire [31:0] dio_mp3_end,
+    output wire [15:0] dio_fpga_ctrl,
+    output wire [15:0] dio_cfg_epoch,     // ++ per re-arm (HPS re-read trigger)
+    output wire [19:0] dio_gain_ll,       // MAS3507D output gain matrix (0 = mute)
+    output wire [19:0] dio_gain_rr,
+    output wire        dio_gain_stb,
+    output wire [24:0] dio_mp3_cur_pos    // streamer position echo
 );
     wire access = exp1_we | exp1_re;
 
@@ -235,8 +286,12 @@ module system573_top #(
     // (psx-spx / MAME konami573: write 0 = assert reset, write 1 = release).
     // The old `sel_idereset & exp1_we` reset on ANY write -- including the
     // BIOS's release-write of 1, which re-reset the drive it had just reset.
+    // ONE definition drives BOTH the drive (atapi) and its sector reader (cdimg)
+    // so the game's drive-reset recovery ritual resets them in lockstep -- the
+    // gate-5 CDROM-timeout fix (docs/2026-07-03-gate5-red-bench.md).
+    wire ide_rst = sel_idereset & exp1_we & ~exp1_wdata[0];
     atapi u_atapi (
-        .clk(clk), .rst(rst), .ide_rst(sel_idereset & exp1_we & ~exp1_wdata[0]),
+        .clk(clk), .rst(rst), .ide_rst(ide_rst),
         .sel(atapi_sel), .addr(atapi_addr),
         .we(atapi_sel & exp1_we), .re(atapi_sel & exp1_re),
         .din(exp1_wdata), .dout(atapi_dout), .intrq(atapi_intrq),
@@ -252,7 +307,7 @@ module system573_top #(
 
     // --- mounted-CD-image sector reader (Feature B) ---
     s573_cdimg u_cdimg (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .ide_rst(ide_rst),
         .sec_req(atapi_sec_req), .sec_lba(atapi_sec_lba),
         .sbuf_addr(atapi_sbuf_addr), .sbuf_q(atapi_sbuf_q),
         .sec_ready(atapi_sec_ready), .sec_busy(),
@@ -285,14 +340,30 @@ module system573_top #(
 
     // --- BEMANI Digital I/O board ---
     wire [15:0] digio_dout;
-    k573dio #(.DS_SERIAL(CART_SERIAL + 48'd1), .DS_CLK_HZ(CLK_FREQ_HZ)) u_digio (
+    k573dio #(.DS_SERIAL(CART_SERIAL + 48'd1), .DS_CLK_HZ(CLK_FREQ_HZ),
+              .BACKING_EXTERNAL(DIO_SIM_BACKING ? 0 : 1)) u_digio (
         .clk(clk), .rst(rst),
         .sel(sel_digio), .off(exp1_addr[7:0]),
         .we(sel_digio & exp1_we), .re(sel_digio & exp1_re),
         .din(exp1_wdata), .dout(digio_dout), .lamp(lamp_out),
-        .crypto_key1(), .crypto_key2(), .crypto_key3(),
-        .mp3_start(), .mp3_end(), .fpga_ctrl(), .network_id(),
-        .mp3_out_byte(dio_mp3_byte), .mp3_out_valid(dio_mp3_valid)
+        .dio_wait(dio_wait), .cfg_ddrsbm(cfg_ddrsbm),
+        .mem_rd_req(dio_mem_rd_req), .mem_rd_addr(dio_mem_rd_addr),
+        .mem_rd_q(dio_mem_rd_q), .mem_rd_ack(dio_mem_rd_ack),
+        .mem_wr_req(dio_mem_wr_req), .mem_wr_addr(dio_mem_wr_addr),
+        .mem_wr_data(dio_mem_wr_data), .mem_wr_ack(dio_mem_wr_ack),
+        .dbg_wfifo_ovf(dio_dbg_ovf),
+        .dbg_dio_hi_write(dio_dbg_hi_write),
+        // P4b option (c): the descramble config the HPS mirrors, plus its
+        // epoch and the position echo. Previously all left open.
+        .crypto_key1(dio_key1), .crypto_key2(dio_key2), .crypto_key3(dio_key3),
+        .mp3_start(dio_mp3_start), .mp3_end(dio_mp3_end),
+        .fpga_ctrl(dio_fpga_ctrl), .network_id(),
+        .cfg_epoch(dio_cfg_epoch), .mp3_cur_pos(dio_mp3_cur_pos),
+        .gain_ll(dio_gain_ll), .gain_rr(dio_gain_rr), .gain_stb(dio_gain_stb),
+        .mp3_out_ready(dio_mp3_ready),
+        .mp3_out_byte(dio_mp3_byte), .mp3_out_valid(dio_mp3_valid),
+        .dec_frame_sync(dio_dec_frame_sync), .dec_frame_idle(dio_dec_frame_idle),
+        .pcm_sample_tick(dio_pcm_sample_tick)
     );
 
     // --- M48T58 RTC + NVRAM ---
@@ -322,6 +393,7 @@ module system573_top #(
         .din(exp1_wdata), .dout(asic_dout),
         .dip_sw(dip_sw), .p1_ctrl(p1_ctrl), .p2_ctrl(p2_ctrl),
         .coin_sw(coin_sw), .service_btn(service_btn), .test_btn(test_btn),
+        .btn5_p1(btn5_p1), .btn5_p2(btn5_p2),
         .pcmcia_present(pcmcia_present),
         .sec_in(sec_in), .sec_io0(sec_io0),
         .sec_irdy(sec_irdy), .sec_drdy(sec_drdy),

@@ -32,6 +32,7 @@
 module s573_cdimg (
     input  wire        clk,
     input  wire        rst,
+    input  wire        ide_rst,      // board IDE reset line (0x1f560000), in lockstep with atapi.v
 
     // ---- from atapi.v: a READ(10/12) was dispatched ----
     input  wire        sec_req,      // 1-clk strobe: fetch the sector at sec_lba
@@ -80,26 +81,35 @@ module s573_cdimg (
     reg [10:0] wcnt;       // raw word counter 0..1175
 
     always @(posedge clk) begin
-        if (rst) begin
+        if (rst || ide_rst) begin
+            // ide_rst (board IDE reset, 0x1f560000) resets the sector reader in
+            // lockstep with atapi.v. Without it the game's drive-reset recovery
+            // ritual -- assert ide_rst, re-issue the identical READ -- leaves a
+            // fetch wedged here in S_REQ/S_STREAM (S_STREAM needs 1176 cd_wr the
+            // wedged host never delivers); the re-issued sec_req was then dropped
+            // and atapi held BSY forever -> the gate-5 `-1N` CDROM DRIVE TIMEOUT.
+            // (docs/2026-07-03-gate5-red-bench.md sub-tests [C]/[D].)
             state     <= S_IDLE;
             cd_req    <= 1'b0;
             cd_lba    <= 32'd0;
             wcnt      <= 11'd0;
             sec_ready <= 1'b0;
             sec_busy  <= 1'b0;
+        end else if (sec_req) begin
+            // Accept a (re-)request in ANY state, not just S_IDLE (defense-in-depth
+            // for a retry that lands mid-fetch WITHOUT an ide_rst): latch the new
+            // LBA, restart the fetch, and drop sec_ready. Re-fetching on every fresh
+            // sec_req is what tags sec_ready to the CURRENT request -- an aborted
+            // earlier LBA's buffer can never be served as the new (different) LBA.
+            cd_lba    <= sec_lba + PREGAP_LBA;  // user -> Main MSF space (see above)
+            cd_req    <= 1'b1;
+            sec_ready <= 1'b0;                  // invalidate the old sector
+            sec_busy  <= 1'b1;
+            wcnt      <= 11'd0;
+            state     <= S_REQ;
         end else begin
             case (state)
-                S_IDLE: begin
-                    sec_busy <= 1'b0;
-                    if (sec_req) begin
-                        cd_lba    <= sec_lba + PREGAP_LBA;  // user -> Main MSF space (see above)
-                        cd_req    <= 1'b1;
-                        sec_ready <= 1'b0;   // invalidate the old sector
-                        sec_busy  <= 1'b1;
-                        wcnt      <= 11'd0;
-                        state     <= S_REQ;
-                    end
-                end
+                S_IDLE: sec_busy <= 1'b0;
                 S_REQ: begin                  // wait for the host to accept the request
                     if (cd_ack) begin
                         cd_req <= 1'b0;

@@ -1,0 +1,54 @@
+<!--
+  ddrsbm (DDR Solo Bass Mix, GQ894 JAA) -- System 573 DIGITAL-board (k573dio) CD game.
+  Modeled on the powyakex/hypbbc2p CD .mgl. Cassette = cassyi = X76F100 (gq894ja.u1, 132 B) +
+  DS2401 (gq894ja.u6, 8 B, ioctl index 5). CD = 894jaa02.chd. Boot device = FLASH (System573.CFG
+  byte 11 bit 5 = 0); byte 12 = 0x30 sets the Solo cabinet strap (bit 100) + the ddrsbm MP3
+  descramble scheme (bit 101).
+  NVRAM = the MAME-golden POST-INSTALL m48t58 image (ddrsbm_nvram_installed.bin, md5
+  73f2c6fa...): the game's installed-flag lives in the m48t58, so a BLANK nvram makes every
+  COLD boot re-run the CD installer even with the golden flash .sav restored (2026-07-02
+  gate-4 lesson).
+
+  *** SIX ITEMS MAX -- DO NOT ADD A SEVENTH. ***
+  Main_MiSTer parses at most SIX file/reset items per .mgl and silently drops the rest,
+  with no log line: support/arcade/mra_loader.h `mgl_item_struct item[6]` +
+  mra_loader.cpp:1344 `mgl.count < (int)(sizeof(mgl.item)/sizeof(mgl.item[0]))`.
+  This file used to carry EIGHT (it also loaded flash16m_blank.bin at index 2 and ended with
+  a reset item), so items 7-8 -- the slot-4 save mount and the reset -- were never parsed. That
+  is the real "the .mgl's s4 entry did not rebind" of 2026-07-02, and it is why ddrsbm alone
+  failed to restore while hypbbc2p/konam80s (seven items, s4 at position six) were fine.
+
+  Why dropping the index-2 blank flash is what FIXES the restore, not just what makes room:
+  Main mounts every `SC<n>` CONF_STR slot from config/<core>.s<n> inside parse_config()
+  (user_io.cpp:966-1000) at CORE INIT -- user_io_init() calls it at :1483, BEFORE mgl_parse()
+  at :1508 and long before the first delayed .mgl item fires. So slot 4 is mounted at t~0,
+  emu.sv's flash_load_arm is true immediately (no flash_download yet), and the 16 MB restore
+  starts. The .mgl's index-2 blank then landed ON TOP of the restored image (ch3_dl outranks
+  the saver's ch3 drain), and `flash_load_taken` was already latched so the load never
+  re-armed -> blank flash -> "DO YOU WANT TO INITIALIZE FLASH-ROM?". Verified A/B on de10
+  2026-07-31: without the blank -> MEMORY CHECK 22H/22J OK -> attract; with it -> installer
+  prompt (docs/2026-07-31-ddrsbm-flash-restore-root-cause.md).
+
+  The explicit slot-4 entry below is kept deliberately: its img_mounted[4] pulse re-arms the
+  load a second time, the way hypbbc2p's does, so the restore is correct even if a download
+  ever precedes it again. A first-ever boot with no .sav needs no blank pre-load -- the CD
+  installer erases (0xFF) before programming.
+
+  EXPECTED, not a bug: this restores the 16 MB TWICE (Main reads 32 MB from the .sav --
+  `rchar` 41 MB measured vs 22 MB with the mount coming only from the SC4 recall), once from
+  the core-init SC4 recall and once from the re-arm below. The second load re-asserts
+  flash_loading, so the CPU is pulled back into reset ~60 s in and the boot visibly restarts.
+  Cost is ~60 s to the title; the payoff is that a mis-ordered download can never leave a
+  half-restored image. Boot reaches POST -> MEMORY CHECK 22H/22J OK -> DATA LOADING (de10,
+  2026-07-31).
+-->
+<mistergamedescription>
+  <rbf>_Console/Konami_System_573</rbf>
+  <setname>System573</setname>
+  <file delay="1" type="f" index="0" path="/media/fat/games/System573/573bios.bin"/>
+  <file delay="1" type="f" index="3" path="/media/fat/games/System573/ddrsbm_nvram_installed.bin"/>
+  <file delay="1" type="f" index="4" path="/media/fat/games/System573/ddrsbm.u1"/>
+  <file delay="1" type="f" index="5" path="/media/fat/games/System573/ddrsbm.u6"/>
+  <file delay="2" type="s" index="1" path="/media/fat/games/System573/ddrsbm.chd"/>
+  <file delay="3" type="s" index="4" path="/media/fat/saves/System573/ddrsbm.sav"/>
+</mistergamedescription>

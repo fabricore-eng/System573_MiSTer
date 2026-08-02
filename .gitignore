@@ -104,3 +104,10 @@ snap/
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+dumps/
+snap/
+
+# Sim run logs that slipped in: the ignore list covered sim/nvc/build/ and
+# sim/system573/build/ but not these sibling build dirs, so three run.log
+# artifacts ended up tracked. Ignore the logs wherever a sim build writes them.
+sim/**/build*/run*.log

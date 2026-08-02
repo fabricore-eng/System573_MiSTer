@@ -54,7 +54,7 @@ module tb_atapi_cdread;
         .dma_req(), .dma_rd(1'b0), .dma_dout()
     );
     s573_cdimg cdimg (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .ide_rst(1'b0),
         .sec_req(sec_req), .sec_lba(sec_lba),
         .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
         .sec_ready(sec_ready), .sec_busy(sec_busy),

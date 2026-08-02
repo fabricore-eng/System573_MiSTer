@@ -13,6 +13,7 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/zs0
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/crc16.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_seccart.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/k573dio.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/mas3507d_i2c.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/k573_mp3dec.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/k573_mp3stream.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/atapi.v]
@@ -21,6 +22,12 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/fla
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_nvram_loader.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_flash_saver.v]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_ch4_arb.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_ddram_arb.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_hps_ext.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_mp3_credit.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_mp3_pcm.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_pcm_ring.v]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/s573_audio_mix.v]
 
 # ---------------------------------------------------------------------------
 # Vendored PlayStation core (psx/), with the EXP1 widening from psx_patches/

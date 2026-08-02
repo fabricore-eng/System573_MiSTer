@@ -38,9 +38,11 @@ module flash_nor #(
     // BACKING_EXTERNAL=1: the command/ID FSM is identical, but the ARRAY itself
     //   lives outside this module (the s573_flash 16 MB SDRAM-backed line buffer).
     //   In that mode array reads return `ext_rd_data` (the parent's word for the
-    //   current `addr`) and program/erase are dropped (real flash is read-only in
-    //   HW for now). The autoselect MFR/DEV ID path is unaffected so POST still
-    //   passes the flash-ID check.
+    //   current `addr`); program and erase are executed by the PARENT, which
+    //   watches the `prog_now` / `erase_now` strobes below (s573_flash commits
+    //   programs word-by-word and runs erases as a background 0xFF walker over
+    //   the SDRAM backing). The autoselect MFR/DEV ID path is unaffected so POST
+    //   still passes the flash-ID check.
     parameter integer BACKING_EXTERNAL = 0
 )(
     input  wire        clk,
@@ -62,7 +64,17 @@ module flash_nor #(
     // to its external array. `din` is the program data and `addr` the (low) target
     // word; the NOR rule (cell &= data) is applied by the parent against the array
     // word it holds. Combinational; harmless (and ignored) in BACKING_EXTERNAL=0.
-    output wire        prog_now
+    output wire        prog_now,
+    // High on the erase COMMAND cycle (state ST_ERCMD + a write strobe carrying a
+    // valid erase opcode): chip erase (0x10 @ ADDR1) or sector erase (0x30, any
+    // address -- JEDEC and MAME intelfsh both accept 0x30 anywhere; the sector is
+    // named by the address). erase_chip distinguishes the two. This module's addr
+    // port is only 16 bits, so a BACKING_EXTERNAL=1 parent captures the sector
+    // index from its own full window address at this strobe (s573_flash uses
+    // win_addr[20:16]). Combinational; ignored in BACKING_EXTERNAL=0, where the
+    // local mem[] erase below still serves the sim path.
+    output wire        erase_now,
+    output wire        erase_chip
 );
     localparam [2:0] ST_READ=3'd0, ST_UL1=3'd1, ST_UL2=3'd2, ST_AUTO=3'd3,
                      ST_PROG=3'd4, ST_ER1=3'd5, ST_ER2=3'd6, ST_ERCMD=3'd7;
@@ -152,6 +164,14 @@ module flash_nor #(
     // ANDs `din` into the array word at `addr` (a reset F0 is NOT special here --
     // the FSM above only treats F0 as a reset when state != ST_PROG). One cycle.
     assign prog_now = (ce && we && state == ST_PROG);
+
+    // The erase command cycle: in ST_ERCMD, 0x10 at ADDR1 = chip erase, 0x30 at
+    // any address = sector erase. A 0xF0 in ST_ERCMD never reaches here (the FSM
+    // treats it as the global reset above), and any other value aborts to ST_READ
+    // with no strobe -- both per JEDEC.
+    assign erase_chip = (hit1 && din[7:0] == 8'h10);
+    assign erase_now  = (ce && we && state == ST_ERCMD &&
+                         (erase_chip || din[7:0] == 8'h30));
 
     always @(*) begin
         if (ce && state == ST_AUTO)

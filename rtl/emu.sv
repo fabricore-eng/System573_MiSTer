@@ -402,6 +402,17 @@ parameter CONF_STR = {
 	"F5,U6,Load Cart Serial;",
 	"O[93],573 Boot Device,Flash ROM,CD-ROM;",
 	"O[94],573 Flash Debug,Off,On;",
+	// The DIO board's MP3 descrambler is per-TITLE, not per-board: the game uploads
+	// its own bitstream to the board's Xilinx XCS40XL at boot, and the seven known
+	// Konami bitstreams differ CHIEFLY in the descramble algorithm. DDR Solo Bass Mix
+	// shipped the variant scheme. Getting it wrong descrambles the audio to noise
+	// while every decode counter still reads GREEN -- so it is explicit, not guessed.
+	// Bit 101 deliberately: everything up to 100 is allocated, and the gaps below are
+	// not safe (the legacy "RD"/"RH"/"RI" entries allocate base-36 bits 13/17/18).
+	// FUTURE auto-detect: CRC the bitstream the game streams to 0xf8 and map it --
+	// that is exactly how MAME distinguishes Konami's GN676 firmwares -- but it needs
+	// the CRC observed on hardware first, so the manual switch comes first.
+	"O[101],573 MP3 Descramble,Default,DDR Solo Bass Mix;",
 	"O[96:95],573 Dbg Field,ch4Q,expQ,cnt/sz,wrAddr;",
 	"-;",
 	"d6C,Cheats;",
@@ -431,6 +442,12 @@ parameter CONF_STR = {
 	// writing flash -- no OSD action. Off disables ONLY the auto-save (manual Save Flash
 	// + Erase still work). On = status[99]=0 (default) -> autosave_en = ~status[99] = 1.
 	"O[99],Auto Save Install,On,Off;",
+	// 573 Cabinet (default Standard): DDR Solo cabs have no P2 -- the PCB senses the
+	// cab type through a grounded P2-START line (MAME ddrsolo remaps IN2 bit 0x80 to a
+	// constant). Solo games check it at boot and refuse to run in a "standard" cab
+	// (=SYSTEM UNIT ERROR=). Default MUST stay Standard: a grounded P2-START would
+	// auto-start player 2 in every 2P game. Per-core OSD option -> flip per game session.
+	"O[100],573 Cabinet,Standard,DDR Solo;",
 	"-;",
 	"O[36],Savestates to SDCard,On,Off;",
 	"O[68],Autoincrement Slot,Off,On;",
@@ -514,7 +531,15 @@ parameter CONF_STR = {
 
 	"-   ;",
 	"R0,Reset;",
-	"J1,Button 1,Button 2,Button 3,Button 4,Coin,Start,Service,Test,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
+	// J1 positions 1-4 serve BOTH cabinet modes, so the labels name both roles:
+	// standard cab = JAMMA buttons 1-3 (+ unused B4); DDR Solo cab = the two extra
+	// dance panels and the two song-wheel buttons (see the solo_cab remap below).
+	// RENAME ONLY -- never insert or reorder these entries: MiSTer stores a per-core
+	// input map as a POSITIONAL array indexed by joy bit, so a new entry in the
+	// middle silently re-points every .map file already on an SD card. Any genuinely
+	// new control goes at position 17+ (and would need a `jn` default, which only
+	// supplies 8 names).
+	"J1,Button 1/Pad UpLeft,Button 2/Pad UpRight,Button 3/Select L,Button 4/Select R,Coin,Start,Service,Test,L2,R2,L3,R3,Savestates,Fastforward,Pause(Core),Toggle Dualshock;",
 	"jn,X,A,B,Y,Select,Start,L,R;",
 	"I,",
 	"Load=DPAD Up|Save=Down|Slot=L+R,",
@@ -715,11 +740,47 @@ assign sd_wr[1] = 0;
 wire [35:0] EXT_BUS;
 wire        heartbeat;
 
-hps_ext hps_ext
+// P4b(b): the 573 EXT_BUS SPI mailbox replaces the vendored psx hps_ext stub
+// (bit-identical CD_GET/CD_SET + heartbeat behavior, plus CMD_573_PTRS/
+// STATUS/CTRL for the forked-Main s573mp3 service). Pointer/status/event
+// signals are declared with the MP3 transport block above the DDR3 arb.
+// Byte-ring inputs are tied 0: that leg is decision-B-gated (the
+// descramble-on-HPS spike may delete it) and the writer does not exist yet.
+s573_hps_ext hps_ext
 (
 	.clk_sys(clk_1x),
+	.rst(reset),
 	.EXT_BUS(EXT_BUS),
-	.heartbeat(heartbeat)
+	.heartbeat(heartbeat),
+
+	.fab_pcm_rd(mp3_fab_pcm_rd),
+	.hps_pcm_wr(mp3_hps_pcm_wr),
+
+	// Option-(c) config leg -- LIVE as of slice 2, credit leg LIVE as of slice 3.
+	// The mailbox serves the game's real descramble parameters, and the HPS's
+	// cumulative consumption now paces the streamer through s573_mp3_credit --
+	// which is what unfreezes `cur` and makes 0xae bit12 honest again.
+	.fab_pos_lo(dio_mp3_cur_pos[16:1]),   // word index; bit0 is always 0
+	.cfg_epoch(dio_cfg_epoch),
+	.hps_cons_bytes(mp3_hps_cons_bytes),
+
+	.mp3_start(dio_mp3_start[24:0]),
+	.mp3_end(dio_mp3_end[24:0]),
+	.mp3_key1(dio_key1),
+	.mp3_key2(dio_key2),
+	.mp3_key3(dio_key3),
+	.cfg_ddrsbm(status[101]),
+	.fpga_ctrl_en(dio_fpga_ctrl[15:13]),
+	.gain_ll(dio_gain_ll), .gain_rr(dio_gain_rr), .gain_stb(dio_gain_stb),
+
+	.status_flags(mp3_status_flags),
+	.underrun_cnt(mp3_underrun_sat),
+	.buf_level(mp3_buf_level16),
+
+	.ctrl_flags(mp3_ctrl_flags),
+	.dec_frame_sync(mp3_dec_frame_sync),
+	.dec_frame_idle(mp3_dec_frame_idle),
+	.evt_ovf(mp3_evt_ovf)
 );
 
 
@@ -1339,16 +1400,17 @@ psx
    .dma_wr(dma_wr),
    .dma_reqprocessed(dma_reqprocessed),
    .dma_data(dma_data),
-   // vram/ddr3
-   .DDRAM_BUSY      (DDRAM_BUSY      ),
-   .DDRAM_BURSTCNT  (DDRAM_BURSTCNT  ),
-   .DDRAM_ADDR      (DDRAM_ADDR      ),
-   .DDRAM_DOUT      (DDRAM_DOUT      ),
-   .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
-   .DDRAM_RD        (DDRAM_RD        ),
-   .DDRAM_DIN       (DDRAM_DIN       ),
-   .DDRAM_BE        (DDRAM_BE        ),
-   .DDRAM_WE        (DDRAM_WE        ),
+   // vram/ddr3 -- routed through s573_ddram_arb (the 573 DIO-RAM DDR3 client
+   // shares the port; psx keeps absolute priority, see the arbiter below)
+   .DDRAM_BUSY      (psx_ddram_busy      ),
+   .DDRAM_BURSTCNT  (psx_ddram_burstcnt  ),
+   .DDRAM_ADDR      (psx_ddram_addr      ),
+   .DDRAM_DOUT      (psx_ddram_dout      ),
+   .DDRAM_DOUT_READY(psx_ddram_dout_ready),
+   .DDRAM_RD        (psx_ddram_rd        ),
+   .DDRAM_DIN       (psx_ddram_din       ),
+   .DDRAM_BE        (psx_ddram_be        ),
+   .DDRAM_WE        (psx_ddram_we        ),
    // cd
    .region          (region),
    .region_out      (region_out),
@@ -1510,8 +1572,12 @@ psx
    .snacMC(status[66]),
 
    //sound
-	.sound_out_left(AUDIO_L),
-	.sound_out_right(AUDIO_R),
+	// P4b(b): SPU no longer drives AUDIO_L/R directly -- it feeds the
+	// saturating s573_audio_mix (SPU + HPS MP3 PCM) in the MP3 transport
+	// block. With the MP3 channel idle/underrun (pcm = 0) the mixer is a
+	// bit-exact passthrough of these signals.
+	.sound_out_left(spu_l),
+	.sound_out_right(spu_r),
    //savestates
    .increaseSSHeaderCount (!status[36]),
    .save_state            (ss_save_eff),
@@ -1552,7 +1618,25 @@ wire        exp1_we;
 wire        exp1_re;
 wire [15:0] exp1_dataRead;
 wire        exp_irq10;
-wire        exp1_wait;          // 573 flash line-fill stall -> psx_mister EXP1 wait
+// 573 EXP1 read stall -> psx_mister EXP1 wait (patch 0006): a flash line-fill
+// miss OR a DIO-RAM b4 read miss (each 0 for every other access).
+wire        flash_wait_s573;
+wire        dio_wait_s573;
+wire        exp1_wait = flash_wait_s573 | dio_wait_s573;
+
+// 573 DIO-board 32 MiB sample RAM <-> DDR3 (s573_ddram_arb DIO client). The
+// channels are 4-phase level handshakes out of the clk_1x fabric, sampled in
+// the clk_2x DDRAM domain (same-PLL, edge-aligned related clocks).
+wire        dio_mem_rd_req;
+wire [21:0] dio_mem_rd_addr;
+wire [63:0] dio_mem_rd_q;
+wire        dio_mem_rd_ack;
+wire        dio_mem_wr_req;
+wire [23:0] dio_mem_wr_addr;
+wire [15:0] dio_mem_wr_data;
+wire        dio_mem_wr_ack;
+wire        dio_dbg_ovf;        // sticky posted-write FIFO overflow (SignalTap observer)
+wire        dio_dbg_hi_write;   // sticky: game wrote ABOVE the real board 24 MiB (P4b PCM-ring guard)
 
 // 573 ATAPI <-> PSX DMA channel 5 (psx_patches/0023). All clk_1x, no CDC: the
 // dma.vhd consume strobe is ce-qualified, atapi.v free-runs on the same clock.
@@ -1768,6 +1852,8 @@ reg  flash_save_trigger = 1'b0;
 
 // ERASE trigger: the "Erase Flash Save" R-bit -> blank the .sav (roll back clean).
 wire bk_erase_flash = status[98];                  // "R[98],Erase Flash Save;" (CONF_STR)
+wire solo_cab       = status[100];                 // "O[100],573 Cabinet;" 1 = DDR Solo: strap
+                                                   // P2-START grounded (cab-type sense line)
 reg  old_eflash = 1'b0;
 reg  flash_erase_trigger = 1'b0;
 
@@ -1801,6 +1887,20 @@ always @(posedge clk_1x) begin
    if (flash_load_arm && saver_busy && ~saver_saving)
       flash_load_taken <= 1'b1;
 
+   // ORDERING FIX (2026-07-31): an index-2 flash download rewrites the ENTIRE 16 MB image,
+   // so it INVALIDATES any restore that already ran -- re-arm and let the load run again
+   // once the download + settle hold clear. The original one-shot assumed the slot-4 mount
+   // could only arrive AFTER the .mgl's downloads; it cannot. Main mounts every `SC<n>`
+   // slot from config/<core>.s<n> inside parse_config() (user_io.cpp:966-1000) at CORE
+   // INIT -- user_io_init() calls it at :1483, BEFORE mgl_parse() at :1508 and long before
+   // the first delayed .mgl item. So the mount, and therefore the restore, normally comes
+   // FIRST, the blank lands on top of it, and the one-shot blocked the retry: ddrsbm booted
+   // to "DO YOU WANT TO INITIALIZE FLASH-ROM?" with a golden .sav mounted and fully read.
+   // (hypbbc2p/konam80s escaped it only because their .mgl also carries an explicit s4 item
+   // within Main's six-item cap, whose second img_mounted[4] pulse re-armed the load.)
+   // This makes the RISK-R1 guard hold for BOTH orderings instead of just one.
+   if (flash_download) flash_load_taken <= 1'b0;
+
    // edge -> 1-cycle save pulse. Saving clears dirty so a single OSD open does
    // not re-save unchanged flash on the next open.
    if ((~old_sflash & bk_save_flash) | (~old_sflash_a & bk_save_flash_a)) begin
@@ -1818,9 +1918,15 @@ end
 // AUTOSAVE_THRESH default (~3.05e8 clk_1x cycles ~= 9 s @ 33.8688 MHz): the
 // install-complete auto-save fires once the flash has been written then quiet for
 // this long. The TB scales it down; HW uses the module default.
+// flash_download is in the reset term on purpose (2026-07-31 ddrsbm root cause): an
+// index-2 download rewrites the whole 16 MB image, so a LOAD that is in flight when one
+// starts would finish having written a MIX of pre- and post-blank words. Resetting the
+// saver ABORTS that load; the flash_load_taken clear above then re-arms it, so it restarts
+// from block 0 once the download + settle hold clear. A flash_download only ever happens at
+// core load, never during gameplay, so this can never interrupt a SAVE.
 s573_flash_saver #(.NUM_BLOCKS(16384)) u_flash_saver (
    .clk          (clk_1x),
-   .reset        (RESET | status[0]),
+   .reset        (RESET | status[0] | flash_download),
    .save_trigger (flash_save_trigger),
    .erase_trigger(flash_erase_trigger),
    .flash_wr_ack (flash_wr_ack),       // install-activity strobe -> arms the auto-save
@@ -2003,9 +2109,11 @@ function [23:0] dbg_field;
          //   R[7]=io04_seen(read 0x1f400004 / 18E area) R[6]=atapi_seen(touched IDE page 0x48)
          //   R[5]=idecmd_seen(wrote ATA cmd 0x1f48000e) R[4]=bankctl_wr(flash pre-step ran)
          //   R[3]=winsel(read flash window) R[2]=req_seen(flash fill req) R[1]=first_seen(flash data)
+         //   R[0]=dio_dbg_ovf (sticky DIO posted-write FIFO overflow -- a FAULT; also the
+         //   synthesis sink that keeps the observer net alive for SignalTap)
          //   G=heart[15:8] (advances across captures iff clk_1x runs).
          2'd1: dbg_field = {dbg_io04_seen, dbg_atapi_seen, dbg_idecmd_seen, dbg_bankctl_wr,
-                            flash_dbg[17], dbg_req_seen, dbg_first_seen, 1'b0,
+                            flash_dbg[17], dbg_req_seen, dbg_first_seen, dio_dbg_ovf,
                             dbg_heart[15:8], 8'h0};
          // band2 = WHERE: R=last EXP1 page (exp1_addr[23:16]) G=last EXP1 addr[15:8].
          //   0x00=flash 0x40=s573_io 0x48=IDE/ATAPI 0x50=bankctl -- the page the BIOS last poked
@@ -2085,7 +2193,49 @@ always @(posedge clk_1x) begin
    if (ps2_tgl_d != ps2_key[10] && ps2_key[7:0] == 8'h2C) key_test <= ps2_key[9];
 end
 
-system573_top #(.FLASH_SIM_BACKING(0)) u_s573
+// ---- DDR Solo six-panel platform + song wheel (audit IO-004) -----------------
+// A Solo cabinet is ONE player on a SIX-panel platform, and the game reads it that
+// way: MAME INPUT_PORTS_START(ddrsolo) re-labels BOTH bytes of IN2 (0x1f400008) as
+// player-1 panel sensors -- the "P2" byte is NOT a second player on this cab. Each
+// panel is TWO sensor lines ("<dir> 1" / "<dir> 2") on separate JAMMA pins, and MAME
+// gives both lines the same IPT_/PORT_PLAYER, i.e. ONE control asserts BOTH. We do
+// the same: driving both lines is correct whether the game ORs them or requires
+// both, while driving only one is correct only under OR. IN2 bit map, MSB first:
+//   [15] START1          [7] P2-START -> cab strap, MUST read 0 (IP_ACTIVE_HIGH)
+//   [14] Down 2          [6] Up-Right 2
+//   [13] Left 2          [5] Right 2
+//   [12] Up-Left 2       [4] Up 2
+//   [11] Down 1          [3] IPT_UNUSED
+//   [10] Up 1            [2] IPT_UNUSED
+//   [ 9] Right 1         [1] Up-Right 1
+//   [ 8] Left 1          [0] Up-Left 1
+// The song wheel is deliberately NOT in this register: "Select L"/"Select R" are
+// IN3 (0x1f40000c / 0x1f40000e bit 9), driven by sel_l/sel_r below. That separation
+// is the whole point -- on the real cabinet you move the wheel with two dedicated
+// buttons, not by stepping on the arrows. Held at their old constant 1'b1 they read
+// permanently RELEASED, which is why song selection was unreachable by any control.
+wire pad_l  = joy[1];   // D-pad Left   -> Left  panel (both sensor lines)
+wire pad_r  = joy[0];   // D-pad Right  -> Right panel
+wire pad_u  = joy[3];   // D-pad Up     -> Up    panel
+wire pad_d  = joy[2];   // D-pad Down   -> Down  panel
+wire pad_ul = joy[4];   // Button 1 (X) -> Up-Left  panel (Solo's 5th panel)
+wire pad_ur = joy[5];   // Button 2 (A) -> Up-Right panel (Solo's 6th panel; both of
+                        //   its lines used to sit on joy2, so it was unreachable
+                        //   from a single controller)
+wire sel_l  = joy[6];   // Button 3 (B) -> "P1 Select L" (IN3 0x00000200)
+wire sel_r  = joy[7];   // Button 4 (Y) -> "P1 Select R" (IN3 0x02000000). joy[7] is
+                        //   free on the 573 side: its only sink was the PSX pad,
+                        //   which psx_patches/0026 strips.
+
+// P1 byte: {START1, Down2, Left2, UpLeft2, Down1, Up1, Right1, Left1} (active-low)
+wire [7:0] p1_solo = ~{joy[9], pad_d, pad_l, pad_ul, pad_d, pad_u, pad_r, pad_l};
+// P2 byte: {strap, UpRight2, Right2, Up2, UNUSED, UNUSED, UpRight1, UpLeft1}
+// [7] is forced pressed (0): the strap IS the cab-type sense line and a Solo cab has
+// no P2 START to OR in. [3:2] are IPT_UNUSED under ddrsolo, so park them IDLE rather
+// than at joy2 -- a stray pad-2 press must not be able to fake a panel.
+wire [7:0] p2_solo = {1'b0, ~pad_ur, ~pad_r, ~pad_u, 2'b11, ~pad_ur, ~pad_ul};
+
+system573_top #(.FLASH_SIM_BACKING(0), .DIO_SIM_BACKING(0)) u_s573
 (
    .clk            (clk_1x),
    .rst            (reset),
@@ -2095,7 +2245,24 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .exp1_we        (exp1_we),
    .exp1_re        (exp1_re),
    .exp1_rdata     (exp1_dataRead),
-   .flash_wait     (exp1_wait),
+   .flash_wait     (flash_wait_s573),
+   .dio_wait       (dio_wait_s573),
+   // DIO-board 32 MiB sample RAM in DDR3 (s573_ddram_arb client, see below)
+   .dio_mem_rd_req (dio_mem_rd_req),
+   .dio_mem_rd_addr(dio_mem_rd_addr),
+   .dio_mem_rd_q   (dio_mem_rd_q),
+   .dio_mem_rd_ack (dio_mem_rd_ack),
+   .dio_mem_wr_req (dio_mem_wr_req),
+   .dio_mem_wr_addr(dio_mem_wr_addr),
+   .dio_mem_wr_data(dio_mem_wr_data),
+   .dio_mem_wr_ack (dio_mem_wr_ack),
+   .dio_dbg_hi_write(dio_dbg_hi_write),
+   .dio_dbg_ovf    (dio_dbg_ovf),
+   // MP3 descramble scheme select (MAME set_ddrsbm_fpga). P4b: driven
+   // per-game by the HPS over the SPI mailbox (CMD_573_CTRL bit0 -- the HPS
+   // knows the mounted game; ddrsbm needs 1). Zero until the forked-Main
+   // half exists, so behavior is unchanged from the old 1'b0 tie.
+   .cfg_ddrsbm     (status[101]),
    .flash_mem_req  (flash_mem_req),
    .flash_mem_addr (flash_mem_addr),
    .flash_mem_q    (flash_mem_q),
@@ -2129,13 +2296,31 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    // r_jamma[15:8] (P1) = {START,B3,B2,B1,DOWN,UP,RIGHT,LEFT} (active-low) -- so remap the
    // MiSTer joy bits (0=R,1=L,2=D,3=U,4=B1,5=B2,6=B3,8=Select,9=Start) into THAT order
    // (audit IO-003: the old ~joy[7:0] had L/R + U/D transposed and START missing). COIN=Select.
+   // ---- DDR Solo six-panel platform + song wheel (see decode above the instance) --
    .dip_sw         ({status[93], 3'b111}), // DIP SW4 (bit3) from OSD "573 Boot Device": 0=Flash ROM (default,
                                            // boots onboard flash, no CD needed), 1=CD-ROM. 0x1f400004 bit3,
                                            // MAME ksys573 DIP SW:4. SW1-3 left off (active-low).
-   .p1_ctrl        (~{joy[9],  joy[6],  joy[5],  joy[4],  joy[2],  joy[3],  joy[0],  joy[1] }),
+   // Standard branch is the audit IO-003 mapping, byte-for-byte UNCHANGED (the old
+   // ~joy[7:0] had L/R + U/D transposed and START missing -- do not "tidy" it).
+   // Solo branch: see the ddrsolo bit map at the p1_solo/p2_solo decode above. The
+   // Solo-cab strap that used to be OR'd into P2 bit[7] here now lives inside
+   // p2_solo, so the standard expression can never see it (solo_cab is 0 there
+   // anyway, so dropping the OR is behaviour-preserving for a standard cab).
+   .p1_ctrl        (solo_cab ? p1_solo
+                             : ~{joy[9],  joy[6],  joy[5],  joy[4],  joy[2],  joy[3],  joy[0],  joy[1] }),
                                            // P1 JAMMA: START,B3,B2,B1,DOWN,UP,RIGHT,LEFT (active-low)
-   .p2_ctrl        (~{joy2[9], joy2[6], joy2[5], joy2[4], joy2[2], joy2[3], joy2[0], joy2[1]}),
+   .p2_ctrl        (solo_cab ? p2_solo
+                             : ~{joy2[9], joy2[6], joy2[5], joy2[4], joy2[2], joy2[3], joy2[0], joy2[1]}),
+                                           // [7] P2-START on a Solo cab is the cab-type strap, hardwired to
+                                           // ground (reads LOW = active); it is forced inside p2_solo.
    .coin_sw        (~{joy2[8], joy[8]}),   // P2/P1 coin = Select (active-low); Start is JAMMA START
+   // JAMMA "player button 5" lines -> IN3 0x1f40000c / 0x0e bit 9. Nothing on a
+   // standard cab uses button 5, so keep them idle there; on a Solo cab they ARE the
+   // song wheel. Gated on solo_cab because joy[6] doubles as JAMMA Button 3 in
+   // standard mode and must not leak into IN3.
+   .btn5_p1        (~(solo_cab & sel_l)),  // "P1 Select L"
+   .btn5_p2        (~(solo_cab & sel_r)),  // "P1 Select R" -- rides the P2 button-5
+                                           //   line, re-sourced to player 1 by ddrsolo
    .service_btn    (~joy[10]),             // service button, active-low
    .test_btn       (~(joy[11] | key_test)),// test button, active-low (idle = boot game). key_test =
                                            // headless install TEST via keyboard 'T' (PS/2 0x2C), since
@@ -2182,8 +2367,34 @@ system573_top #(.FLASH_SIM_BACKING(0)) u_s573
    .wdog_reset     (),
    .cdrom_irq      (exp_irq10),
    .lamp_out       (),
+   // MP3 sink back-pressure: STAYS 0 -- this is the fabric->HPS byte-ring leg,
+   // gated on decision B (the descramble-on-HPS spike may delete it) and its
+   // writer does not exist. Held low, the demand-paced streamer honestly
+   // back-pressures to a halt (the byte stream dangles unconsumed) instead of
+   // flooding the DIO-RAM read port.
+   .dio_mp3_ready  (mp3_credit_ready),
    .dio_mp3_byte   (),
-   .dio_mp3_valid  ()
+   .dio_mp3_valid  (dio_mp3_valid),
+   // MP3 decode-counter drivers (P4b wire-up): dec_frame_sync/idle come from
+   // the SPI mailbox (HPS cumulative event counters -> exactly-N 1-cycle
+   // pulses), pcm_sample_tick from the s573_mp3_pcm drain -- one tick per REAL
+   // sample drained @44100, never bytes-sent, never free-running. All three
+   // still read a truthful zero on HW until the forked-Main half exists (the
+   // mailbox never pulses without CMD_573_CTRL traffic, the drain never ticks
+   // without ring data), so 0xa8/0xca/0xcc behavior is unchanged today.
+   .dio_dec_frame_sync (mp3_dec_frame_sync),
+   .dio_dec_frame_idle (mp3_dec_frame_idle),
+   .dio_pcm_sample_tick(mp3_pcm_sample_tick),
+
+   // P4b option (c): descramble config -> SPI mailbox (read-only fan-out)
+   .dio_key1           (dio_key1),
+   .dio_key2           (dio_key2),
+   .dio_key3           (dio_key3),
+   .dio_mp3_start      (dio_mp3_start),
+   .dio_mp3_end        (dio_mp3_end),
+   .dio_fpga_ctrl      (dio_fpga_ctrl),
+   .dio_cfg_epoch      (dio_cfg_epoch),
+   .dio_mp3_cur_pos    (dio_mp3_cur_pos)
 );
 
 ////////////////////////////  MEMORY  ///////////////////////////////////
@@ -2386,6 +2597,220 @@ assign sdram_writeack2 = '0;
 
 
 assign DDRAM_CLK = clk_2x;
+
+// ---- DDR3 port arbiter: psx master (priority) + 573 DIO-RAM client ----
+// psx pins its DDRAM window to 0x30000000..0x3FFFFFFF (psx_mister.vhd) and uses
+// +0..8M (VRAM/memcards/SPU/framebuffers), +128M (rewind), +224M (savestates).
+// The DIO board's 32 MiB sample RAM sits at byte 0x32000000..0x33FFFFFF -- clear
+// of all of them (PLATFORM.md "DDR3 map"). The arbiter grants the DIO client
+// only when the psx side is completely idle and blips a fake DDRAM_BUSY at it
+// for the single-beat DIO op -- legal Avalon, the shared f2sdram port asserts
+// BUSY arbitrarily anyway.
+wire        psx_ddram_busy;
+wire [7:0]  psx_ddram_burstcnt;
+wire [28:0] psx_ddram_addr;
+wire [63:0] psx_ddram_dout;
+wire        psx_ddram_dout_ready;
+wire        psx_ddram_rd;
+wire [63:0] psx_ddram_din;
+wire [7:0]  psx_ddram_be;
+wire        psx_ddram_we;
+
+//////////////////////  MP3 TRANSPORT (P4b)  ////////////////////////////
+// HPS-decoded MP3 PCM path: DDR3 PCM ring -> s573_pcm_ring (reader) ->
+// s573_mp3_pcm (elastic buffer + 44100 Hz drain) -> s573_audio_mix -> AUDIO.
+// Pointers/status/events ride the s573_hps_ext SPI mailbox (instantiated at
+// the hps_ext site above), never DDR3. Everything here is inert until the
+// forked-Main s573mp3 service exists: hps_pcm_wr stays 0 -> the reader never
+// reads, the drain never ticks, the mixer passes the SPU through bit-exact.
+
+// SPU output (was wired straight to AUDIO_L/R; now one mixer hop away)
+wire [15:0] spu_l, spu_r;
+
+// mailbox <-> transport plumbing
+wire [15:0] mp3_fab_pcm_rd;
+wire [15:0] mp3_hps_pcm_wr;
+wire [15:0] mp3_ctrl_flags;      // bit0 RESERVED (the OSD bit O[101] owns the
+                                 // descramble scheme now), bit1 = mp3_drain_en
+wire        mp3_dec_frame_sync;
+wire        mp3_dec_frame_idle;
+wire        mp3_evt_ovf;
+
+// option (c): k573dio descramble config -> SPI mailbox (read-only fan-out;
+// nothing here feeds back into the core, so it cannot perturb the game)
+wire [15:0] dio_key1, dio_key2, dio_key3;
+wire [31:0] dio_mp3_start, dio_mp3_end;
+wire [15:0] dio_fpga_ctrl;
+wire [15:0] dio_cfg_epoch;
+wire [24:0] dio_mp3_cur_pos;
+
+// option (c) slice 3: HPS consumption credit -> streamer pacing. This is the
+// ONLY thing that advances k573_mp3stream's cur, and therefore the only source
+// of an honest 0xae bit12 ("still streaming") for the game's START/STOP guards.
+wire        dio_mp3_valid;
+wire [15:0] mp3_hps_cons_bytes;
+wire        mp3_credit_ready;
+wire [15:0] mp3_credit_level;
+wire        mp3_credit_ovf;
+
+s573_mp3_credit #(.CRED_W(16)) u_mp3_credit
+(
+	.clk            (clk_1x),
+	.rst            (reset),
+	.hps_cons_bytes (mp3_hps_cons_bytes),
+	.cfg_epoch      (dio_cfg_epoch),
+	.out_valid      (dio_mp3_valid),
+	.out_ready      (mp3_credit_ready),
+	.credit         (mp3_credit_level),
+	.cred_ovf       (mp3_credit_ovf)
+);
+
+// drain -> mixer + counter tick
+wire [15:0] mp3_pcm_l, mp3_pcm_r;
+wire        mp3_pcm_sample_tick;
+wire [31:0] mp3_underrun_cnt32, mp3_overflow_cnt32;
+wire  [9:0] mp3_buf_level;       // s573_mp3_pcm wr_level, AW=9 -> [9:0]
+
+// ring reader -> elastic buffer
+wire        mp3_buf_wr_en;
+wire [15:0] mp3_buf_wr_l, mp3_buf_wr_r;
+wire        mp3_buf_wr_full;
+
+// ring reader DIO read master (muxed onto the shared arb channel below)
+wire        ring_rd_req;
+wire [21:0] ring_rd_addr;
+wire        ring_rd_ack;
+
+// STATUS composition for the mailbox. underrun_cnt is fed as the SATURATED
+// 16-bit view -- the raw low 16 bits wrap every ~1.49 s of continuous
+// starvation and would read as a fresh counter mid-incident.
+wire [15:0] mp3_underrun_sat = (|mp3_underrun_cnt32[31:16]) ? 16'hFFFF
+                                                            : mp3_underrun_cnt32[15:0];
+wire [15:0] mp3_buf_level16  = {6'd0, mp3_buf_level};
+wire [15:0] mp3_status_flags = {12'd0,
+                                mp3_evt_ovf,           // bit3: event pulses lost (LOUD)
+                                (mp3_buf_level != 0),  // bit2: elastic buffer non-empty
+                                mp3_ctrl_flags[1],     // bit1: drain_en echo
+                                status[101]};          // bit0: cfg_ddrsbm (OSD-owned)
+
+s573_mp3_pcm u_mp3_pcm (
+   .clk            (clk_1x),
+   .rst            (reset),
+   .wr_en          (mp3_buf_wr_en),
+   .wr_l           (mp3_buf_wr_l),
+   .wr_r           (mp3_buf_wr_r),
+   .wr_full        (mp3_buf_wr_full),
+   .wr_level       (mp3_buf_level),
+   .drain_en       (mp3_ctrl_flags[1]),   // HPS-owned: set while the MP3 stream plays
+   .pcm_l          (mp3_pcm_l),
+   .pcm_r          (mp3_pcm_r),
+   .pcm_sample_tick(mp3_pcm_sample_tick),
+   .underrun_cnt   (mp3_underrun_cnt32),
+   .overflow_cnt   (mp3_overflow_cnt32)
+);
+
+s573_pcm_ring u_pcm_ring (      // RING_OFF_BEAT/BEATS_LOG2 defaults (provisional, must-fix #2)
+   .clk        (clk_1x),
+   .rst        (reset),
+   .hps_wr_ptr (mp3_hps_pcm_wr),
+   .fab_rd_ptr (mp3_fab_pcm_rd),
+   .rd_req     (ring_rd_req),
+   .rd_addr    (ring_rd_addr),
+   .rd_data    (dio_mem_rd_q),   // shared data bus; qualified by ring_rd_ack
+   .rd_ack     (ring_rd_ack),
+   .wr_en      (mp3_buf_wr_en),
+   .wr_l       (mp3_buf_wr_l),
+   .wr_r       (mp3_buf_wr_r),
+   .wr_full    (mp3_buf_wr_full)
+);
+
+// Saturating SPU + MP3 mixer -> the framework audio outputs (AUDIO_S = 1).
+// Combinational: domain-neutral, and a bit-exact SPU passthrough while the
+// MP3 channel is idle (s573_mp3_pcm drives pcm to 0).
+s573_audio_mix u_audio_mix (
+   .spu_l (spu_l),
+   .spu_r (spu_r),
+   .mp3_l (mp3_pcm_l),
+   .mp3_r (mp3_pcm_r),
+   .out_l (AUDIO_L),
+   .out_r (AUDIO_R)
+);
+
+// ---- DIO read-channel mux: 2 clients, one arb port ----
+// The arb's single DIO read client was owned by system573_top's sample-RAM
+// path (dio_mem_rd_*); the PCM-ring reader is the second master. Grant-and-
+// hold per complete 4-phase handshake (req up, ack up, req down, ack down),
+// sample-RAM priority: game-facing DIO-RAM reads never wait behind more than
+// one in-flight ring beat, while the ring's elastic buffer absorbs the wait.
+// No observable VALUE changes vs the direct connection this replaces, but
+// existing DIO reads pay +1 clk_1x cycle of grant latency (busy must latch
+// before the req reaches the arb) -- accepted; do NOT add a combinational
+// idle-bypass to win it back (extra logic depth on an f2sdram-bridge-cone
+// path, the LESSONS locality wedge class). Both level handshakes stay in
+// clk_1x (clk_1x/clk_2x are edge-aligned related clocks).
+// The address presented to the arb is REGISTERED at the grant edge (both
+// clients hold their address through the whole 4-phase, so the snapshot
+// equals the live value): the arb's dio_rd_addr input flows combinationally
+// onto the f2sdram DDRAM_ADDR port, and a live 2:1 mux there would put new
+// combinational logic + the ring's 22-bit addr registers in series into the
+// marginal bridge's input cone -- the register restores the pre-mux
+// single-register-bank cone shape.
+reg         dio_rd_owner;   // 0 = sample-RAM (system573_top), 1 = PCM-ring reader
+reg         dio_rd_busy;
+reg  [21:0] dio_arb_rd_addr;
+wire dio_arb_rd_ack;
+always @(posedge clk_1x) begin
+   if (reset) begin
+      dio_rd_busy  <= 0;
+      dio_rd_owner <= 0;
+   end else if (!dio_rd_busy) begin
+      if (dio_mem_rd_req) begin
+         dio_rd_busy  <= 1;
+         dio_rd_owner <= 0;
+         dio_arb_rd_addr <= dio_mem_rd_addr;
+      end else if (ring_rd_req) begin
+         dio_rd_busy  <= 1;
+         dio_rd_owner <= 1;
+         dio_arb_rd_addr <= ring_rd_addr;
+      end
+   end else if (!(dio_rd_owner ? ring_rd_req : dio_mem_rd_req) && !dio_arb_rd_ack) begin
+      dio_rd_busy <= 0;     // granted client's 4-phase fully closed
+   end
+end
+wire dio_arb_rd_req = dio_rd_busy & (dio_rd_owner ? ring_rd_req : dio_mem_rd_req);
+assign dio_mem_rd_ack = dio_rd_busy & ~dio_rd_owner & dio_arb_rd_ack;
+assign ring_rd_ack    = dio_rd_busy &  dio_rd_owner & dio_arb_rd_ack;
+
+s573_ddram_arb #(.DIO_BASE_BEAT(29'h0640_0000)) u_ddram_arb (   // 0x32000000 >> 3
+   .clk            (clk_2x),
+   .rst            (reset),
+   .ddr_busy       (DDRAM_BUSY),
+   .ddr_burstcnt   (DDRAM_BURSTCNT),
+   .ddr_addr       (DDRAM_ADDR),
+   .ddr_dout       (DDRAM_DOUT),
+   .ddr_dout_ready (DDRAM_DOUT_READY),
+   .ddr_rd         (DDRAM_RD),
+   .ddr_din        (DDRAM_DIN),
+   .ddr_be         (DDRAM_BE),
+   .ddr_we         (DDRAM_WE),
+   .psx_busy       (psx_ddram_busy),
+   .psx_burstcnt   (psx_ddram_burstcnt),
+   .psx_addr       (psx_ddram_addr),
+   .psx_dout       (psx_ddram_dout),
+   .psx_dout_ready (psx_ddram_dout_ready),
+   .psx_rd         (psx_ddram_rd),
+   .psx_din        (psx_ddram_din),
+   .psx_be         (psx_ddram_be),
+   .psx_we         (psx_ddram_we),
+   .dio_rd_req     (dio_arb_rd_req),   // muxed: sample-RAM + PCM-ring reader
+   .dio_rd_addr    (dio_arb_rd_addr),
+   .dio_rd_data    (dio_mem_rd_q),     // fans out to both clients; ack qualifies
+   .dio_rd_ack     (dio_arb_rd_ack),
+   .dio_wr_req     (dio_mem_wr_req),
+   .dio_wr_addr    (dio_mem_wr_addr),
+   .dio_wr_data    (dio_mem_wr_data),
+   .dio_wr_ack     (dio_mem_wr_ack)
+);
 
 ////////////////////////////  VIDEO  ////////////////////////////////////
 

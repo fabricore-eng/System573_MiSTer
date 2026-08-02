@@ -38,9 +38,17 @@ module tb_system573_top;
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
         .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
+        .dio_mp3_ready(1'b0),   // no MP3 streaming in this smoke test
+        .dio_dec_frame_sync(1'b0), .dio_dec_frame_idle(1'b0), .dio_pcm_sample_tick(1'b0),
         // SIM_BACKING defaults to 1: inline flash; flash_wait stays 0, SDRAM unused.
         .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
         .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
+        // DIO_SIM_BACKING defaults to 1: inline DIO RAM; dio_wait stays 0,
+        // the DDR3 channels are unused.
+        .dio_wait(), .dio_mem_rd_req(), .dio_mem_rd_addr(),
+        .dio_mem_rd_q(64'd0), .dio_mem_rd_ack(1'b0),
+        .dio_mem_wr_req(), .dio_mem_wr_addr(), .dio_mem_wr_data(),
+        .dio_mem_wr_ack(1'b0), .dio_dbg_ovf(), .cfg_ddrsbm(1'b0),
         .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0),
         .sec_cart_type(2'd0),
         .sec_eep_we(1'b0), .sec_eep_addr(10'd0), .sec_eep_din(8'd0),

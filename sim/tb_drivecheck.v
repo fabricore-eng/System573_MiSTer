@@ -38,8 +38,16 @@ module tb_drivecheck;
         .coin_counter(coin_counter), .audio_amp_en(audio_amp_en),
         .audio_mute(audio_mute), .spu_dac_en(spu_dac_en), .wdog_reset(wdog_reset),
         .cdrom_irq(cdrom_irq), .lamp_out(lamp_out),
+        .dio_mp3_ready(1'b0),   // no MP3 streaming in this drive-check test
+        .dio_dec_frame_sync(1'b0), .dio_dec_frame_idle(1'b0), .dio_pcm_sample_tick(1'b0),
         .flash_wait(), .flash_mem_req(), .flash_mem_addr(),
         .flash_mem_q(128'd0), .flash_mem_ready(1'b0),
+        // DIO_SIM_BACKING defaults to 1: inline DIO RAM; dio_wait stays 0,
+        // the DDR3 channels are unused.
+        .dio_wait(), .dio_mem_rd_req(), .dio_mem_rd_addr(),
+        .dio_mem_rd_q(64'd0), .dio_mem_rd_ack(1'b0),
+        .dio_mem_wr_req(), .dio_mem_wr_addr(), .dio_mem_wr_data(),
+        .dio_mem_wr_ack(1'b0), .dio_dbg_ovf(), .cfg_ddrsbm(1'b0),
         .nvram_we(1'b0), .nvram_addr(13'd0), .nvram_din(8'd0),
         .sec_cart_type(2'd0),
         .sec_eep_we(1'b0), .sec_eep_addr(10'd0), .sec_eep_din(8'd0),
@@ -91,7 +99,9 @@ module tb_drivecheck;
     task wait_not_busy(input [255:0] what);
         integer p; reg [15:0] s; begin
             s = 16'h0080;
-            for (p = 0; p < 64 && (s & 16'h0080) !== 16'h0000; p = p + 1)
+            // budget covers the IDENTIFY fix's IDENT_SETTLE (2048 clk1x) BSY hold as well
+            // as READ TOC's short metadata-lookup window (each exp1_read is several clk).
+            for (p = 0; p < 4096 && (s & 16'h0080) !== 16'h0000; p = p + 1)
                 exp1_read(24'h48000e, s);
             if ((s & 16'h0080) !== 16'h0000) begin
                 $display("FAIL: BSY stuck (%0s)", what);
@@ -129,6 +139,9 @@ module tb_drivecheck;
         exp1_write(24'h480008, 16'h0000);   // byte count lo
         exp1_write(24'h48000e, 16'h00a1);   // command = 0xA1 IDENTIFY PACKET DEVICE
 
+        // the fix holds BSY for IDENT_SETTLE clk1x before raising DRQ (closes the ddrsbm
+        // IDENTIFY-IRQ race); poll BSY-clear like the BIOS before checking the data phase.
+        wait_not_busy("IDENT");
         // after 0xA1: DRQ (bit3) set, ERR (bit0) clear; byte count 0x0200
         exp1_read(24'h48000e, v);
         chk({12'd0, v[3], 3'd0} & 16'h0008, 16'h0008, "IDENT DRQ set");

@@ -87,8 +87,12 @@ hook point, the 4 MB/2 MB deviations, IRQ10/DMA ch5, bring-up order).
       both schemes (default + DDR SBM) with the running key schedule
 - [x] MP3 streaming controller (`rtl/k573_mp3stream.v`, tested): reads board
       DRAM start..end, descrambles, emits the MP3 byte stream + FPGA status
-- [ ] MAS3507D MP3 decoder + DAC path (the MP3->PCM decode itself; I2C stubbed)
-- [ ] Stream music from CD/flash through the descrambler into the decoder
+- [x] MAS3507D MP3 decoder + DAC path — decode runs HPS-side (in-fabric decode was
+      costed and rejected, see the DDR feasibility audit); I2C de-stubbed with the
+      output gain matrix decoded off the bus (`rtl/mas3507d_i2c.v`)
+- [x] Stream music from CD/flash through the descrambler into the decoder — verified
+      on hardware 2026-08-02 with ddrsbm: attract and a credited stage, music starting
+      and stopping on the game's own play/stop
 
 ## Phase 5 — polish
 - [~] Analog I/O board variant
