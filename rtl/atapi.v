@@ -76,7 +76,7 @@ module atapi #(
     localparam [7:0] IR_CD=8'h01, IR_IO=8'h02;
 
     localparam [2:0] S_IDLE=3'd0, S_PKT=3'd1, S_DATAIN=3'd2, S_DATAOUT=3'd3, S_FETCH=3'd4,
-                     S_TOC=3'd5;
+                     S_TOC=3'd5, S_PREP=3'd6;
 
     // Data-ready gating + pacing (clk1x = 33.8688 MHz):
     //  * FETCH_SETTLE covers the sec_req -> s573_cdimg sec_ready-invalidate race (the
@@ -87,6 +87,18 @@ module atapi #(
     //    accounting always runs before the next DRQ/INTRQ.
     localparam [12:0] FETCH_SETTLE = 13'd4;
     localparam [12:0] PACE_CLKS    = 13'd4096;
+    // IDENT_SETTLE: BSY hold before raising the fixed-response data-in IRQ (currently
+    // IDENTIFY 0xA1). Closes the ddrsbm IDENTIFY-IRQ race -- the device must not raise
+    // DRQ+INTRQ in the SAME cycle as the command write, or the digital-board POST ISR
+    // runs before its driver has set the software transfer-pending state byte, takes the
+    // skip-to-exit branch, never drains the 512-byte block -> DRQ stuck -> BOOT CHECK
+    // (proven on silicon, SignalTap 2026-06-25). A real CR-589 (and MAME) delay this IRQ
+    // by the drive's data-prep latency. HW-tunable: must exceed the driver's "write cmd
+    // -> set state byte -> wait" window (~tens of clk1x) and stay well under its bounded
+    // DRQ-wait timeout (0xf690 loop). Start conservative; tune on silicon. DRQ stays
+    // poll-reachable after the settle, so the polling games (powyakex/hypbbc2p) are
+    // unaffected -- they never use the IRQ.
+    localparam [12:0] IDENT_SETTLE = 13'd2048;
 
     reg [7:0] r_error, r_feat, r_ireason, r_lbalo, r_bclo, r_bchi, r_device, r_status, r_devctl;
     reg [2:0] state;
@@ -316,7 +328,13 @@ module atapi #(
                                   // ===== full 12-byte packet received: dispatch =====
                                   pkt_idx <= 0;
                                   case (pkt[0])
-                                      8'h00: begin              // TEST UNIT READY (non-data)
+                                      8'h00, 8'h1b: begin       // TEST UNIT READY / START-STOP UNIT (non-data GOOD)
+                                          // 0x1b is the per-song ritual opcode ddrsbm issues x2 after
+                                          // every preload (oracle log n=545/546). A real CR-589 (+ MAME)
+                                          // answer GOOD; the old default arm returned CHECK CONDITION
+                                          // while REQUEST SENSE reports key 0 -- a contradiction the
+                                          // game reacts to with extra drive resets (gate-5, RED sub-test
+                                          // [B]). Both are non-data commands -> DRDY|DSC good completion.
                                           r_status  <= ST_DRDY | ST_DSC;
                                           r_ireason <= IR_CD | IR_IO;
                                           r_error   <= 8'h00;
@@ -455,9 +473,28 @@ module atapi #(
                                 resp_len  <= 13'd512;
                                 r_bclo <= 8'h00; r_bchi <= 8'h02; // byte count 0x0200
                                 ridx <= 0; datain_disc <= 1'b0; datain_ident <= 1'b1; datain_toc <= 1'b0;
-                                r_status  <= ST_DRDY | ST_DRQ;
                                 r_ireason <= IR_IO; r_error <= 8'h00;
+`ifdef ATAPI_IDENT_NOSETTLE
+                                // RED reference for the IDENTIFY-IRQ-race red/green test ONLY
+                                // (never synthesised -- no .qsf/.sdc define): raise DRQ+INTRQ in
+                                // the SAME cycle as the 0xA1 command write. ddrsbm's POST ISR then
+                                // runs before its driver sets the transfer-pending state byte ->
+                                // skip-to-exit -> the 512-byte block never drains -> DRQ stuck ->
+                                // BOOT CHECK (proven on silicon, SignalTap 2026-06-25).
+                                r_status  <= ST_DRDY | ST_DRQ;
                                 irq_pending <= 1'b1; irq_event <= 1'b1; state <= S_DATAIN;
+`else
+                                // FIX: hold BSY for IDENT_SETTLE clk1x, THEN raise DRQ+INTRQ in
+                                // S_PREP (mirrors the S_FETCH data-ready pacing the disc READ path
+                                // uses). The settle lets the driver finish "write cmd -> set
+                                // transfer-pending -> wait" before the ISR fires, so the handler
+                                // sees its state byte SET and drains the block. byte count /
+                                // ireason / datain_ident were latched above; only the DRQ+INTRQ
+                                // raise is deferred to S_PREP.
+                                r_status   <= ST_BSY;
+                                fetch_wait <= IDENT_SETTLE;
+                                state      <= S_PREP;
+`endif
                             end
                             8'h08: begin set_signature; state <= S_IDLE; end  // DEVICE RESET
                             8'hEF: begin                         // SET FEATURES: accept-and-succeed
@@ -599,6 +636,25 @@ module atapi #(
                             state <= S_DATAIN;
                         end
                     endcase
+                end
+            end
+
+            // ---- fixed-response data-in settle (IDENTIFY 0xA1) ----
+            // Hold BSY for IDENT_SETTLE clk1x, then raise the data phase (DRQ+INTRQ).
+            // This closes the IDENTIFY-IRQ race: the device must not raise the data-ready
+            // interrupt before the driver has set its software transfer-pending state
+            // byte (else ddrsbm's POST ISR skips to exit and never drains the block). The
+            // raise here (DRQ+IR_IO+INTRQ) is generic to every fixed-response data-in
+            // command, so the other ones (INQUIRY/READ CAPACITY/REQUEST SENSE/MODE
+            // SENSE/READ TOC) can be routed through S_PREP later if HW shows they race.
+            if (state == S_PREP) begin
+                if (fetch_wait != 13'd0)
+                    fetch_wait <= fetch_wait - 13'd1;
+                else begin
+                    r_status  <= ST_DRDY | ST_DRQ;
+                    r_ireason <= IR_IO;
+                    irq_pending <= 1'b1; irq_event <= 1'b1;
+                    state <= S_DATAIN;
                 end
             end
         end

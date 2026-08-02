@@ -26,7 +26,7 @@ module tb_s573_cdimg;
     integer     errors = 0;
 
     s573_cdimg dut (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .ide_rst(1'b0),
         .sec_req(sec_req), .sec_lba(sec_lba),
         .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
         .sec_ready(sec_ready), .sec_busy(sec_busy),

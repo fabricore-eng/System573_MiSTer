@@ -45,6 +45,18 @@ module tb_atapi;
             for (w = 0; w < 5; w = w + 1) io_write(4'd0, 16'h0000);
         end
     endtask
+    // bounded BSY-clear poll. The IDENTIFY fix holds BSY for IDENT_SETTLE clk1x before
+    // raising the data phase (closes the ddrsbm IDENTIFY-IRQ race); poll like the BIOS.
+    task wait_bsy_clear(input [199:0] what);
+        integer pq; reg [15:0] s; begin
+            s = 16'h0080;
+            for (pq = 0; pq < 8000 && (s & 16'h0080) !== 16'h0000; pq = pq + 1)
+                io_read(4'd7, s);
+            if ((s & 16'h0080) !== 16'h0000) begin
+                $display("FAIL: BSY stuck (%0s)", what); errors = errors + 1;
+            end
+        end
+    endtask
 
     reg [15:0] v, word [0:17];
     reg [7:0]  byte_n;
@@ -105,6 +117,7 @@ module tb_atapi;
         // The 573 BIOS drive check issues 0xA1, requires DRQ set, byte count <= 0x800,
         // a 256-word data-in, and ERR clear at completion. Content is not validated.
         io_write(4'd7, 16'h00A1);                  // IDENTIFY PACKET DEVICE
+        wait_bsy_clear("IDENT");                    // settle: BSY held before DRQ (race fix)
         io_read(4'd7, v); chk(v, 16'h0048, "IDENT status");     // DRDY|DRQ
         io_read(4'd2, v); chk(v, 16'h0002, "IDENT ireason");    // I/O=1, C/D=0
         io_read(4'd4, v); chk(v, 16'h0000, "IDENT bc lo");      // byte count 0x0200

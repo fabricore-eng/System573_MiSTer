@@ -133,11 +133,13 @@ module tb_irqdeliver;
         end
     endtask
 
+    // budget > IDENT_SETTLE (2048): the IDENTIFY fix holds BSY for the settle before the
+    // data-ready IRQ, so the wait must outlast it (other commands' IRQs arrive fast).
     task wait_intrq(output integer cyc);
         begin
             cyc = 0;
-            while (intrq !== 1'b1 && cyc < 2000) begin @(posedge clk); cyc = cyc + 1; end
-            if (cyc >= 2000) cyc = -1;
+            while (intrq !== 1'b1 && cyc < 8000) begin @(posedge clk); cyc = cyc + 1; end
+            if (cyc >= 8000) cyc = -1;
         end
     endtask
 

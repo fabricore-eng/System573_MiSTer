@@ -32,7 +32,11 @@ this project's memory (`MEMORY.md` + `memory/`) and the hub (`~/Dev/tools/`:
    verify `/proc/uptime` < ~60 s, then do EXACTLY ONE `load_core`. `load_core` inherits the prior
    core's stale HPS↔FPGA f2sdram bridge, and a dirty bridge mimics a total boot wedge.
 
-4. **Git:** trunk is `main` on the public repo `fabricore-eng/System573_MiSTer`; use a topic
+4. **Git:** trunk is `main`. **Push day-to-day work to the PRIVATE repo by default** — remote
+   `origin` = `fabricore-eng/System573_MiSTer-dev`. The PUBLIC repo
+   `fabricore-eng/System573_MiSTer` is remote `public` and is **release-only**: push there
+   deliberately (`git push public <ref>`) only when publishing a public release, never as the
+   default. A plain `git push` (and `remote.pushDefault=origin`) goes to private. Use a topic
    branch for substantial WIP. Commit as the **Fabricore** identity, push as the **fabricore-eng**
    account (never a personal identity/account).
 

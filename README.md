@@ -36,7 +36,42 @@ The full register map (transcribed from psx-spx) lives in
 
 ## Status — honest accounting
 
-**Latest milestone (2026-06-12): two games boot and run on real hardware.**
+**Latest milestone (2026-08-02): a DDR title boots, plays, and has working
+streamed MP3 music on real hardware.** *Dance Dance Revolution Solo Bass Mix*
+(`ddrsbm`) boots from restored onboard flash into attract, plays through a
+credited stage, and streams its encrypted MP3 soundtrack — the BEMANI Digital
+I/O board path end to end: board DRAM window → descrambler → MP3 decode → PCM
+ring → mixed with the PSX SPU.
+
+The decode itself runs on the **HPS (ARM) side, not in fabric**. An in-fabric
+Huffman/IMDCT/synthesis decoder was costed at ~3,000–8,000 ALM plus DSP against a
+device already at 100% DSP, and rejected on those numbers
+([`docs/audits/2026-06-12-ddr-feasibility.md`](docs/audits/2026-06-12-ddr-feasibility.md)).
+The fabric owns the descrambler, the streaming controller and the PCM ring; the
+ARM owns the decoder.
+
+Two audio defects were found and fixed on 2026-08-02, both firmware-side:
+
+- **Music never stopped.** The service compared a full 16-bit config epoch against
+  a field it filled from an 8-bit echo register, so past epoch 255 the two could
+  never match, the config re-applied on every poll, and the game's stop was
+  overwritten milliseconds later. Measured: 229/229 diverged heartbeats satisfied
+  `adopted == fabric % 256`, divergence starting at the first heartbeat past 255.
+- **~1.5 s of the previous song replayed at each song change.** Two causes: the
+  ring's write pointer was masked to 15 bits while the fabric compares all 16
+  including the wrap bit, and nothing discarded already-decoded PCM when a new
+  window armed. Measured after the fix: 26 flushes across attract, 1.454–1.476 s
+  discarded each, 0/747 epoch divergence, verified out to epoch 1412.
+
+**Known limitation:** the Solo cabinet's song-wheel buttons (*Select L* / *Select
+R* — a different register from the dance panels) are not yet wired, so menus
+advance with START only. The fix is written and simulated but is deliberately not
+in a shipped bitstream: the design sits at **97% ALM and 100% DSP**, and adding it
+pushed an already-marginal MiSTer scaler path to −0.11 ns. It lands once resource
+recovery buys headroom
+([`docs/audits/2026-06-12-resource-recovery-scope.md`](docs/audits/2026-06-12-resource-recovery-scope.md)).
+
+**Previous milestone (2026-06-12): two games boot and run on real hardware.**
 Game #1 **hyperbbc** (flash-only) boots, runs, and has audio. Game #2
 **hypbbc2p** (*Hyper Bishi Bashi Champ 2P*) — the first **CD-install** title —
 now **boots and runs on real hardware** (de10): the authentic `gx908ja.u1`
@@ -122,7 +157,12 @@ core underneath it.
 | Security-cartridge bus glue    | `rtl/s573_seccart.v`  | ✅ implemented + tested |
 | PS1 CPU/GPU/SPU subsystem      | `psx/` submodule      | ✅ integrated in sim (EXP1) |
 | MiSTer top level               | `rtl/emu.sv`          | ✅ PSX.sv clone + 573 deltas; **boots BIOS on real hardware** |
-| MAS3507D MP3 decode (Phase 9)  | —                     | 📋 documented, not impl |
+| MP3 PCM ring (fabric reader)   | `rtl/s573_pcm_ring.v` | ✅ implemented + tested |
+| MP3 PCM drain + gain           | `rtl/s573_mp3_pcm.v`  | ✅ implemented + tested |
+| MAS3507D I²C + gain matrix     | `rtl/mas3507d_i2c.v`  | ✅ implemented + tested |
+| SPU + MP3 saturating mixer     | `rtl/s573_audio_mix.v`| ✅ implemented + tested |
+| MP3 decode (HPS-side service)  | Main fork `support/s573/` | ✅ **plays on real hardware** |
+| DDR Solo song-wheel inputs     | `rtl/s573_io.v`       | 🏗️ written + simulated, not in a shipped bitstream (no timing headroom) |
 
 ✅ = real RTL with a passing testbench (or, for `psx/`, executing the BIOS in the
 full-system NVC sim). 🏗️ = real RTL that synthesizes but isn't hardware-verified

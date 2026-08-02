@@ -109,7 +109,7 @@ module tb_cdboot;
     );
 
     s573_cdimg cdimg (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .ide_rst(1'b0),
         .sec_req(sec_req), .sec_lba(sec_lba),
         .sbuf_addr(sbuf_addr), .sbuf_q(sbuf_q),
         .sec_ready(sec_ready), .sec_busy(sec_busy),
@@ -432,6 +432,9 @@ module tb_cdboot;
         io_write(4'd4, 16'h0000);                  // bc limit 0x0800
         io_write(4'd5, 16'h0008);
         io_write(4'd7, 16'h00A1);
+        // the fix holds BSY for IDENT_SETTLE clk1x before the IDENTIFY data-ready IRQ
+        // (closes the ddrsbm IDENTIFY-IRQ race); wait for the IRQ like the BIOS POST.
+        wait_irq(8000, "IDENTIFY data-ready");
         io_read (4'd7, v); chk(v & 16'h00ff, 16'h0048, "IDENTIFY status DRDY|DRQ");
         io_read (4'd2, v); chk(v & 16'h00ff, 16'h0002, "IDENTIFY ireason IO");
         io_read (4'd4, v); chk(v & 16'h00ff, 16'h0000, "IDENTIFY bc lo");

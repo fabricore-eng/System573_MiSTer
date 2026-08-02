@@ -11,6 +11,7 @@ module tb_k573dio;
     reg        sel = 0, we = 0, re = 0;
     reg [7:0]  off = 0;
     reg [15:0] din = 0;
+    reg        dec_frame_sync = 0, dec_frame_idle = 0, pcm_sample_tick = 0;
     wire [15:0] dout;
     wire [31:0] lamp;
     wire [15:0] crypto_key1, crypto_key2, crypto_key3;
@@ -20,13 +21,20 @@ module tb_k573dio;
     wire        mp3_out_valid;
     integer errors = 0;
 
-    k573dio #(.RAM_WORDS(4096), .DS_SERIAL(DS_SERIAL), .DS_CLK_HZ(1_000_000), .DDRSBM(1'b0)) dut (
+    k573dio #(.RAM_WORDS(4096), .DS_SERIAL(DS_SERIAL), .DS_CLK_HZ(1_000_000)) dut (
         .clk(clk), .rst(rst), .sel(sel), .off(off), .we(we), .re(re),
         .din(din), .dout(dout), .lamp(lamp),
+        .dio_wait(), .cfg_ddrsbm(1'b0),          // was parameter DDRSBM
+        .mem_rd_req(), .mem_rd_addr(), .mem_rd_q(64'd0), .mem_rd_ack(1'b0),
+        .mem_wr_req(), .mem_wr_addr(), .mem_wr_data(), .mem_wr_ack(1'b0),
+        .dbg_wfifo_ovf(),
         .crypto_key1(crypto_key1), .crypto_key2(crypto_key2), .crypto_key3(crypto_key3),
         .mp3_start(mp3_start), .mp3_end(mp3_end),
         .fpga_ctrl(fpga_ctrl), .network_id(network_id),
-        .mp3_out_byte(mp3_out_byte), .mp3_out_valid(mp3_out_valid)
+        .mp3_out_ready(1'b1),   // datapath test: always-ready sink (pacing is tb_k573_mp3stream)
+        .mp3_out_byte(mp3_out_byte), .mp3_out_valid(mp3_out_valid),
+        .dec_frame_sync(dec_frame_sync), .dec_frame_idle(dec_frame_idle),
+        .pcm_sample_tick(pcm_sample_tick)
     );
 
     // descramble reference (mirrors k573_mp3dec) for the streaming check
@@ -67,6 +75,19 @@ module tb_k573dio;
             end
         end
     endtask
+
+    // ---- MP3 decode-counter stimulus (P4b HPS decode / PCM-drain inputs) ----
+    task frame_pulse;      // one decoded MPEG frame (MAME mpeg_frame_sync(1))
+        begin @(negedge clk); dec_frame_sync = 1; @(negedge clk); dec_frame_sync = 0; end
+    endtask
+    task frame_idle_pulse; // a decode that produced no frame (MAME mpeg_frame_sync(0))
+        begin @(negedge clk); dec_frame_idle = 1; @(negedge clk); dec_frame_idle = 0; end
+    endtask
+    task drain(input integer n); begin   // n PCM samples drained @44100Hz -> counter += n
+        @(negedge clk); pcm_sample_tick = 1;
+        repeat (n) @(posedge clk);
+        @(negedge clk); pcm_sample_tick = 0;
+    end endtask
 
     // ----- DS2401 1-Wire master, driven through register 0xee bit 12 -----
     reg [15:0] rl;
@@ -185,12 +206,84 @@ module tb_k573dio;
         sgi = 0;
         bus_write(8'hae, 16'h6000);          // MP3_ENABLE | STREAMING_ENABLE
         repeat (50) @(posedge clk);
-        if (sgi !== 8) begin $display("FAIL: streamed %0d bytes (expected 8)", sgi); errors=errors+1; end
-        for (i = 0; i < 8 && i < sgi; i = i + 1)
+        // MAME feeds 2N-1 bytes for an N-word window (final word's low byte dropped)
+        if (sgi !== 7) begin $display("FAIL: streamed %0d bytes (expected 7 = 2N-1)", sgi); errors=errors+1; end
+        for (i = 0; i < 7 && i < sgi; i = i + 1)
             if (sgot[i] !== sexp[i]) begin
                 $display("FAIL: mp3 byte[%0d]=%02h expected %02h", i, sgot[i], sexp[i]); errors=errors+1;
             end
         bus_read(8'hae, v); chk(v, 16'h0000, "fpga_ctrl after stream"); // not streaming
+
+        // ================================================================
+        // MP3 decode counters (0xa8 frame / 0xaa mpeg_status / 0xca-cc sample
+        // position / 0xce diff) -- MAME k573fpga.cpp / k573dio.cpp. Driven off the
+        // HPS decode/PCM-drain inputs. RED under -DMP3_COUNTER_STUB (counters read 0).
+        // Note: this tb ties mp3_out_ready=1, so mpeg_status DEMAND (bit12) is always
+        // set -> idle=0x1000, PLAYING=0x5000, IDLE=0x3000.
+        // ================================================================
+        // A setup-register write pulses mp3_reload -> counters zeroed + disarmed
+        // (MAME update_mp3_decode_state).
+        bus_write(8'hae, 16'h0000);          // fpga_ctrl clear (frame counter disabled)
+        bus_write(8'ha8, 16'h0000);          // key1 write -> mp3_reload -> reset counters
+        bus_read(8'ha8, v); chk(v, 16'h0000, "frame count @reset");
+        bus_read(8'hcc, v); chk(v, 16'h0000, "sample lo @reset");
+        bus_read(8'hca, v); chk(v, 16'h0000, "sample hi @reset");
+        bus_read(8'haa, v); chk(v, 16'h1000, "mpeg_status @reset (demand only)");
+
+        // Frame counter is GATED by FPGA_FRAME_COUNTER_ENABLE (fpga_ctrl bit15):
+        // with bit15 clear, a frame sync must NOT increment it...
+        frame_pulse;
+        bus_read(8'ha8, v); chk(v, 16'h0000, "frame sync ignored while bit15=0");
+        // ...but that first sync DID arm the sample counter + set PLAYING.
+        bus_read(8'haa, v); chk(v, 16'h5000, "mpeg_status PLAYING after first sync");
+
+        bus_write(8'hae, 16'h8000);          // FPGA_FRAME_COUNTER_ENABLE
+        frame_pulse; frame_pulse; frame_pulse;
+        bus_read(8'ha8, v); chk(v, 16'h0003, "frame count = 3 after 3 syncs");
+        bus_write(8'hae, 16'h0000);          // clearing bit15 resets the frame counter
+        bus_read(8'ha8, v); chk(v, 16'h0000, "frame count reset when bit15 cleared");
+        bus_write(8'hae, 16'h8000);          // re-enable
+
+        // Sample counter advances off PCM DRAIN only (pcm_sample_tick), while armed.
+        drain(100);
+        bus_read(8'hcc, v); chk(v, 16'd100, "sample lo = 100 after 100 drained");
+        bus_read(8'hca, v); chk(v, 16'h0000, "sample hi still 0 (<65536)");
+
+        // Cross the 16-bit boundary: prove the hi/lo latch + coherency. Drive to
+        // 0xFFFE, latch via a 0xcc read, advance PAST 0x10000, then read 0xca -- it
+        // must return the hi LATCHED at the 0xcc read, not a recomputed live hi.
+        drain(32'hFFFE - 32'd100);           // counter -> 0xFFFE
+        bus_read(8'hcc, v); chk(v, 16'hFFFE, "sample lo @0xFFFE");   // latches 0x0000_FFFE
+        drain(4);                            // counter -> 0x10002 (live hi now 1)
+        bus_read(8'hca, v); chk(v, 16'h0000, "sample hi = latched 0x0000 (coherent, not live 1)");
+        bus_read(8'hcc, v); chk(v, 16'h0002, "sample lo @0x10002 (re-latches 0x0001_0002)");
+        bus_read(8'hca, v); chk(v, 16'h0001, "sample hi = 0x0001 after re-latch");
+
+        // 0xcc WRITE = reset_counter: zero + disarm; ticks must not count until the
+        // next frame sync re-arms.
+        bus_write(8'hcc, 16'h0000);
+        bus_read(8'hcc, v); chk(v, 16'h0000, "sample counter reset by 0xcc write");
+        drain(20);
+        bus_read(8'hcc, v); chk(v, 16'h0000, "no count while disarmed (0xcc write)");
+        frame_pulse;                         // re-arm
+        drain(7);
+        bus_read(8'hcc, v); chk(v, 16'd7, "counts again after re-arming frame sync");
+
+        // IDLE bit: a decode that produced no frame sets IDLE, clears PLAYING.
+        frame_idle_pulse;
+        bus_read(8'haa, v); chk(v, 16'h3000, "mpeg_status IDLE after frame_idle");
+
+        // get_counter_diff (0xce): samples since the last counter read.
+        bus_read(8'hcc, v);                  // sets the diff reference = current count (7)
+        drain(9);
+        bus_read(8'hce, v); chk(v, 16'd9, "counter diff = 9 samples since last read");
+
+        // mp3_reload (a setup write) also zeroes the sample counter + frame counter,
+        // and re-references 0xce -- read 0xce FIRST (before any 0xcc read) -> ~0.
+        bus_write(8'ha6, 16'h1234);          // mp3_end low write -> mp3_reload
+        bus_read(8'hce, v); chk(v, 16'h0000, "counter diff = 0 right after reset (diff ref cleared)");
+        bus_read(8'hcc, v); chk(v, 16'h0000, "sample counter reset by mp3_reload");
+        bus_read(8'ha8, v); chk(v, 16'h0000, "frame counter reset by mp3_reload");
 
         if (errors == 0) $display("RESULT: PASS (k573dio)  ds2401=%016h", rom);
         else             $display("RESULT: FAIL (k573dio, %0d errors)", errors);

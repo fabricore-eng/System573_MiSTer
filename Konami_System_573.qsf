@@ -74,3 +74,40 @@ source sys_pins.tcl
 set_global_assignment -name SDC_FILE psx/PSX.sdc
 
 set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
+
+# ---------------------------------------------------------------------------
+# Fitter effort (2026-07-30). The project ran on Quartus DEFAULTS until now
+# (Balanced, no physical synthesis, seed 1). The one timing failure we carry is
+# ascal's HDMI output address generation -- a THREE-logic-level path missing
+# setup by ~2.2 ns on the 148.5 MHz pixel clock, measured identically before and
+# after the P4b MP3 slices (-2.216 vs -2.143), so it is congestion/placement, not
+# design. Three levels missing by 2.2 ns is the profile a fitter can often close
+# on its own, and it is worth trying BEFORE spending the remaining ALM levers,
+# which are now all high-risk (mdec / gte / savestate -- the cheap ones were
+# already taken by psx_patches 0025/0026/0027).
+#
+# "High Performance Effort" rather than "Aggressive Performance" on purpose: the
+# die is at 100% LAB occupancy, and the aggressive mode trades area for speed,
+# which here risks not fitting at all. Physical synthesis is limited to combo
+# logic + register duplication for the same reason -- both are targeted at
+# critical paths rather than global area growth.
+#
+# If this does not move the ascal slack materially, the number is structural and
+# the next step is characterising seed variance, NOT more effort.
+set_global_assignment -name OPTIMIZATION_MODE "High Performance Effort"
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+
+# MEASURED (2026-07-30): the two settings above took the ascal HDMI setup slack
+# from -2.143 ns to -0.322 ns and total negative slack from -55.6 to -4.9 -- i.e.
+# 85% of the shortfall was the project sitting on Quartus DEFAULTS, not
+# congestion. Cost: 39,157 -> 40,367 ALMs (93% -> 96%), which is physical
+# synthesis duplicating registers to shorten paths. Still fits, still produces an
+# rbf.
+#
+# Chasing the last 0.322 ns with a placement SEED rather than more optimization
+# effort, deliberately: at 96% ALM occupancy the remaining effort levers
+# (Aggressive Performance, register retiming) all buy speed with AREA, and there
+# is not much area left. A seed is area-neutral -- it just re-rolls placement,
+# and 0.3 ns is well inside normal seed spread.
+set_global_assignment -name SEED 3
